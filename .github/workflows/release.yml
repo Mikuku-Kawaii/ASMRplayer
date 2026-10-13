@@ -1,0 +1,48 @@
+name: Signed Windows release
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  windows:
+    if: github.event_name == 'workflow_dispatch' || vars.SIGNED_RELEASE_CI == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10'
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm install --frozen-lockfile
+      - name: Verify native runtime
+        shell: pwsh
+        run: ./scripts/fetch-runtime.ps1
+      - name: Build and sign
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: ./scripts/prepare-release.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-windows-release
+          path: output/release/
+          if-no-files-found: error
+      - name: Create reviewable release draft
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $files = @(Get-ChildItem "output/release/v$version" -File | Where-Object { $_.Extension -in @('.exe', '.msi') -or $_.Name -eq 'latest.json' } | ForEach-Object FullName)
+          gh release create "v$version" @files --draft --verify-tag --title "ASMR Player $version" --notes-file "docs/releases/v$version.md"
+          if ($LASTEXITCODE) { throw 'Failed to create release draft' }
