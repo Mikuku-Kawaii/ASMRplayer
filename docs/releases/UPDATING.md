@@ -11,7 +11,7 @@
 3. 运行 `powershell -ExecutionPolicy Bypass -File scripts/prepare-release.ps1`。也支持从环境变量 `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 提供密钥。
 4. 将 `output/release/v版本/` 中的 EXE、MSI 和 `latest.json` 上传到对应正式 Release。许可声明保留在仓库；无需额外上传校验表、许可 ZIP 或独立通知附件。
 
-`latest.json` 包含 Windows x64 的 NSIS/MSI 平台映射和签名，不需要另外上传 `.sig`。不要手写签名或混用不同版本的安装包。普通 `build.bat` 会使用本机私钥并生成相同的更新元数据。
+`latest.json` 包含 Windows x64 的 NSIS/MSI 平台映射和签名，不需要另外上传 `.sig`。不要手写签名或混用不同版本的安装包。
 
 自行构建的开发者需要生成自己的密钥，并替换 Tauri 公钥与更新仓库地址；该密钥不能用于官方客户端更新。
 
@@ -29,6 +29,6 @@
 
 本地验证包括 TypeScript、ESLint、前端与 Rust 回归测试和 Windows 正式打包。单元测试覆盖版本比较、取消与并发互斥、签名拒绝、乱序状态、WAL 备份和安装前会话保存。
 
-1.1.0 本轮发布安装包、元数据和源码，不执行实际自动升级。1.1.0 → 1.1.1 的检查、下载、确认安装、重启和用户记录恢复留到 1.1.1 发布后在独立 Windows 环境验收；GitHub Actions 云端构建也尚未验收。
+1.1.1 发布安装包、元数据和必要源码。实际自动安装、重启和用户记录恢复需在独立 Windows 环境验收；GitHub Actions 云端构建也尚未验收。
 
-1.0.0 用户需手动安装 1.1.0 一次。
+1.0.0 用户需手动安装 1.1.1 一次。
