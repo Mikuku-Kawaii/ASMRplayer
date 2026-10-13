@@ -54,8 +54,8 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `ASMR Player_1.0.0_x64-setup.exe` | 常规安装程序 |
-| `ASMR Player_1.0.0_x64_en-US.msi` | MSI 安装包 |
+| `ASMR.Player_1.0.0_x64-setup.exe` | 常规安装程序 |
+| `ASMR.Player_1.0.0_x64_en-US.msi` | MSI 安装包 |
 
 安装包包含播放所需的 libmpv 动态库，无需另行安装 mpv。界面运行依赖 Microsoft Edge WebView2；缺少运行时时，安装程序会尝试联网下载。
 
