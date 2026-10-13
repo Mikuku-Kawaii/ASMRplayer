@@ -4,7 +4,7 @@
 
 **当前版本：1.0.0 · Windows x64**
 
-[下载安装包](https://github.com/soradasuki162-star/ASMRplayer/releases/latest) · [1.0.0 功能介绍](docs/releases/v1.0.0.md) · [开发计划](docs/releases/TODO.md) · [反馈问题](https://github.com/soradasuki162-star/ASMRplayer/issues)
+[下载安装包](https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest) · [1.0.0 功能介绍](docs/releases/v1.0.0.md) · [开发计划](docs/releases/TODO.md) · [反馈问题](https://github.com/Mikuku-Kawaii/ASMRplayer/issues)
 
 ## 功能介绍
 
@@ -50,7 +50,7 @@
 
 ## 下载与安装
 
-前往 [GitHub Releases](https://github.com/soradasuki162-star/ASMRplayer/releases/latest)，选择一种 Windows x64 安装包：
+前往 [GitHub Releases](https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest)，选择一种 Windows x64 安装包：
 
 | 文件 | 用途 |
 | --- | --- |
@@ -72,7 +72,7 @@ Release 同时附有 `SHA256SUMS.txt` 和第三方声明。可用 PowerShell 的
 
 ## 反馈与第三方组件
 
-遇到问题时，请在 [Issues](https://github.com/soradasuki162-star/ASMRplayer/issues) 附上应用版本、Windows 版本、复现步骤和相关错误信息；请删除日志中的私人路径、访问凭据与私人作品信息。
+遇到问题时，请在 [Issues](https://github.com/Mikuku-Kawaii/ASMRplayer/issues) 附上应用版本、Windows 版本、复现步骤和相关错误信息；请删除日志中的私人路径、访问凭据与私人作品信息。
 
 第三方依赖、许可和分发说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。在线作品、封面与字幕来自相应内容服务；本仓库与发布包不附带作品音频。
 
