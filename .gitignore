@@ -66,3 +66,13 @@ credentials.json
 .idea/
 Thumbs.db
 .DS_Store
+
+# Local-only development and test files
+/build.bat
+/dev.bat
+/AGENTS.md
+/CHANGELOG.md
+/THIRD_PARTY_NOTICES.md
+/tests/
+*.test.ts
+*.test.tsx
