@@ -59,8 +59,6 @@
 
 安装包包含播放所需的 libmpv 动态库，无需另行安装 mpv。界面运行依赖 Microsoft Edge WebView2；缺少运行时时，安装程序会尝试联网下载。
 
-Release 同时附有 `SHA256SUMS.txt` 和第三方声明。可用 PowerShell 的 `Get-FileHash -Algorithm SHA256` 检查下载文件，并与校验表对照。
-
 首次使用：
 
 1. 在本地音频库导入作品文件夹或作品库目录；也可在在线浏览页搜索作品。
