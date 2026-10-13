@@ -1,6 +1,6 @@
 # 第三方组件声明
 
-ASMR Player 1.0.0 使用以下第三方组件。本次发布提供 Windows x64 安装包及功能说明。
+ASMR Player 1.1.0 使用以下第三方组件。本次发布提供 Windows x64 安装包、项目源码及功能说明。
 
 ## 播放运行库
 
@@ -21,7 +21,7 @@ ASMR Player 1.0.0 使用以下第三方组件。本次发布提供 Windows x64 �
 
 | 组件 | 用途 | 上游许可 |
 | --- | --- | --- |
-| Tauri / tauri-build / tauri-plugin-dialog | 桌面宿主、窗口、托盘与系统对话框 | Apache-2.0 OR MIT |
+| Tauri / tauri-build / tauri-plugin-dialog / tauri-plugin-updater | 桌面宿主、窗口、托盘、系统对话框与签名更新 | Apache-2.0 OR MIT |
 | React / React DOM | 用户界面 | MIT |
 | TypeScript | 类型检查 | Apache-2.0 |
 | Vite / Vitest / ESLint | 构建、测试与静态检查 | MIT |
@@ -37,4 +37,4 @@ ASMR Player 1.0.0 使用以下第三方组件。本次发布提供 Windows x64 �
 
 在线作品信息、封面、音频与字幕属于其各自权利人。本项目源码和安装包不包含用户作品音频。
 
-本次发布未公开项目开发源码。此声明不为第三方组件或在线内容授予额外权利。
+项目开发源码已随 1.1.0 发布到本仓库。此声明不为第三方组件或在线内容授予额外权利。

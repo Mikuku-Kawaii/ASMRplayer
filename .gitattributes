@@ -1,0 +1,2 @@
+# Signature fixtures must keep exact bytes on every checkout.
+tests/fixtures/updater/payload.txt -text

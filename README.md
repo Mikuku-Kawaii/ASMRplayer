@@ -2,9 +2,17 @@
 
 面向 Windows 的 ASMR 桌面播放器，把本地音频库、asmr.one 在线作品和离线下载放进同一套收听流程。记住每部作品听到了哪一轨、哪一秒，配合字幕、睡眠定时和可调音效，让长音轨与睡前收听更方便。
 
-**当前版本：1.0.0 · Windows x64**
+**当前版本：1.1.0 · Windows x64**
 
-[下载安装包](https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest) · [1.0.0 功能介绍](docs/releases/v1.0.0.md) · [开发计划](docs/releases/TODO.md) · [反馈问题](https://github.com/Mikuku-Kawaii/ASMRplayer/issues)
+[下载安装包](https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest) · [1.1.0 更新说明](docs/releases/v1.1.0.md) · [更新日志](CHANGELOG.md) · [开发计划](docs/releases/TODO.md) · [反馈问题](https://github.com/Mikuku-Kawaii/ASMRplayer/issues)
+
+## 1.1 新增
+
+- **桌面灵动岛**：独立悬浮窗口，点击展开播控、字幕和进度条；支持拖动、滚轮调音、全屏避让和隐私模式。
+- **软件更新**：在设置中检查 GitHub 正式版本、阅读更新说明和下载更新；签名验证通过后，由你点击“安装并重启”。
+- **可靠性修复**：改进设置保存、记录备份导入、播放结束状态、下载续传和数据库升级前备份。
+
+1.0.0 用户需手动安装 1.1.0 一次，后续版本可通过软件内更新获取。自动更新的实际安装与重启验收计划在 1.1.1 发布时完成。
 
 ## 功能介绍
 
@@ -44,7 +52,7 @@
 
 - **Windows 媒体控制**：通过原生 SMTC 接收系统播放、暂停、切歌和跳转操作，支持完整展示、隐私脱敏或禁用模式。
 - **系统托盘**：关闭主窗口后可继续收听，在托盘显示主窗口、播放 / 暂停或退出。
-- **桌面悬浮播放器**：查看字幕和进度，快速控制播放。
+- **桌面灵动岛**：紧凑、展开和瞬态通知三种形态，可调整置顶、磁吸、滚轮调音、通知时长与隐私设置。1.1.1 开发版加入屏幕选择、五档大小（特小至特大）、粗体字幕自适应宽度、原生毛玻璃与轻弹性展开；展开态使用单行音轨标题与更大的播控区域，通知时长使用独立滑条，支持键盘调节。
 - **快捷键**：空格播放 / 暂停，左右方向键快退 / 快进 5 秒；在文本输入框中不会截获这些按键。
 - **记录备份**：导出 / 导入 JSON，保存收藏、进度、书签、A–B 循环、作品信息覆盖与音效预设。备份文件不包含音频、封面或字幕原文件。
 
@@ -54,8 +62,10 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `ASMR.Player_1.0.0_x64-setup.exe` | 常规安装程序 |
-| `ASMR.Player_1.0.0_x64_en-US.msi` | MSI 安装包 |
+| `ASMR.Player_1.1.0_x64-setup.exe` | 常规安装程序 |
+| `ASMR.Player_1.1.0_x64_en-US.msi` | MSI 安装包 |
+
+Release 中的 `latest.json` 是软件更新元数据，无需手动下载。安装包会保留已有用户数据库与媒体文件。
 
 安装包包含播放所需的 libmpv 动态库，无需另行安装 mpv。界面运行依赖 Microsoft Edge WebView2；缺少运行时时，安装程序会尝试联网下载。
 
@@ -68,10 +78,28 @@
 
 在线浏览、在线字幕和下载依赖第三方服务及网络。可在设置中调整 API 地址、代理和访问凭据；本地音频播放可独立使用。
 
+## 从源码运行
+
+技术栈：Tauri 2、React 18、TypeScript、Rust、SQLite 和 libmpv。Windows 开发需要 Node.js 22、pnpm 10、Rust stable、MSVC C++ Build Tools 与 WebView2。
+
+```powershell
+git clone https://github.com/Mikuku-Kawaii/ASMRplayer.git
+cd ASMRplayer
+pnpm install --frozen-lockfile
+powershell -ExecutionPolicy Bypass -File scripts/fetch-runtime.ps1
+pnpm tauri dev
+```
+
+播放运行库不提交到 Git。`fetch-runtime.ps1` 从已发布的安装包提取所需 DLL，并校验固定 SHA-256。运行库信息见 [src-tauri/binaries/README.md](src-tauri/binaries/README.md)。
+
+发布者使用 `scripts/prepare-release.ps1` 检查、打包和签名；密钥管理与发布流程见 [UPDATING.md](docs/releases/UPDATING.md)。自行构建时需要自己的签名密钥及对应公钥，不能签发本项目官方客户端信任的更新。
+
+仓库包含 [AGENTS.md](AGENTS.md) 和 `.agents/skills/` 下的架构、M3 界面、专业音频 DSP 三份项目技能，供代码维护时参考。
+
 ## 反馈与第三方组件
 
 遇到问题时，请在 [Issues](https://github.com/Mikuku-Kawaii/ASMRplayer/issues) 附上应用版本、Windows 版本、复现步骤和相关错误信息；请删除日志中的私人路径、访问凭据与私人作品信息。
 
 第三方依赖、许可和分发说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。在线作品、封面与字幕来自相应内容服务；本仓库与发布包不附带作品音频。
 
-本次公开发布提供 1.0.0 安装包与使用说明；开发中的源码和后续版本保留在本地。
+main 分支包含当前开发源码、构建脚本、依赖锁文件、测试夹具和三份项目技能；1.1.0 已发布安装包，后续改动属于开发中的 1.1.1。仓库不包含用户媒体、数据库、日志、依赖目录或签名私钥。

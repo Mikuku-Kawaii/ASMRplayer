@@ -6,7 +6,8 @@ src-tauri/target/
 src-tauri/gen/
 .tmp/
 /output/
-/.agents/
+/.agents/*
+!/.agents/skills/
 /.codex/
 /テスト作品/
 /TODO.md
@@ -15,14 +16,6 @@ src-tauri/gen/
 # Historical development reports (current release notes are published)
 /docs/*
 !/docs/releases/
-
-# Generated icon variants unused by the Windows build
-/src-tauri/icons/*
-!/src-tauri/icons/32x32.png
-!/src-tauri/icons/128x128.png
-!/src-tauri/icons/icon.png
-!/src-tauri/icons/icon.ico
-/public/favicon.ico
 
 # Generated icon variants unused by the Windows build
 /src-tauri/icons/*
@@ -44,9 +37,10 @@ src-tauri/binaries/*.pdb
 *.sqlite
 *.sqlite3
 *.log
-logs/
-cache/
-downloads/
+/logs/
+/cache/
+/downloads/
+/.release-signing/
 *.part
 
 # Credentials & Local Env
