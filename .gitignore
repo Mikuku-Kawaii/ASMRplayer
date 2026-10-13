@@ -1,0 +1,74 @@
+# Dependencies & Build Artifacts
+node_modules/
+dist/
+dist-ssr/
+src-tauri/target/
+src-tauri/gen/
+.tmp/
+/output/
+/.agents/
+/.codex/
+/テスト作品/
+/TODO.md
+/asmr-icon.png
+
+# Historical development reports (current release notes are published)
+/docs/*
+!/docs/releases/
+
+# Generated icon variants unused by the Windows build
+/src-tauri/icons/*
+!/src-tauri/icons/32x32.png
+!/src-tauri/icons/128x128.png
+!/src-tauri/icons/icon.png
+!/src-tauri/icons/icon.ico
+/public/favicon.ico
+
+# Generated icon variants unused by the Windows build
+/src-tauri/icons/*
+!/src-tauri/icons/32x32.png
+!/src-tauri/icons/128x128.png
+!/src-tauri/icons/icon.png
+!/src-tauri/icons/icon.ico
+/public/favicon.ico
+
+# Native libmpv runtime (distributed with release installers)
+src-tauri/binaries/*.exe
+src-tauri/binaries/*.dll
+src-tauri/binaries/*.pdb
+
+# Databases, Logs, Caches & User Data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+logs/
+cache/
+downloads/
+*.part
+
+# Credentials & Local Env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+
+# Private Audio (keep only committed synthetic test fixtures under tests/fixtures/)
+*.mp3
+*.wav
+*.flac
+*.m4a
+*.ogg
+*.opus
+!tests/fixtures/audio/*.mp3
+!tests/fixtures/audio/*.wav
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
