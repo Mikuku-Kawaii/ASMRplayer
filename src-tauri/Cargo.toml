@@ -1,0 +1,60 @@
+[package]
+name = "asmr-player"
+version = "1.1.1"
+description = "Windows ASMR Desktop Player for local audio libraries and asmr.one works"
+authors = ["ASMR Player Contributors"]
+license = "MIT"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2.2"
+tauri-plugin-updater = "2"
+semver = "1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.40", features = ["full"] }
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+reqwest = { version = "0.12", features = ["json", "stream", "socks", "gzip"] }
+uuid = { version = "1.11", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2.0"
+sha2 = "0.10"
+hex = "0.4"
+lofty = "0.21"
+walkdir = "2.5"
+url = "2.5"
+urlencoding = "2.1"
+futures-util = "0.3"
+parking_lot = "0.12"
+keyring = { version = "3.6", features = ["windows-native"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-numerics = "0.3.1"
+windows-core = "0.62.2"
+windows = { version = "0.62.2", features = [
+    "Foundation",
+    "Media",
+    "Storage",
+    "Storage_Streams",
+    "Win32_Foundation",
+    "Win32_System_WinRT",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "System",
+    "UI_Composition_Desktop",
+    "Graphics_Effects",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_System_WinRT_Composition",
+    "Win32_System_WinRT_Graphics_Direct2D",
+] }
+
+[dev-dependencies]
+tauri = { version = "2.2", features = ["test"] }
+tempfile = "3.14"
+wiremock = "0.6"
+
