@@ -149,8 +149,9 @@ import { Select } from "../../components/Select";
   - 导航项使用左对齐 `图标 (17px–18px) + 4字中文标签`，激活态使用 Tonal 胶囊高亮（`background: var(--accent-bg); color: var(--accent); font-weight: 600`）。
 - **底部播放栏 (`player-bar`, Persistent Bottom Player)**：
   - 必须常驻于应用壳底部，切页、打开详情或打开弹窗时绝不卸载。
-  - 严格三栏结构：**左栏**（当前音轨名、所属作品跳转链接、当前来源徽章与同版本来源切换器）、**中栏**（传输控制按钮行 + 带时间轴的拖动进度条）、**右栏**（A–B 循环、睡眠定时、音量控制、队列/书签/字幕抽屉开关）。
-  - **防挤压铁律**：左栏音轨名与作品名必须设置 `overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0`，无论日文/中文标题多长，绝不能挤压中间的播放/暂停按钮或进度条宽度。
+  - 严格三栏结构：**左栏**（可点击的当前音轨名、标题右侧的在线流/本地流标签、下方音频参数摘要与同版本来源切换器）、**中栏**（传输控制按钮行 + 带时间轴的拖动进度条）、**右栏**（A–B 循环、睡眠定时、音量控制、队列/书签/字幕抽屉开关）。
+  - **防挤压铁律**：左栏音轨名与音频参数摘要必须设置 `overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0`，无论日文/中文标题多长，绝不能挤压中间的播放/暂停按钮或进度条宽度。
+  - 标题使用 `.player-track-title` 透明背景圆角矩形按钮，点击打开作品详情；悬停显现色阶、键盘焦点环、按下轻微缩放，180ms 过渡并遵守减少动效设置。下一行只显示宿主提供的采样率、编码、声道、码率等音频信息，不再重复作品标题；缺失值不能用默认采样率或位深冒充。
 - **右侧抽屉 (`right-drawer`, M3 Standard Side Sheet)**：
   - 固定宽度 `340px`，与主内容区并排推开而非全屏遮罩，方便边看作品详情边管理播放队列、书签或实时字幕。
 - **紧凑小矩形迷你模式 (`mini-player-shell`, NetEase Cloud Style Floating Mini-Player)**：
