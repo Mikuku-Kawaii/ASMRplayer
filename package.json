@@ -1,7 +1,7 @@
 {
   "name": "asmr-player",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Windows local & asmr.one desktop ASMR player built with Tauri 2, React, TypeScript, Rust, SQLite, and mpv",
   "type": "module",
   "scripts": {
