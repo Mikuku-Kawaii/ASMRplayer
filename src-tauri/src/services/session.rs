@@ -4,10 +4,12 @@ use crate::player::resolve_mpv_binary;
 use crate::providers::AsmrOneProvider;
 use crate::services::download::DownloadService;
 use crate::services::playback::PlaybackService;
-use std::fs;
 
 #[derive(Clone)]
 pub struct SessionService {
+    pub diagnostics: super::diagnostics::DiagnosticService,
+    pub backups: super::backup::BackupService,
+    pub storage: super::storage::StorageService,
     db: Database,
     provider: AsmrOneProvider,
     playback: PlaybackService,
@@ -22,6 +24,9 @@ impl SessionService {
         downloads: DownloadService,
     ) -> Self {
         Self {
+            diagnostics: super::diagnostics::DiagnosticService::new(db.clone()),
+            backups: super::backup::BackupService::new(db.clone()),
+            storage: super::storage::StorageService::new(db.clone(), downloads.clone(), playback.clone()),
             db,
             provider,
             playback,
@@ -258,24 +263,8 @@ impl SessionService {
     /// T509: Clears only playback/application cache directory (`cache_dir`),
     /// NEVER deleting offline downloaded files or user imported media!
     pub fn clear_playback_cache(&self) -> AppResult<u64> {
-        let mut freed = 0u64;
-        if self.db.cache_dir.is_dir() {
-            for entry in fs::read_dir(&self.db.cache_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_file() {
-                    freed += entry.metadata().map(|m| m.len()).unwrap_or(0);
-                    let _ = fs::remove_file(&path);
-                } else if path.is_dir() {
-                    let _ = fs::remove_dir_all(&path);
-                }
-            }
-        }
-        // T1003: Checkpoint and truncate SQLite WAL during cache maintenance
-        let _ = self.db.wal_checkpoint_truncate();
-        self.db
-            .append_log("INFO", &format!("Cleared playback cache ({} bytes)", freed));
-        Ok(freed)
+        let preview = self.storage.preview(super::storage::Category::Playback, vec![])?;
+        Ok(self.storage.execute(&preview.token)?.freed_bytes)
     }
 
     pub fn get_diagnostics(&self) -> AppResult<Vec<String>> {
@@ -287,6 +276,7 @@ impl SessionService {
 mod session_tests {
     use super::*;
     use crate::services::library::LibraryService;
+    use std::fs;
     use std::time::Duration;
     use tempfile::tempdir;
     use wiremock::matchers::{method, path};

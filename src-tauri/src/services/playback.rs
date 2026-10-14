@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 #[derive(Debug, Clone, Default)]
 pub struct CachedAudioTagMeta {
@@ -69,9 +69,22 @@ pub struct PlaybackService {
     event_seq: Arc<AtomicU64>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
     native_smtc: Arc<Mutex<Option<NativeSmtcController>>>,
+    audio_output_operation: Arc<tokio::sync::Mutex<()>>,
+    shutdown_signal: watch::Sender<bool>,
 }
 
 impl PlaybackService {
+    /// Lock order is playback -> download worker registry -> DB. A paused or
+    /// resolving session also owns media, not just an audibly playing session.
+    pub(crate) fn with_storage_guard<T>(&self, f: impl FnOnce(bool, &std::collections::HashSet<String>) -> T) -> T {
+        let state = self.inner.lock();
+        let mut versions = std::collections::HashSet::new();
+        versions.extend(state.current_version_id.iter().cloned());
+        versions.extend(state.prefetching_version_id.iter().cloned());
+        if let Some((version, _, _, _)) = &state.prefetched_next { versions.insert(version.clone()); }
+        f(!matches!(state.state.as_str(), "idle" | "stopped") || state.active_source.is_some(), &versions)
+    }
+
     pub fn new(db: Database, provider: AsmrOneProvider) -> Self {
         let _ = AmllBroadcastHub::global();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -94,6 +107,10 @@ impl PlaybackService {
             .map(|v| v == "true" || v == "1")
             .unwrap_or(false);
         mpv.set_audio_exclusive_flag(audio_exclusive);
+        let audio_device = db.get_setting("audio_device").ok().flatten()
+            .filter(|id| id == "auto" || id.starts_with("wasapi/"))
+            .unwrap_or_else(|| "auto".into());
+        mpv.set_initial_audio_device(audio_device);
 
         let smtc_mode = db
             .get_setting("smtc_mode")
@@ -205,6 +222,8 @@ impl PlaybackService {
             event_seq: Arc::new(AtomicU64::new(1)),
             app_handle: Arc::new(Mutex::new(None)),
             native_smtc: Arc::new(Mutex::new(None)),
+            audio_output_operation: Arc::new(tokio::sync::Mutex::new(())),
+            shutdown_signal: watch::channel(false).0,
         };
 
         svc.spawn_event_loop(event_rx);
@@ -213,6 +232,9 @@ impl PlaybackService {
     }
 
     pub fn attach_app_handle(&self, handle: AppHandle) {
+        // Rebinding must revoke the previous controller before enabling its replacement.
+        let previous = self.native_smtc.lock().take();
+        drop(previous);
         #[cfg(target_os = "windows")]
         if let Some(main_win) = handle.get_webview_window("main") {
             if let Ok(hwnd) = main_win.hwnd() {
@@ -399,7 +421,7 @@ impl PlaybackService {
         version_id: Option<&str>,
         cues: Vec<SubtitleCueDto>,
     ) {
-        let should_update = {
+        let subtitle_update = {
             let mut guard = self.inner.lock();
             let matches = match (version_id, guard.current_version_id.as_deref()) {
                 (Some(target), Some(cur)) => target == cur,
@@ -409,12 +431,19 @@ impl PlaybackService {
             if matches {
                 let changed = guard.active_subtitle_cues != cues;
                 guard.active_subtitle_cues = cues;
-                changed
+                changed.then(|| serde_json::json!({
+                    "eventSeq": self.event_seq.fetch_add(1, Ordering::SeqCst),
+                    "versionId": guard.current_version_id,
+                    "cues": guard.active_subtitle_cues,
+                }))
             } else {
-                false
+                None
             }
         };
-        if should_update {
+        if let Some(subtitles) = subtitle_update {
+            if let Some(ref handle) = *self.app_handle.lock() {
+                let _ = handle.emit("playback:subtitles", subtitles);
+            }
             self.emit_snapshot();
             self.retrigger_smtc_for_subtitles();
         }
@@ -439,11 +468,8 @@ impl PlaybackService {
         if let Some(ref ctrl) = *self.native_smtc.lock() {
             ctrl.sync_timeline(0, dur_ms, pos_ms);
         }
-        if let Some(ref handle) = *self.app_handle.lock() {
-            if let Ok(smtc) = self.get_smtc_display_state() {
-                let _ = handle.emit("smtc:state", smtc);
-            }
-        }
+        // Frontends already receive playback:tick; rebuilding full metadata here
+        // copied cover bytes and regenerated subtitles every second.
     }
 
     /// T905: Builds a lightweight `PlaybackTickDto` without hitting SQLite or cloning `queue` / `alternative_sources`.
@@ -503,11 +529,12 @@ impl PlaybackService {
                 cur_vid
                     .as_ref()
                     .and_then(|vid| queue.iter().position(|q| &q.version_id == vid))
-            })
-            .unwrap_or(0);
+            });
 
-        let next_idx = if cur_idx + 1 < queue.len() {
-            Some(cur_idx + 1)
+        let next_idx = if cur_idx.is_none() {
+            Some(0)
+        } else if cur_idx.unwrap() + 1 < queue.len() {
+            Some(cur_idx.unwrap() + 1)
         } else if loop_mode == "queue" {
             Some(0)
         } else {
@@ -561,6 +588,7 @@ impl PlaybackService {
             if let Some(ref abs) = chosen_src.absolute_path {
                 if !abs.ends_with(".part") && Path::new(abs).is_file() {
                     let mut guard = self.inner.lock();
+                    if guard.prefetching_version_id.as_deref() != Some(&next_item.version_id) { return; }
                     guard.prefetched_next = Some((
                         next_item.version_id,
                         chosen_src.id,
@@ -587,6 +615,7 @@ impl PlaybackService {
                 .await
             {
                 let mut guard = self.inner.lock();
+                if guard.prefetching_version_id.as_deref() != Some(&next_item.version_id) { return; }
                 guard.prefetched_next = Some((
                     next_item.version_id,
                     chosen_src.id,
@@ -691,8 +720,9 @@ impl PlaybackService {
     }
 
     fn try_persist_current_state(&self, mark_recent: bool) -> AppResult<()> {
+        // Serialize the session pointer with queue-plan replacement (inner -> database).
+        let mut guard = self.inner.lock();
         let (ver_opt, pos, qid_opt, vol, lmode, sgen, completed) = {
-            let mut guard = self.inner.lock();
             guard.last_persisted_at = Instant::now();
             (
                 guard.current_version_id.clone(),
@@ -731,6 +761,24 @@ impl PlaybackService {
         force_online_refresh: bool,
         artificial_resolve_delay: Option<Duration>,
     ) -> AppResult<PlaybackSnapshot> {
+        self.play_with_position(version_id, preferred_source_id, force_online_refresh, artificial_resolve_delay, None).await
+    }
+
+    /// T1503: bind the bookmark time to the same generation as its exact version.
+    /// A separate frontend play/seek sequence could seek a newer, unrelated track.
+    pub async fn play_bookmark(&self, bookmark_id: &str) -> AppResult<PlaybackSnapshot> {
+        let bm = self.db.get_bookmark(bookmark_id)?;
+        self.play_with_position(&bm.version_id, None, false, None, Some(bm.position_ms)).await
+    }
+
+    async fn play_with_position(
+        &self,
+        version_id: &str,
+        preferred_source_id: Option<String>,
+        force_online_refresh: bool,
+        artificial_resolve_delay: Option<Duration>,
+        start_position_ms: Option<i64>,
+    ) -> AppResult<PlaybackSnapshot> {
         // Save previous track progress before switching (T211)
         self.persist_current_state(false);
 
@@ -743,19 +791,6 @@ impl PlaybackService {
             .filter(|s| s.availability == "available")
             .cloned()
             .collect();
-
-        // Ensure version is in queue or set current_queue_item_id
-        let queue_item_id = {
-            let queue = self.db.get_queue_items()?;
-            if let Some(existing) = queue.iter().find(|q| q.version_id == version_id) {
-                Some(existing.id.clone())
-            } else {
-                let added = self
-                    .db
-                    .append_queue_items(&[(version_id.to_string(), preferred_source_id.clone())])?;
-                added.into_iter().next()
-            }
-        };
 
         // Resolve effective DSP config for target work (per-work override > global state, T801)
         let (target_dsp_cfg, target_dsp_preset) =
@@ -770,10 +805,18 @@ impl PlaybackService {
         // Increment sessionGeneration and clear active A-B loop on track switch (T213, T603, R05, R15)
         let (my_gen, resume_pos_ms, volume, af_graph) = {
             let mut guard = self.inner.lock();
+            // Bind under the same lock as queue-plan replacement. Preserve the selected
+            // occurrence when a version appears more than once in a saved queue.
+            let queue = self.db.get_queue_items()?;
+            let existing = queue.iter().find(|q| Some(&q.id) == guard.current_queue_item_id.as_ref() && q.version_id == version_id)
+                .or_else(|| queue.iter().find(|q| q.version_id == version_id));
+            let queue_item_id = if let Some(item) = existing { Some(item.id.clone()) } else {
+                self.db.append_queue_items(&[(version_id.to_string(), preferred_source_id.clone())])?.into_iter().next()
+            };
             guard.session_generation += 1;
             let gen_val = guard.session_generation;
             // T212: Replaying a completed track individually starts from 0
-            let start_pos = if completed { 0 } else { saved_pos_ms.max(0) };
+            let start_pos = start_position_ms.unwrap_or(if completed { 0 } else { saved_pos_ms.max(0) }).max(0);
 
             guard.state = "resolving".into();
             guard.user_paused_intent = false;
@@ -1440,10 +1483,12 @@ impl PlaybackService {
                 cur_vid
                     .as_ref()
                     .and_then(|vid| queue.iter().position(|q| &q.version_id == vid))
-            })
-            .unwrap_or(0);
+            });
 
-        let next_idx_opt = if delta >= 0 {
+        let next_idx_opt = if cur_idx.is_none() {
+            Some(0)
+        } else if delta >= 0 {
+            let cur_idx = cur_idx.unwrap();
             let next = cur_idx + (delta as usize);
             if next < queue.len() {
                 Some(next)
@@ -1453,6 +1498,7 @@ impl PlaybackService {
                 None
             }
         } else {
+            let cur_idx = cur_idx.unwrap();
             let back = (-delta) as usize;
             if cur_idx >= back {
                 Some(cur_idx - back)
@@ -1684,8 +1730,32 @@ impl PlaybackService {
         should_fire
     }
 
+    pub async fn get_audio_output(&self) -> AppResult<AudioOutputStateDto> {
+        let _operation = self.audio_output_operation.lock().await;
+        Ok(AudioOutputStateDto {
+            devices: self.mpv.audio_devices().await?,
+            selected_device: self.mpv.selected_audio_device(),
+        })
+    }
+
+    pub async fn set_audio_device(&self, device_id: &str) -> AppResult<AudioOutputStateDto> {
+        let _operation = self.audio_output_operation.lock().await;
+        let devices = self.mpv.audio_devices().await?;
+        if !devices.iter().any(|device| device.id == device_id) {
+            return Err(AppError::new(ErrorCode::InvalidInput, "输出设备不可用，请刷新设备列表"));
+        }
+        let previous = self.mpv.selected_audio_device();
+        self.mpv.set_audio_device(device_id).await?;
+        if let Err(error) = self.db.set_setting("audio_device", device_id) {
+            let _ = self.mpv.set_audio_device(&previous).await;
+            return Err(error);
+        }
+        Ok(AudioOutputStateDto { devices, selected_device: device_id.into() })
+    }
+
     /// T1103/R27: Toggles WASAPI Exclusive Mode (`audio_exclusive`) and persists setting.
     pub async fn set_audio_exclusive(&self, exclusive: bool) -> AppResult<PlaybackSnapshot> {
+        let _operation = self.audio_output_operation.lock().await;
         let actual = match self.mpv.set_audio_exclusive(exclusive).await {
             Ok(v) => v,
             Err(err) => {
@@ -1994,6 +2064,22 @@ impl PlaybackService {
         })
     }
 
+    /// T1504: replace queue membership without interrupting the active playback session.
+    pub fn apply_queue_plan(&self, request: &ApplyQueuePlanRequest) -> AppResult<PlaybackSnapshot> {
+        let prepared = self.db.prepare_queue_plan(&request.plan_id)?;
+        {
+            let mut guard = self.inner.lock();
+            let current_id = self.db.commit_queue_plan(request, prepared, guard.current_version_id.as_deref())?;
+            if request.mode == "replace" {
+                guard.current_queue_item_id = current_id;
+            }
+            guard.prefetched_next = None;
+            guard.prefetching_version_id = None;
+        }
+        self.emit_snapshot();
+        self.get_snapshot()
+    }
+
     /// Clears queue pointer and triggers `DisplayUpdater.ClearAll()` if no track is actively playing/paused.
     pub fn on_queue_cleared(&self) {
         {
@@ -2204,6 +2290,29 @@ impl PlaybackService {
         })
     }
 
+    /// Refresh restored settings without writing them back into a different scope.
+    pub async fn reload_restored_dsp(&self) -> AppResult<()> {
+        let graph = {
+            let mut guard = self.inner.lock();
+            let (mut config, preset) = match guard.current_work_id.as_deref()
+                .map(|id| self.db.get_work_dsp_override(id)).transpose()?.flatten() {
+                Some((preset, config, true)) => (config, preset),
+                _ => self.db.get_dsp_global_state()?,
+            };
+            validate_dsp_config(&mut config)?;
+            let graph = build_lavfi_graph(&config);
+            guard.audio_telemetry.active_dsp_summary = summarize_dsp_chain(&config);
+            guard.audio_telemetry.active_filter_graph = graph.clone();
+            guard.dsp_config = config;
+            guard.active_dsp_preset_id = preset;
+            graph
+        };
+        self.mpv.set_initial_af_graph(graph.clone());
+        self.mpv.set_audio_filters(&graph).await?;
+        self.emit_snapshot();
+        Ok(())
+    }
+
     pub async fn update_dsp_config(
         &self,
         mut config: DspConfigDto,
@@ -2364,6 +2473,11 @@ impl PlaybackService {
     }
 
     pub async fn shutdown(&self) {
+        // Stop self-owning workers and revoke native callbacks before releasing libmpv.
+        self.shutdown_signal.send_replace(true);
+        let native_smtc = self.native_smtc.lock().take();
+        drop(native_smtc);
+        self.app_handle.lock().take();
         self.persist_current_state(false);
         self.mpv.shutdown().await;
         // T1003: Checkpoint and truncate WAL file on clean shutdown
@@ -2406,19 +2520,33 @@ impl PlaybackService {
 
     fn spawn_sleep_timer_loop(&self) {
         let this = self.clone();
+        let mut shutdown = self.shutdown_signal.subscribe();
         spawn_bg_task(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
-            loop {
-                interval.tick().await;
-                let _ = this.check_and_fire_sleep_timer().await;
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => {},
+                _ = async {
+                    while !*this.shutdown_signal.borrow() {
+                        interval.tick().await;
+                        let _ = this.check_and_fire_sleep_timer().await;
+                    }
+                } => {}
             }
         });
     }
 
     fn spawn_event_loop(&self, mut event_rx: mpsc::UnboundedReceiver<MpvEvent>) {
         let this = self.clone();
+        let mut shutdown = self.shutdown_signal.subscribe();
         spawn_bg_task(async move {
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => {},
+                _ = async {
             while let Some(ev) = event_rx.recv().await {
+                if *this.shutdown_signal.borrow() { break; }
                 match ev {
                     MpvEvent::FileLoaded { .. } => {
                         let pending_seek = {
@@ -2761,6 +2889,8 @@ impl PlaybackService {
                     }
                 }
             }
+                } => {}
+            }
         });
     }
 }
@@ -2817,6 +2947,119 @@ fn drop_and_snap(
 mod playback_tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn repeated_shutdown_releases_worker_owned_playback_state() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        for cycle in 0..30 {
+            let player = PlaybackService::new(db.clone(), AsmrOneProvider::new(db.clone()));
+            let state = Arc::downgrade(&player.inner);
+            if cycle < 3 { player.prewarm_engine().await.unwrap(); }
+            player.shutdown().await;
+            drop(player);
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while state.upgrade().is_some() { tokio::task::yield_now().await; }
+            }).await.expect("shutdown must release both event and sleep timer workers");
+        }
+    }
+
+    #[tokio::test]
+    async fn queue_plan_restore_preserves_session_and_steps_through_duplicate_versions() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
+            .join("tests/fixtures/audio/stereo_lr_check.mp3");
+        db.with_conn(|conn| {
+            conn.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('w','Work','now','now');
+                INSERT INTO tracks(id,work_id,title,sort_key,created_at) VALUES('t','w','Track','1','now');")?;
+            for version in ["old", "original", "edit"] {
+                conn.execute("INSERT INTO track_versions(id,track_id,version_label,duration_ms,created_at) VALUES(?1,'t',?1,24000,'now')", [version])?;
+                conn.execute("INSERT INTO media_sources(id,version_id,source_kind,absolute_path,format,created_at,updated_at) VALUES(?1,?1,'local_imported',?2,'mp3','now','now')", params![version,fixture.to_string_lossy()])?;
+            }
+            Ok(())
+        }).unwrap();
+        db.append_queue_items(&[("original".into(),None),("original".into(),None),("edit".into(),None)]).unwrap();
+        let plan = db.save_queue_plan("重复版本方案").unwrap();
+        db.replace_queue_items(&[("old".into(),None)],0).unwrap();
+        let player = PlaybackService::new(db.clone(), AsmrOneProvider::new(db.clone()));
+        player.play("old",None).await.unwrap();
+        let before = player.get_snapshot().unwrap();
+        let preview = db.preview_queue_plan(&plan.id).unwrap();
+        let request = ApplyQueuePlanRequest { plan_id:plan.id, mode:"replace".into(),skip_unavailable:false,
+            preview_token:preview.preview_token,queue_token:preview.queue_token };
+        let restored = player.apply_queue_plan(&request).unwrap();
+        assert_eq!(restored.current_version_id, before.current_version_id);
+        assert_eq!(restored.session_generation, before.session_generation);
+        assert_eq!(restored.state, before.state);
+        assert!(restored.current_queue_item_id.is_none());
+        player.try_persist_current_state(false).unwrap();
+        let first = player.step_queue(1).await.unwrap();
+        assert_eq!(first.current_queue_item_id.as_deref(),Some(restored.queue[0].id.as_str()));
+        let second = player.step_queue(1).await.unwrap();
+        assert_eq!(second.current_queue_item_id.as_deref(),Some(restored.queue[1].id.as_str()));
+        let third = player.step_queue(1).await.unwrap();
+        assert_eq!(third.current_version_id.as_deref(),Some("edit"));
+        player.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn audio_output_devices_validate_persist_and_restore_without_starting_playback() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        let player = PlaybackService::new(db.clone(), AsmrOneProvider::new(db.clone()));
+        let output = player.get_audio_output().await.unwrap();
+        assert_eq!(output.selected_device, "auto");
+        assert!(output.devices.iter().any(|device| device.id == "auto"));
+        assert!(output.devices.iter().all(|device| device.id == "auto" || device.id.starts_with("wasapi/")));
+        assert!(player.set_audio_device("wasapi/not-a-real-device").await.is_err());
+        assert_eq!(player.mpv.selected_audio_device(), "auto");
+        assert!(db.get_setting("audio_device").unwrap().is_none());
+
+        // Choose an actual endpoint when present; no media is loaded by this test.
+        let selected = output.devices.last().unwrap().id.clone();
+        player.set_audio_device(&selected).await.unwrap();
+        assert_eq!(db.get_setting("audio_device").unwrap().as_deref(), Some(selected.as_str()));
+        assert_eq!(player.mpv.command(serde_json::json!(["get_property", "audio-device"])).await.unwrap().as_str(), Some(selected.as_str()));
+        player.shutdown().await;
+
+        let restored = PlaybackService::new(db.clone(), AsmrOneProvider::new(db.clone()));
+        assert_eq!(restored.get_audio_output().await.unwrap().selected_device, selected);
+        assert_eq!(restored.mpv.command(serde_json::json!(["get_property", "audio-device"])).await.unwrap().as_str(), Some(selected.as_str()));
+        assert!(restored.get_snapshot().unwrap().current_version_id.is_none());
+        restored.set_audio_device("auto").await.unwrap();
+        assert_eq!(db.get_setting("audio_device").unwrap().as_deref(), Some("auto"));
+        restored.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn bookmark_position_stays_on_its_exact_version_and_generation_t1503() {
+        let dir=tempdir().unwrap();
+        let db=Database::open_and_migrate(&dir.path().join("d"),&dir.path().join("c")).unwrap();
+        let fixture=std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tests/fixtures/audio/stereo_lr_check.mp3");
+        db.with_conn(|conn| {
+            conn.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('w','Work','now','now'); INSERT INTO tracks(id,work_id,title,sort_key,created_at) VALUES('t','w','Track','1','now');")?;
+            for id in ["original","other-cut"] {
+                conn.execute("INSERT INTO track_versions(id,track_id,version_label,duration_ms,created_at) VALUES(?1,'t',?1,24000,'now')",[id])?;
+                conn.execute("INSERT INTO media_sources(id,version_id,source_kind,absolute_path,format,availability,created_at,updated_at) VALUES(?1,?1,'local_imported',?2,'mp3','available','now','now')",params![id,fixture.to_string_lossy()])?;
+            } Ok(())
+        }).unwrap();
+        db.save_playback_position("original",24000,true,true).unwrap();
+        let bm=db.add_bookmark("original",6000,"准确定位").unwrap();
+        let player=PlaybackService::new(db.clone(),AsmrOneProvider::new(db.clone()));
+        let next=player.play_bookmark(&bm.id).await.unwrap();
+        assert_eq!(next.current_version_id.as_deref(),Some("original"));
+        assert!(next.position_ms>=6000 && next.position_ms<8000,"bookmark overrides completed-track reset");
+        let slow=player.clone();
+        let task=tokio::spawn(async move {slow.play_with_position("original",None,false,Some(Duration::from_millis(350)),Some(15000)).await});
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        player.play("other-cut",None).await.unwrap();
+        task.await.unwrap().unwrap();
+        let final_state=player.get_snapshot().unwrap();
+        assert_eq!(final_state.current_version_id.as_deref(),Some("other-cut"));
+        assert!(final_state.position_ms<5000,"late bookmark must not seek the newer version");
+        player.shutdown().await;
+    }
 
     #[tokio::test]
     async fn completed_position_survives_persistence_and_replay_starts_at_zero_r05() {
@@ -3191,6 +3434,33 @@ mod playback_tests {
         let playback = PlaybackService::new(db, provider);
         let snap = playback.get_snapshot().unwrap();
         assert_eq!(snap.state, "idle");
+    }
+
+    #[tokio::test]
+    async fn restored_dsp_refresh_preserves_global_and_work_scopes_and_playback_position() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        db.with_conn(|c| { c.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('restore-dsp','音效','now','now');")?; Ok(()) }).unwrap();
+        let playback = PlaybackService::new(db.clone(), AsmrOneProvider::new(db.clone()));
+        let global = DspConfigDto::default();
+        let work = DspConfigDto { master_bypass: true, ..global.clone() };
+        db.save_dsp_global_state(&global, Some("asmr_pure_guard")).unwrap();
+        db.set_work_dsp_override("restore-dsp", None, &work, true).unwrap();
+        {
+            let mut state = playback.inner.lock();
+            state.current_work_id = Some("restore-dsp".into());
+            state.position_ms = 42000;
+        }
+        playback.reload_restored_dsp().await.unwrap();
+        assert!(playback.inner.lock().dsp_config.master_bypass);
+        assert_eq!(playback.inner.lock().position_ms, 42000);
+        assert!(!db.get_dsp_global_state().unwrap().0.master_bypass);
+        assert!(db.get_work_dsp_override("restore-dsp").unwrap().unwrap().1.master_bypass);
+        db.clear_work_dsp_override("restore-dsp").unwrap();
+        playback.reload_restored_dsp().await.unwrap();
+        assert!(!playback.inner.lock().dsp_config.master_bypass);
+        assert!(db.get_work_dsp_override("restore-dsp").unwrap().is_none());
+        playback.shutdown().await;
     }
 
     #[tokio::test]

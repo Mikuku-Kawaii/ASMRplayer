@@ -15,7 +15,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::Semaphore;
+pub mod scheduling;
+#[cfg(test)]
+mod scheduling_tests;
+use scheduling::{DownloadPolicy, RateBudget};
 use uuid::Uuid;
 
 const WINDOWS_RESERVED_NAMES: &[&str] = &[
@@ -292,18 +295,29 @@ pub fn check_sufficient_disk_space(dir: &Path, required_bytes: u64) -> AppResult
 pub struct DownloadService {
     db: Database,
     provider: AsmrOneProvider,
-    semaphore: Arc<Semaphore>,
+    operation: Arc<Mutex<()>>,
+    policy: Arc<Mutex<Option<DownloadPolicy>>>,
+    rate: Arc<Mutex<RateBudget>>,
     cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     speeds: Arc<Mutex<HashMap<String, i64>>>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
 }
 
 impl DownloadService {
+    /// Keeps worker registration/removal serialized with storage cleanup.
+    pub(crate) fn with_storage_workers<T>(&self, f: impl FnOnce(&std::collections::HashSet<String>) -> T) -> T {
+        let workers = self.cancel_flags.lock();
+        f(&workers.keys().cloned().collect())
+    }
+
     pub fn new(db: Database, provider: AsmrOneProvider) -> Self {
+        let policy = scheduling::load_policy(&db).ok();
         Self {
             db,
             provider,
-            semaphore: Arc::new(Semaphore::new(2)), // Default concurrency limit = 2 (T501)
+            operation: Arc::new(Mutex::new(())),
+            policy: Arc::new(Mutex::new(policy)),
+            rate: Arc::new(Mutex::new(RateBudget::default())),
             cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             speeds: Arc::new(Mutex::new(HashMap::new())),
             app_handle: Arc::new(Mutex::new(None)),
@@ -325,7 +339,11 @@ impl DownloadService {
     }
 
     pub fn set_download_root(&self, new_dir: &str) -> AppResult<()> {
+        let _operation=self.operation.lock();
         let p = PathBuf::from(new_dir.trim());
+        let current=self.get_download_root();
+        if p==current || p.canonicalize().ok().zip(current.canonicalize().ok()).is_some_and(|(a,b)|a==b){return Ok(())}
+        if !self.cancel_flags.lock().is_empty(){return Err(AppError::new(ErrorCode::InvalidInput,"请先暂停下载并等待任务停止，再更换下载目录"));}
         fs::create_dir_all(&p)?;
         let meta = fs::symlink_metadata(&p)?;
         if meta.file_type().is_symlink() {
@@ -418,11 +436,9 @@ impl DownloadService {
                 0
             };
 
-            let next_status = if status == "failed" {
-                "failed"
-            } else {
-                "paused"
-            };
+            let next_status = if status == "failed" || status == "paused" { status.as_str() }
+                else if self.get_policy().map(|p|p.resume_on_startup).unwrap_or(false) { "queued" }
+                else { "paused" };
 
             self.db.with_conn(|conn| {
                 conn.execute(
@@ -532,12 +548,12 @@ impl DownloadService {
             let mut stmt = conn.prepare(
                 "SELECT d.id, d.work_id, w.title, d.version_id, t.title, d.source_id,
                         d.status, d.target_relative_path, d.downloaded_bytes, d.total_bytes,
-                        d.integrity_mode, d.retry_count, d.error_code, d.error_message, d.updated_at
+                        d.integrity_mode, d.retry_count, d.error_code, d.error_message, d.updated_at, d.priority, d.next_retry_at
                  FROM downloads d
                  JOIN works w ON w.id = d.work_id
                  JOIN track_versions tv ON tv.id = d.version_id
                  JOIN tracks t ON t.id = tv.track_id
-                 ORDER BY d.created_at DESC",
+                 ORDER BY d.priority DESC, d.created_at ASC, d.rowid ASC",
             )?;
             let rows = stmt.query_map([], |r| {
                 let id: String = r.get(0)?;
@@ -559,6 +575,8 @@ impl DownloadService {
                     error_code: r.get(12)?,
                     error_message: r.get(13)?,
                     updated_at: r.get(14)?,
+                    priority: r.get(15)?,
+                    next_retry_at: r.get(16)?,
                 })
             })?;
             let mut out = Vec::new();
@@ -679,6 +697,8 @@ impl DownloadService {
         let preview = self.preview_download(work_id, source_ids)?;
         let now_str = Utc::now().to_rfc3339();
         let mut to_spawn = Vec::new();
+        let operation = self.operation.lock();
+        let active_workers: std::collections::HashSet<_> = self.cancel_flags.lock().keys().cloned().collect();
 
         self.db.with_conn(|conn| {
             let tx = conn.transaction()?;
@@ -695,9 +715,12 @@ impl DownloadService {
                     .optional()?;
 
                 if let Some((tid, status)) = existing {
+                    if status == "canceled" && active_workers.contains(&tid) {
+                        return Err(AppError::new(ErrorCode::InvalidInput,"任务正在取消，请稍后重新加入"));
+                    }
                     if matches!(status.as_str(), "paused" | "failed" | "canceled") {
                         tx.execute(
-                            "UPDATE downloads SET status = 'queued', error_code = NULL, error_message = NULL, updated_at = ?1 WHERE id = ?2",
+                            "UPDATE downloads SET status = 'queued', next_retry_at = NULL, error_code = NULL, error_message = NULL, updated_at = ?1 WHERE id = ?2",
                             params![now_str, tid],
                         )?;
                         to_spawn.push(tid);
@@ -754,6 +777,7 @@ impl DownloadService {
             Ok(())
         })?;
 
+        drop(operation);
         for tid in to_spawn {
             self.spawn_worker(tid);
         }
@@ -764,106 +788,36 @@ impl DownloadService {
 
 impl DownloadService {
     pub fn pause_task(&self, task_id: &str) -> AppResult<Vec<DownloadTaskDto>> {
-        if let Some(flag) = self.cancel_flags.lock().get(task_id) {
-            flag.store(true, Ordering::SeqCst);
+        {
+            let _operation=self.operation.lock();
+            self.db.with_conn(|c|{c.execute("UPDATE downloads SET status='paused',next_retry_at=NULL,updated_at=?1 WHERE id=?2 AND status IN ('queued','resolving','downloading','verifying','failed')",params![Utc::now().to_rfc3339(),task_id])?;Ok(())})?;
+            if let Some(flag)=self.cancel_flags.lock().get(task_id){flag.store(true,Ordering::SeqCst);}
         }
-        let now_str = Utc::now().to_rfc3339();
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE downloads SET status = 'paused', updated_at = ?1 WHERE id = ?2 AND status IN ('queued', 'resolving', 'downloading')",
-                params![now_str, task_id],
-            )?;
-            Ok(())
-        })?;
-        self.speeds.lock().remove(task_id);
-        self.emit_tasks_updated();
-        self.list_tasks()
+        self.speeds.lock().remove(task_id);self.emit_tasks_updated();self.list_tasks()
     }
-
     pub fn resume_task(&self, task_id: &str) -> AppResult<Vec<DownloadTaskDto>> {
-        let now_str = Utc::now().to_rfc3339();
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE downloads SET status = 'queued', error_code = NULL, error_message = NULL, updated_at = ?1 WHERE id = ?2 AND status IN ('paused', 'failed')",
-                params![now_str, task_id],
-            )?;
-            Ok(())
-        })?;
-        self.spawn_worker(task_id.to_string());
-        self.emit_tasks_updated();
-        self.list_tasks()
+        {
+            let _operation=self.operation.lock();
+            self.db.with_conn(|c|{c.execute("UPDATE downloads SET status='queued',next_retry_at=NULL,error_code=NULL,error_message=NULL,updated_at=?1 WHERE id=?2 AND status IN ('paused','failed')",params![Utc::now().to_rfc3339(),task_id])?;Ok(())})?;
+        }
+        self.dispatch()?;self.emit_tasks_updated();self.list_tasks()
     }
-
-    /// T504: Cancels a task and deletes ONLY the task's temporary `.part` file, never user files.
+    /// Cancellation retains the worker registration until its file handles close.
     pub fn cancel_task(&self, task_id: &str) -> AppResult<Vec<DownloadTaskDto>> {
-        if let Some(flag) = self.cancel_flags.lock().get(task_id) {
-            flag.store(true, Ordering::SeqCst);
+        {
+            let _operation=self.operation.lock();
+            self.db.with_conn(|c|{c.execute("UPDATE downloads SET status='canceled',next_retry_at=NULL,downloaded_bytes=0,updated_at=?1 WHERE id=?2 AND status NOT IN ('completed','canceled')",params![Utc::now().to_rfc3339(),task_id])?;Ok(())})?;
+            let workers=self.cancel_flags.lock();
+            if let Some(flag)=workers.get(task_id){flag.store(true,Ordering::SeqCst);}else{self.cleanup_canceled_part(task_id)?;}
         }
-        let temp_rel_opt: Option<String> = self.db.with_conn(|conn| {
-            conn.query_row(
-                "SELECT temp_relative_path FROM downloads WHERE id = ?1",
-                params![task_id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(AppError::from)
-        })?;
-
-        if let Some(temp_rel) = temp_rel_opt {
-            if temp_rel.ends_with(".part") {
-                let part_path = self.get_download_root().join(temp_rel.replace('/', "\\"));
-                if part_path.is_file() {
-                    let _ = fs::remove_file(&part_path);
-                }
-            }
-        }
-
-        let now_str = Utc::now().to_rfc3339();
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE downloads SET status = 'canceled', downloaded_bytes = 0, updated_at = ?1 WHERE id = ?2",
-                params![now_str, task_id],
-            )?;
-            Ok(())
-        })?;
-        self.speeds.lock().remove(task_id);
-        self.emit_tasks_updated();
-        self.list_tasks()
+        self.speeds.lock().remove(task_id);self.emit_tasks_updated();self.list_tasks()
     }
-
     pub fn cancel_all_tasks_for_work(&self, work_id: &str) -> AppResult<()> {
-        let rows: Vec<(String, String)> = self.db.with_conn(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id, temp_relative_path FROM downloads WHERE work_id = ?1",
-            )?;
-            let mapped = stmt.query_map(params![work_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
-            Ok(mapped.collect::<Result<Vec<_>, _>>()?)
+        let ids:Vec<String>=self.db.with_conn(|c|{
+            let mut stmt=c.prepare("SELECT id FROM downloads WHERE work_id=?1 AND status NOT IN ('completed','canceled')")?;
+            let rows=stmt.query_map([work_id],|r|r.get(0))?;Ok(rows.collect::<Result<Vec<_>,_>>()?)
         })?;
-
-        let download_root = self.get_download_root();
-        for (tid, temp_rel) in &rows {
-            if let Some(flag) = self.cancel_flags.lock().get(tid) {
-                flag.store(true, Ordering::SeqCst);
-            }
-            self.speeds.lock().remove(tid);
-            if temp_rel.ends_with(".part") {
-                let part_path = download_root.join(temp_rel.replace('/', "\\"));
-                if part_path.is_file() {
-                    let _ = fs::remove_file(&part_path);
-                }
-            }
-        }
-
-        let now_str = Utc::now().to_rfc3339();
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE downloads SET status = 'canceled', downloaded_bytes = 0, updated_at = ?1
-                 WHERE work_id = ?2 AND status NOT IN ('completed', 'canceled')",
-                params![now_str, work_id],
-            )?;
-            Ok(())
-        })?;
-        self.emit_tasks_updated();
+        for id in ids {self.cancel_task(&id)?;}
         Ok(())
     }
 
@@ -958,45 +912,56 @@ impl DownloadService {
         Ok(deleted_count)
     }
 
-    pub fn spawn_worker(&self, task_id: String) {
-        let this = self.clone();
-        spawn_bg_task(async move {
-            let permit = match this.semaphore.clone().acquire_owned().await {
-                Ok(p) => p,
-                Err(_) => return,
-            };
-            let _ = this.run_single_task(&task_id).await;
-            drop(permit);
-        });
-    }
+    pub fn spawn_worker(&self, _task_id: String) { let _=self.dispatch(); }
 
+    #[cfg(test)]
     pub async fn run_single_task(&self, task_id: &str) -> AppResult<()> {
-        let cancel_flag = Arc::new(AtomicBool::new(false));
-        self.cancel_flags
-            .lock()
-            .insert(task_id.to_string(), cancel_flag.clone());
-
-        let res = self.execute_task_inner(task_id, cancel_flag).await;
-        self.cancel_flags.lock().remove(task_id);
-        self.speeds.lock().remove(task_id);
-
-        if let Err(ref err) = res {
-            let now_str = Utc::now().to_rfc3339();
-            let code_str = format!("{:?}", err.code);
-            let _ = self.db.with_conn(|conn| {
-                conn.execute(
-                    "UPDATE downloads
-                     SET status = CASE WHEN status IN ('paused', 'canceled') THEN status ELSE 'failed' END,
-                         retry_count = retry_count + 1,
-                         error_code = ?1, error_message = ?2, updated_at = ?3
-                     WHERE id = ?4",
-                    params![code_str, err.message, now_str, task_id],
-                )?;
+        let flag=Arc::new(AtomicBool::new(false));
+        {
+            let _operation=self.operation.lock();let mut workers=self.cancel_flags.lock();
+            if workers.contains_key(task_id){return Ok(())}
+            workers.insert(task_id.into(),flag.clone());
+        }
+        self.run_registered(task_id,flag).await
+    }
+    async fn run_registered(&self, task_id: &str, flag: Arc<AtomicBool>) -> AppResult<()> {
+        let res=tokio::select! {
+            biased;
+            _=Self::cancelled(flag.clone()) => Ok(()),
+            result=self.execute_task_inner(task_id,flag.clone()) => result,
+        };
+        {
+            let _operation=self.operation.lock();
+            if let Err(ref err)=res {
+                if !flag.load(Ordering::SeqCst) {
+                    let network=matches!(err.code,ErrorCode::NetworkUnavailable|ErrorCode::RateLimited);
+                    let persisted=self.db.with_conn(|c|{
+                        let retries:i64=c.query_row("SELECT retry_count FROM downloads WHERE id=?1",[task_id],|r|r.get(0)).optional()?.unwrap_or(0);
+                        let delay=30_i64.saturating_mul(1_i64<<retries.clamp(0,4)).min(300);
+                        let due=network.then(||(Utc::now()+chrono::Duration::seconds(delay)).to_rfc3339());
+                        c.execute("UPDATE downloads SET status='failed',retry_count=retry_count+1,error_code=?1,error_message=?2,next_retry_at=?3,updated_at=?4 WHERE id=?5 AND status NOT IN ('paused','canceled','completed')",params![format!("{:?}",err.code),err.message,due,Utc::now().to_rfc3339(),task_id])?;Ok(())
+                    });
+                    if let Err(e)=persisted {self.db.append_log("WARN",&format!("下载失败状态保存失败：{}",e.message));}
+                }
+            }
+            // The transfer future has dropped its writer, so disk length is authoritative.
+            let download_root=self.get_download_root();
+            let _=self.db.with_conn(|c|{
+                let rel:Option<String>=c.query_row("SELECT temp_relative_path FROM downloads WHERE id=?1 AND status NOT IN ('completed','canceled')",[task_id],|r|r.get(0)).optional()?;
+                if let Some(rel)=rel {
+                    if let Ok(path)=ensure_safe_parent_dir(&download_root,&rel){
+                        let bytes=fs::metadata(path).map(|m|m.len() as i64).unwrap_or(0);
+                        c.execute("UPDATE downloads SET downloaded_bytes=?1 WHERE id=?2",params![bytes,task_id])?;
+                    }
+                }
                 Ok(())
             });
+            let cleanup=self.cleanup_canceled_part(task_id);
+            self.cancel_flags.lock().remove(task_id);
+            self.speeds.lock().remove(task_id);
+            if let Err(e)=cleanup {self.db.append_log("WARN",&format!("取消下载后的临时文件清理失败：{}",e.message));}
         }
-        self.emit_tasks_updated();
-        res
+        self.emit_tasks_updated();res
     }
 
     async fn execute_task_inner(
@@ -1054,14 +1019,14 @@ impl DownloadService {
             return Ok(());
         }
 
-        let now_str = Utc::now().to_rfc3339();
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE downloads SET status = 'resolving', updated_at = ?1 WHERE id = ?2",
-                params![now_str, task_id],
-            )?;
-            Ok(())
-        })?;
+        {
+            let _operation=self.operation.lock();
+            if cancel_flag.load(Ordering::SeqCst) { return Ok(()) }
+            let claimed=self.db.with_conn(|conn| Ok(conn.execute(
+                "UPDATE downloads SET status='resolving',updated_at=?1 WHERE id=?2 AND status='queued'",
+                params![Utc::now().to_rfc3339(),task_id])?))?;
+            if claimed==0 {return Ok(())}
+        }
         self.emit_tasks_updated();
 
         let (provider_name, source_work_id, remote_file_id, remote_rel, expected_sha256): (
@@ -1124,7 +1089,7 @@ impl DownloadService {
             0
         };
 
-        let client = self.provider.build_client()?;
+        let client = self.provider.build_download_client()?;
 
         let mut skip_to_verify = false;
         let mut final_expected_bytes = saved_total_bytes.or(resolved.byte_size);
@@ -1145,10 +1110,11 @@ impl DownloadService {
                 }
             }
 
-            let resp = req.send().await.map_err(|e| {
+            let resp = tokio::time::timeout(std::time::Duration::from_secs(30),req.send()).await
+                .map_err(|_|AppError::new(ErrorCode::NetworkUnavailable,"下载响应超时，请检查网络连接"))?.map_err(|e| {
                 AppError::new(
                     ErrorCode::NetworkUnavailable,
-                    format!("下载连接失败: {}", e),
+                    format!("下载连接失败: {}", e.without_url()),
                 )
             })?;
 
@@ -1192,7 +1158,7 @@ impl DownloadService {
 
             if !status.is_success() {
                 return Err(AppError::new(
-                    ErrorCode::NetworkUnavailable,
+                    if status.as_u16()==429 {ErrorCode::RateLimited} else if status.is_server_error() || status.as_u16()==408 {ErrorCode::NetworkUnavailable} else {ErrorCode::SourceNotFound},
                     format!("下载请求返回错误 HTTP {}", status.as_u16()),
                 ));
             }
@@ -1269,6 +1235,8 @@ impl DownloadService {
                 }
             }
 
+            let operation=self.operation.lock();
+            if cancel_flag.load(Ordering::SeqCst){return Ok(())}
             let file = if append_mode {
                 OpenOptions::new().create(true).append(true).open(&temp_full)?
             } else {
@@ -1300,30 +1268,36 @@ impl DownloadService {
                 )?;
                 Ok(())
             })?;
+            drop(operation);
             self.emit_tasks_updated();
 
             let mut stream = resp.bytes_stream();
             let mut last_tick = Instant::now();
             let mut bytes_since_tick = 0i64;
 
-            while let Some(chunk_res) = stream.next().await {
+            while let Some(chunk_res) = tokio::time::timeout(std::time::Duration::from_secs(30),stream.next()).await
+                .map_err(|_|AppError::new(ErrorCode::NetworkUnavailable,"下载数据等待超时，断点已保留"))? {
                 if cancel_flag.load(Ordering::SeqCst) {
                     let _ = writer.flush();
                     return Ok(());
                 }
                 let chunk = chunk_res.map_err(|e| {
-                    AppError::new(ErrorCode::NetworkUnavailable, format!("下载流中断: {}", e))
+                    AppError::new(ErrorCode::NetworkUnavailable, format!("下载流中断: {}", e.without_url()))
                 })?;
-                writer.write_all(&chunk).map_err(|e| {
-                    AppError::new(ErrorCode::DiskFull, format!("写入临时文件失败: {}", e))
-                })?;
-                current_bytes += chunk.len() as i64;
-                bytes_since_tick += chunk.len() as i64;
+                for piece in chunk.chunks(16 * 1024) {
+                    self.wait_budget(piece.len(),&cancel_flag).await?;
+                    if cancel_flag.load(Ordering::SeqCst){let _=writer.flush();return Ok(())}
+                    writer.write_all(piece).map_err(|e| AppError::new(ErrorCode::DiskFull,format!("写入临时文件失败: {}",e)))?;
+                    current_bytes += piece.len() as i64;
+                    bytes_since_tick += piece.len() as i64;
+                }
 
                 let elapsed = last_tick.elapsed();
                 if elapsed.as_millis() >= 250 {
                     let bps = ((bytes_since_tick as f64) / elapsed.as_secs_f64()).round() as i64;
                     self.speeds.lock().insert(task_id.to_string(), bps);
+                    let _operation=self.operation.lock();
+                    if cancel_flag.load(Ordering::SeqCst){return Ok(())}
                     let ts = Utc::now().to_rfc3339();
                     let _ = self.db.with_conn(|conn| {
                         conn.execute(
@@ -1351,6 +1325,8 @@ impl DownloadService {
         }
 
         let _ = skip_to_verify;
+        let operation=self.operation.lock();
+        if cancel_flag.load(Ordering::SeqCst){return Ok(())}
         let now_str = Utc::now().to_rfc3339();
         self.db.with_conn(|conn| {
             conn.execute(
@@ -1361,6 +1337,7 @@ impl DownloadService {
         })?;
         self.emit_tasks_updated();
 
+        drop(operation);
         // T506: Verify length, non-HTML header, and SHA-256
         let (actual_len, calc_sha, integrity_mode) = verify_downloaded_part_file(
             &temp_full,
@@ -1368,6 +1345,9 @@ impl DownloadService {
             expected_sha256.as_deref(),
         )?;
 
+        // Pause/cancel and final rename+registration are serialized.
+        let _operation=self.operation.lock();
+        if cancel_flag.load(Ordering::SeqCst){return Ok(())}
         // T507: Atomic rename on same filesystem, then DB transaction
         fs::rename(&temp_full, &target_full).map_err(|e| {
             AppError::new(

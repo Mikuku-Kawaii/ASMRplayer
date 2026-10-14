@@ -15,6 +15,18 @@ use tokio::sync::{oneshot, Mutex as AsyncMutex};
 
 pub const RELEASES_URL: &str = "https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest";
 
+pub fn validate_web_link(value: &str) -> AppResult<url::Url> {
+    let parsed = url::Url::parse(value).map_err(|_| update_error("链接地址无效"))?;
+    if !["http", "https"].contains(&parsed.scheme()) || parsed.host_str().is_none()
+        || !parsed.username().is_empty() || parsed.password().is_some()
+        || value.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+        || !(value.to_ascii_lowercase().starts_with("https://") || value.to_ascii_lowercase().starts_with("http://"))
+    {
+        return Err(update_error("仅支持 HTTP 或 HTTPS 网页链接"));
+    }
+    Ok(parsed)
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum UpdatePhase {
@@ -37,6 +49,7 @@ pub struct UpdateSnapshot {
     pub current_version: String,
     pub latest_version: Option<String>,
     pub notes: Option<String>,
+    pub published_at: Option<String>,
     pub checked_at: Option<String>,
     pub downloaded_bytes: u64,
     pub total_bytes: Option<u64>,
@@ -58,6 +71,7 @@ pub struct UpdateService<R: tauri::Runtime = tauri::Wry> {
     app: AppHandle<R>,
     inner: Arc<Mutex<UpdateState>>,
     operation: Arc<AsyncMutex<()>>,
+    pub history: Arc<super::release_history::ReleaseHistoryService>,
 }
 
 impl<R: tauri::Runtime> Clone for UpdateService<R> {
@@ -67,6 +81,7 @@ impl<R: tauri::Runtime> Clone for UpdateService<R> {
             app: self.app.clone(),
             inner: self.inner.clone(),
             operation: self.operation.clone(),
+            history: self.history.clone(),
         }
     }
 }
@@ -105,6 +120,7 @@ impl<R: tauri::Runtime> UpdateService<R> {
             current_version: app.package_info().version.to_string(),
             latest_version: None,
             notes: None,
+            published_at: None,
             checked_at: db.get_setting("update_checked_at")?,
             auto_check: db.get_setting("update_auto_check")?.as_deref() != Some("false"),
             skipped_version: db
@@ -115,7 +131,9 @@ impl<R: tauri::Runtime> UpdateService<R> {
             dismissed: false,
             error: None,
         };
+        let history = Arc::new(super::release_history::ReleaseHistoryService::new(db.clone(), snapshot.current_version.clone())?);
         Ok(Self {
+            history,
             db,
             app,
             inner: Arc::new(Mutex::new(UpdateState {
@@ -178,6 +196,7 @@ impl<R: tauri::Runtime> UpdateService<R> {
             s.snapshot.phase = UpdatePhase::Checking;
             s.snapshot.latest_version = None;
             s.snapshot.notes = None;
+            s.snapshot.published_at = None;
             s.snapshot.downloaded_bytes = 0;
             s.snapshot.total_bytes = None;
             s.snapshot.dismissed = false;
@@ -213,6 +232,9 @@ impl<R: tauri::Runtime> UpdateService<R> {
             });
             if let Some(ref update) = update {
                 validate_download_url(&update.download_url)?;
+                if let Err(error) = self.history.remember_update(&update.version, update.body.clone(), update.raw_json.get("pub_date").and_then(|v| v.as_str()).map(str::to_owned)) {
+                    self.db.append_log("WARN", &format!("Release notes cache: {}", error.message));
+                }
             }
             let checked_at = chrono::Utc::now().to_rfc3339();
             self.db.set_setting("update_checked_at", &checked_at)?;
@@ -230,6 +252,7 @@ impl<R: tauri::Runtime> UpdateService<R> {
                 if let Some(ref update) = update {
                     s.snapshot.latest_version = Some(update.version.clone());
                     s.snapshot.notes = update.body.clone();
+                    s.snapshot.published_at = update.raw_json.get("pub_date").and_then(|v| v.as_str()).map(str::to_owned);
                     s.snapshot.dismissed =
                         !manual && s.snapshot.skipped_version.as_deref() == Some(&update.version);
                 }
@@ -311,6 +334,18 @@ impl<R: tauri::Runtime> UpdateService<R> {
     }
 
     pub async fn dismiss(&self, skip: bool) -> AppResult<UpdateSnapshot> {
+        // T1410: reminder dismissal never cancels or waits for an active download.
+        if !skip {
+            let mut state = self.inner.lock();
+            if state.snapshot.phase == UpdatePhase::Installing {
+                return Err(update_error("正在安装更新，请稍候"));
+            }
+            state.snapshot.dismissed = true;
+            state.snapshot.event_seq += 1;
+            let snapshot = state.snapshot.clone();
+            let _ = self.app.emit("updater:snapshot", &snapshot);
+            return Ok(snapshot);
+        }
         let _operation = self
             .operation
             .try_lock()
@@ -537,6 +572,10 @@ mod tests {
         let available = service.check(true).await.unwrap();
         assert_eq!(available.phase, UpdatePhase::Available);
         assert!(available.checked_at.is_some());
+        let history = service.history.snapshot().unwrap();
+        assert_eq!(history.entries[0].version, "99.0.0");
+        assert_eq!(history.entries[0].notes, available.notes);
+        assert!(history.pending_version.is_none());
         service.dismiss(true).await.unwrap();
         service.set_auto_check(true).unwrap();
         assert!(service.check(false).await.unwrap().dismissed);
@@ -621,6 +660,12 @@ mod tests {
             service.check(true).await.is_err(),
             "concurrent operations must be rejected"
         );
+        assert!(service.download().await.is_err());
+        let dismissed = service.dismiss(false).await.unwrap();
+        assert!(dismissed.dismissed);
+        assert_eq!(dismissed.phase, UpdatePhase::Downloading);
+        assert!(service.inner.lock().cancel.is_some(), "dismissal must not cancel download");
+        assert!(service.dismiss(true).await.is_err(), "skip waits for download to finish or cancel");
         service.cancel_download();
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(2), download)
@@ -644,6 +689,15 @@ mod tests {
                 &current,
                 &Version::parse(version).unwrap()
             ));
+        }
+    }
+    #[test]
+    fn release_links_reject_non_web_and_ambiguous_urls_t1409() {
+        for value in ["https://example.com/notes?a=1&b=2", "http://example.com/image.png"] {
+            assert!(validate_web_link(value).is_ok());
+        }
+        for value in ["javascript:alert(1)", "data:text/html,test", "file:///C:/test", "https://user:pass@example.com", "//example.com", "https:\\example.com", "https://example.com\n", "https:example.com"] {
+            assert!(validate_web_link(value).is_err(), "{value}");
         }
     }
     #[test]

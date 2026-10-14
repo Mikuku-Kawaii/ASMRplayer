@@ -8,6 +8,11 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 
+const EXPANDED_WIDTH: f64 = 400.;
+const EXPANDED_HEIGHT: f64 = 186.;
+const COMPACT_MIN_WIDTH: f64 = 200.;
+const COMPACT_MAX_WIDTH: f64 = 640.;
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum IslandSize {
@@ -17,6 +22,50 @@ pub enum IslandSize {
     Medium,
     Large,
     ExtraLarge,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IslandScales {
+    pub compact_scale: f64,
+    pub expanded_scale: f64,
+}
+impl Default for IslandScales {
+    fn default() -> Self { Self { compact_scale: 1., expanded_scale: 1. } }
+}
+impl From<IslandSize> for IslandScales {
+    fn from(size: IslandSize) -> Self {
+        let ratio = match size {
+            IslandSize::ExtraSmall => 0.7 / 0.8,
+            IslandSize::Small => 1.,
+            IslandSize::Medium => 0.9 / 0.8,
+            IslandSize::Large => 1. / 0.8,
+            IslandSize::ExtraLarge => 1.15 / 0.8,
+        };
+        Self { compact_scale: ratio, expanded_scale: ratio }
+    }
+}
+impl IslandScales {
+    fn for_form(self, form: IslandForm) -> f64 {
+        if matches!(form, IslandForm::Compact | IslandForm::Toast) { self.compact_scale } else { self.expanded_scale }
+    }
+    fn with_changes(self, compact: Option<f64>, expanded: Option<f64>) -> AppResult<Self> {
+        fn validate(value: f64) -> AppResult<f64> {
+            if !value.is_finite() || !(0.5..=2.).contains(&value) {
+                return Err(AppError::new(ErrorCode::InvalidInput, "灵动岛比例须在 0.5 至 2.0 之间"));
+            }
+            Ok((value * 10.).round() / 10.)
+        }
+        Ok(Self { compact_scale: validate(compact.unwrap_or(self.compact_scale))?, expanded_scale: validate(expanded.unwrap_or(self.expanded_scale))? })
+    }
+}
+fn read_scales(db: &Database) -> AppResult<IslandScales> {
+    if let Some(raw) = db.get_setting("island_scales")? {
+        if let Ok(scales) = serde_json::from_str::<IslandScales>(&raw) {
+            if let Ok(valid) = scales.with_changes(None, None) { return Ok(valid); }
+        }
+    }
+    let legacy = db.get_setting("island_size")?.and_then(|s| serde_json::from_str::<IslandSize>(&s).ok());
+    legacy.map(IslandScales::from).unwrap_or_default().with_changes(None, None)
 }
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -30,8 +79,8 @@ pub enum IslandForm {
 impl IslandForm {
     fn dimensions(self) -> (f64, f64) {
         match self {
-            Self::Compact => (180., 42.),
-            Self::Expanded => (308., 192.),
+            Self::Compact => (COMPACT_MIN_WIDTH, 42.),
+            Self::Expanded => (EXPANDED_WIDTH, EXPANDED_HEIGHT),
             Self::Toast => (232., 38.),
             Self::Menu => (240., 184.),
         }
@@ -64,7 +113,8 @@ pub struct IslandLayout {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IslandPreferences {
-    pub size: IslandSize,
+    #[serde(flatten)]
+    pub scales: IslandScales,
     pub monitor_id: String,
     pub active_monitor_id: String,
     pub monitors: Vec<IslandMonitor>,
@@ -84,7 +134,9 @@ struct State {
     moved: bool,
     avoided: bool,
     compact_width: f64,
+    canvas: PhysicalSize<u32>,
     pending: Option<(u64, PhysicalSize<u32>, PhysicalSize<u32>, i32)>,
+    ready_revision: Option<u64>,
 }
 #[derive(Clone)]
 pub struct IslandService {
@@ -203,13 +255,15 @@ fn apply_region(
 
 fn canvas_geometry(
     mon: &IslandMonitor,
-    size: IslandSize,
+    scales: impl Into<IslandScales>,
     anchor: Option<&Anchor>,
 ) -> (PhysicalPosition<i32>, PhysicalSize<u32>) {
-    let (position, largest, _) = geometry(mon, size, IslandForm::Expanded, anchor, 308.);
+    let scales = scales.into();
+    let (position, expanded, _) = geometry(mon, scales, IslandForm::Expanded, anchor, EXPANDED_WIDTH);
+    let (_, widest, _) = geometry(mon, scales, IslandForm::Compact, anchor, COMPACT_MAX_WIDTH);
     let canvas = PhysicalSize::new(
-        (largest.width as f64 * 1.06).ceil() as u32,
-        (largest.height as f64 * 1.06).ceil() as u32,
+        (widest.width.max(expanded.width) as f64 * 1.06).ceil() as u32,
+        (expanded.height.max(widest.height) as f64 * 1.06).ceil() as u32,
     );
     let margin = (2. * mon.scale_factor).round() as i32;
     let center = anchor.map_or(0.5, |a| a.center_ratio.clamp(0., 1.));
@@ -228,27 +282,22 @@ fn canvas_geometry(
 // Origins stay in physical pixels, even on a negative-coordinate, mixed-DPI monitor.
 fn geometry(
     mon: &IslandMonitor,
-    size: IslandSize,
+    scales: impl Into<IslandScales>,
     form: IslandForm,
     anchor: Option<&Anchor>,
     compact_width: f64,
 ) -> (PhysicalPosition<i32>, PhysicalSize<u32>, f64) {
     let dpi = mon.scale_factor.max(0.5);
-    let user_scale: f64 = match size {
-        IslandSize::ExtraSmall => 0.7,
-        IslandSize::Small => 0.8,
-        IslandSize::Medium => 0.9,
-        IslandSize::Large => 1.,
-        IslandSize::ExtraLarge => 1.15,
-    };
+    // 1.0 is exactly the former Small preset, before display/DPI fitting.
+    let user_scale = 0.8 * scales.into().for_form(form);
     // Match the reference footprint at 1440p, compensating for Windows DPI.
     let display_scale = (mon.height as f64 / dpi / 1152.).clamp(0.5, 1.5);
     let scale = (user_scale * display_scale)
-        .min(((mon.width as f64 / dpi - 24.) / 360.).max(0.1))
-        .min(((mon.height as f64 / dpi - 24.) / 192.).max(0.1));
+        .min(((mon.width as f64 / dpi - 24.) / (COMPACT_MAX_WIDTH * 1.06)).max(0.1))
+        .min(((mon.height as f64 / dpi - 24.) / (EXPANDED_HEIGHT * 1.06)).max(0.1));
     let (base_w, h) = form.dimensions();
     let w = if matches!(form, IslandForm::Compact) {
-        compact_width
+        compact_width.clamp(COMPACT_MIN_WIDTH, COMPACT_MAX_WIDTH)
     } else {
         base_w
     };
@@ -281,7 +330,7 @@ impl IslandService {
                     revision: 0,
                     form: IslandForm::Compact,
                     scale: 1.,
-                    width: 180.,
+                    width: COMPACT_MIN_WIDTH,
                     height: 42.,
                     radius: 21.,
                     animate: false,
@@ -291,8 +340,10 @@ impl IslandService {
                 position: PhysicalPosition::new(0, 0),
                 moved: false,
                 avoided: false,
-                compact_width: 180.,
+                compact_width: COMPACT_MIN_WIDTH,
+                canvas: PhysicalSize::new(0, 0),
                 pending: None,
+                ready_revision: None,
             })),
         }
     }
@@ -328,13 +379,6 @@ impl IslandService {
             })
             .collect())
     }
-    fn size(&self) -> AppResult<IslandSize> {
-        Ok(self
-            .db
-            .get_setting("island_size")?
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default())
-    }
     fn anchor(&self) -> AppResult<Option<Anchor>> {
         Ok(self
             .db
@@ -350,7 +394,7 @@ impl IslandService {
             .or_else(|| monitors.iter().find(|m| m.primary))
             .or(monitors.first());
         Ok(IslandPreferences {
-            size: self.size()?,
+            scales: read_scales(&self.db)?,
             monitor_id,
             active_monitor_id: active.map(|m| m.id.clone()).unwrap_or_default(),
             monitors,
@@ -362,9 +406,11 @@ impl IslandService {
     }
     pub fn set_preferences(
         &self,
-        size: Option<IslandSize>,
+        compact_scale: Option<f64>,
+        expanded_scale: Option<f64>,
         monitor_id: Option<String>,
     ) -> AppResult<IslandPreferences> {
+        let scales = read_scales(&self.db)?.with_changes(compact_scale, expanded_scale)?;
         if let Some(id) = monitor_id {
             if !id.is_empty() && !self.monitors()?.iter().any(|m| m.id == id) {
                 return Err(error("所选屏幕已断开，请刷新屏幕列表"));
@@ -372,9 +418,8 @@ impl IslandService {
             self.db.set_setting("island_monitor", &id)?;
             self.db.set_setting("island_anchor_v2", "")?;
         }
-        if let Some(size) = size {
-            self.db
-                .set_setting("island_size", &serde_json::to_string(&size).map_err(error)?)?;
+        if compact_scale.is_some() || expanded_scale.is_some() {
+            self.db.set_setting("island_scales", &serde_json::to_string(&scales).map_err(error)?)?;
         }
         let form = self.state.lock().layout.form;
         self.set_form(form)?;
@@ -394,7 +439,7 @@ impl IslandService {
             if !width.is_finite() {
                 return Err(error("字幕宽度无效"));
             }
-            self.state.lock().compact_width = width.clamp(148., 308.);
+            self.state.lock().compact_width = width.clamp(COMPACT_MIN_WIDTH, COMPACT_MAX_WIDTH);
         }
         let preferences = self.preferences()?;
         let mon = preferences
@@ -406,8 +451,8 @@ impl IslandService {
         let anchor = self.anchor()?.filter(|a| a.monitor_id == mon.id);
         let compact_width = self.state.lock().compact_width;
         let (_, physical_size, scale) =
-            geometry(mon, preferences.size, form, anchor.as_ref(), compact_width);
-        let (position, canvas) = canvas_geometry(mon, preferences.size, anchor.as_ref());
+            geometry(mon, preferences.scales, form, anchor.as_ref(), compact_width);
+        let (position, canvas) = canvas_geometry(mon, preferences.scales, anchor.as_ref());
         let requested_width = if matches!(form, IslandForm::Compact) {
             compact_width
         } else {
@@ -420,6 +465,7 @@ impl IslandService {
                 && state.layout.height == form.dimensions().1
                 && (state.layout.scale - scale).abs() < 0.000001
                 && state.position == position
+                && state.canvas == canvas
                 && state.monitors == preferences.monitors
                 && (animate || state.pending.is_none())
             {
@@ -434,6 +480,7 @@ impl IslandService {
         let layout = {
             let mut state = self.state.lock();
             state.position = position;
+            state.canvas = canvas;
             state.moved = false;
             state.layout = IslandLayout {
                 revision: state.layout.revision + 1,
@@ -448,7 +495,7 @@ impl IslandService {
                 radius: if matches!(form, IslandForm::Compact | IslandForm::Toast) {
                     21.
                 } else {
-                    20.
+                    28.
                 },
                 animate: animated,
                 native_glass: native_glass_ready(),
@@ -583,22 +630,38 @@ impl IslandService {
     }
     pub fn show(&self, open: bool) -> AppResult<bool> {
         let win = self.window()?;
+        self.db.set_setting("island_open", if open { "true" } else { "false" })?;
         if open {
             self.set_form(IslandForm::Compact)?;
             win.set_always_on_top(
                 self.db.get_setting("island_always_on_top")?.as_deref() != Some("false"),
             )
             .map_err(error)?;
-            if !self.state.lock().avoided {
-                win.show().map_err(error)?;
-            }
+            self.show_if_ready()?;
         } else {
             win.hide().map_err(error)?;
         }
-        self.db
-            .set_setting("island_open", if open { "true" } else { "false" })?;
         let _ = self.app.emit("island:visibility", open);
         Ok(open)
+    }
+    // T1416: only reveal a layout that the WebView has committed. Obsolete
+    // acknowledgments and rapid close/open cannot reveal the wrong geometry.
+    pub fn layout_ready(&self, revision: u64) -> AppResult<()> {
+        {
+            let mut state = self.state.lock();
+            if revision != state.layout.revision { return Ok(()); }
+            state.ready_revision = Some(revision);
+        }
+        self.show_if_ready()
+    }
+    fn show_if_ready(&self) -> AppResult<()> {
+        let service = self.clone();
+        self.app.run_on_main_thread(move || {
+            let state = service.state.lock();
+            if state.ready_revision == Some(state.layout.revision) && !state.avoided && service.is_open() {
+                if let Ok(win) = service.window() { let _ = win.show(); }
+            }
+        }).map_err(error)
     }
     pub fn initialize(&self) {
         if let Ok(win) = self.window() {
@@ -651,7 +714,7 @@ impl IslandService {
             if avoided {
                 let _ = win.hide();
             } else if self.is_open() {
-                let _ = win.show();
+                let _ = self.show_if_ready();
             }
         }
     }
@@ -702,14 +765,54 @@ mod tests {
                 geometry(&m, IslandSize::Medium, IslandForm::Compact, None, 180.);
             let (expanded_pos, expanded, _) =
                 geometry(&m, IslandSize::Medium, IslandForm::Expanded, None, 180.);
-            assert_eq!(compact, PhysicalSize::new(203, 47));
-            assert_eq!(expanded, PhysicalSize::new(347, 216));
+            assert_eq!(compact, PhysicalSize::new(225, 47));
+            assert_eq!(expanded, PhysicalSize::new(450, 209));
             assert_eq!(compact_pos.y, expanded_pos.y);
             let (wide_pos, wide, _) =
                 geometry(&m, IslandSize::Medium, IslandForm::Compact, None, 360.);
             assert_eq!(wide.width, 405);
             assert_eq!(wide_pos.x + wide.width as i32 / 2, 1280);
+            let (_, capped, _) =
+                geometry(&m, IslandSize::Medium, IslandForm::Compact, None, 10000.);
+            assert_eq!(capped.width, 720);
         }
+    }
+
+    #[test]
+    fn independent_ratios_preserve_small_baseline_and_fit_canvas() {
+        let mon = monitor();
+        let base = IslandScales::default();
+        assert_eq!(geometry(&mon, base, IslandForm::Compact, None, 400.), geometry(&mon, IslandSize::Small, IslandForm::Compact, None, 400.));
+        let larger = base.with_changes(None, Some(1.1)).unwrap();
+        assert_eq!(geometry(&mon, base, IslandForm::Compact, None, 400.), geometry(&mon, larger, IslandForm::Compact, None, 400.));
+        assert!(geometry(&mon, larger, IslandForm::Expanded, None, 400.).1.width > geometry(&mon, base, IslandForm::Expanded, None, 400.).1.width);
+        for compact_scale in [0.5, 1., 2.] {
+            for expanded_scale in [0.5, 1., 2.] {
+                let scales = IslandScales { compact_scale, expanded_scale };
+                let (_, canvas) = canvas_geometry(&mon, scales, None);
+                for form in [IslandForm::Compact, IslandForm::Expanded, IslandForm::Toast, IslandForm::Menu] {
+                    let (_, shape, _) = geometry(&mon, scales, form, None, COMPACT_MAX_WIDTH);
+                    assert!(shape.width < canvas.width && shape.height < canvas.height);
+                }
+            }
+        }
+        for invalid in [f64::NAN, f64::INFINITY, 0.4, 2.1] { assert!(base.with_changes(Some(invalid), None).is_err()); }
+    }
+
+    #[test]
+    fn ratios_migrate_legacy_and_persist_independently() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        assert_eq!(read_scales(&db).unwrap(), IslandScales::default());
+        db.set_setting("island_size", "\"small\"").unwrap();
+        assert_eq!(read_scales(&db).unwrap(), IslandScales::default());
+        db.set_setting("island_size", "\"large\"").unwrap();
+        assert_eq!(read_scales(&db).unwrap().compact_scale, 1.3);
+        let scales = IslandScales::default().with_changes(Some(0.8), Some(1.4)).unwrap();
+        db.set_setting("island_scales", &serde_json::to_string(&scales).unwrap()).unwrap();
+        drop(db);
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        assert_eq!(read_scales(&db).unwrap(), scales);
     }
 
     #[test]
@@ -776,7 +879,7 @@ mod tests {
                         IslandForm::Menu,
                         IslandForm::Toast,
                     ] {
-                        for cue_width in [148., 180., 308.] {
+                        for cue_width in [100., 200., 400., 640., 10000.] {
                             let (_, shape, _) =
                                 geometry(&mon, size, form, Some(&anchor), cue_width);
                             assert!(canvas.width as f64 >= shape.width as f64 * 1.05);

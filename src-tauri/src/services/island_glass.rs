@@ -186,17 +186,18 @@ impl Glass {
         };
         if animate && self.initialized {
             let easing = self.compositor.CreateCubicBezierEasingFunction(
-                Vector2 { X: 0.22, Y: 1.25 },
+                // Match the WebView capsule/subtitle spring (360 ms).
+                Vector2 { X: 0.22, Y: 1.32 },
                 Vector2 { X: 0.36, Y: 1. },
             )?;
             let size_animation = self.compositor.CreateVector2KeyFrameAnimation()?;
             size_animation.SetDuration(TimeSpan {
-                Duration: 3_800_000,
+                Duration: 3_600_000,
             })?;
             size_animation.InsertKeyFrameWithEasingFunction(1., size, &easing)?;
             let radius_animation = self.compositor.CreateVector2KeyFrameAnimation()?;
             radius_animation.SetDuration(TimeSpan {
-                Duration: 3_800_000,
+                Duration: 3_600_000,
             })?;
             radius_animation.InsertKeyFrameWithEasingFunction(1., corners, &easing)?;
             self.visual
