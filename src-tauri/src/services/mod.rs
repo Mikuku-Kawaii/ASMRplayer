@@ -14,3 +14,5 @@ pub mod instance;
 mod island_glass;
 
 pub mod release_history;
+
+pub mod desktop_lyrics;

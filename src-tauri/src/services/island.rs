@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Webview
 
 const EXPANDED_WIDTH: f64 = 400.;
 const EXPANDED_HEIGHT: f64 = 186.;
+const MENU_HEIGHT: f64 = 248.;
 const COMPACT_MIN_WIDTH: f64 = 200.;
 const COMPACT_MAX_WIDTH: f64 = 640.;
 
@@ -82,7 +83,7 @@ impl IslandForm {
             Self::Compact => (COMPACT_MIN_WIDTH, 42.),
             Self::Expanded => (EXPANDED_WIDTH, EXPANDED_HEIGHT),
             Self::Toast => (232., 38.),
-            Self::Menu => (240., 184.),
+            Self::Menu => (240., MENU_HEIGHT),
         }
     }
 }
@@ -261,9 +262,10 @@ fn canvas_geometry(
     let scales = scales.into();
     let (position, expanded, _) = geometry(mon, scales, IslandForm::Expanded, anchor, EXPANDED_WIDTH);
     let (_, widest, _) = geometry(mon, scales, IslandForm::Compact, anchor, COMPACT_MAX_WIDTH);
+    let (_, menu, _) = geometry(mon, scales, IslandForm::Menu, anchor, EXPANDED_WIDTH);
     let canvas = PhysicalSize::new(
-        (widest.width.max(expanded.width) as f64 * 1.06).ceil() as u32,
-        (expanded.height.max(widest.height) as f64 * 1.06).ceil() as u32,
+        (widest.width.max(expanded.width).max(menu.width) as f64 * 1.06).ceil() as u32,
+        (expanded.height.max(widest.height).max(menu.height) as f64 * 1.06).ceil() as u32,
     );
     let margin = (2. * mon.scale_factor).round() as i32;
     let center = anchor.map_or(0.5, |a| a.center_ratio.clamp(0., 1.));
@@ -294,7 +296,7 @@ fn geometry(
     let display_scale = (mon.height as f64 / dpi / 1152.).clamp(0.5, 1.5);
     let scale = (user_scale * display_scale)
         .min(((mon.width as f64 / dpi - 24.) / (COMPACT_MAX_WIDTH * 1.06)).max(0.1))
-        .min(((mon.height as f64 / dpi - 24.) / (EXPANDED_HEIGHT * 1.06)).max(0.1));
+        .min(((mon.height as f64 / dpi - 24.) / (EXPANDED_HEIGHT.max(MENU_HEIGHT) * 1.06)).max(0.1));
     let (base_w, h) = form.dimensions();
     let w = if matches!(form, IslandForm::Compact) {
         compact_width.clamp(COMPACT_MIN_WIDTH, COMPACT_MAX_WIDTH)
@@ -428,6 +430,12 @@ impl IslandService {
     pub fn set_form(&self, form: IslandForm) -> AppResult<IslandLayout> {
         self.layout_form(form, false, None)
     }
+    pub fn reset_position(&self) -> AppResult<IslandLayout> {
+        let _operation = self.operation.lock();
+        self.db.set_setting("island_anchor_v2", "")?;
+        let form = self.state.lock().layout.form;
+        self.layout_form_locked(form, false, None)
+    }
     pub fn layout_form(
         &self,
         form: IslandForm,
@@ -435,6 +443,14 @@ impl IslandService {
         compact_width: Option<f64>,
     ) -> AppResult<IslandLayout> {
         let _operation = self.operation.lock();
+        self.layout_form_locked(form, animate, compact_width)
+    }
+    fn layout_form_locked(
+        &self,
+        form: IslandForm,
+        animate: bool,
+        compact_width: Option<f64>,
+    ) -> AppResult<IslandLayout> {
         if let Some(width) = compact_width {
             if !width.is_finite() {
                 return Err(error("字幕宽度无效"));
@@ -595,6 +611,7 @@ impl IslandService {
         }
     }
     pub fn save_position(&self) -> AppResult<()> {
+        let _operation = self.operation.lock();
         let win = self.window()?;
         let Some(current) = win.current_monitor().map_err(error)? else {
             return Ok(());
@@ -625,7 +642,7 @@ impl IslandService {
         )?;
         self.db.set_setting("island_monitor", &name)?;
         let form = self.state.lock().layout.form;
-        self.set_form(form)?;
+        self.layout_form_locked(form, false, None)?;
         Ok(())
     }
     pub fn show(&self, open: bool) -> AppResult<bool> {
@@ -898,6 +915,21 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn cleared_anchor_returns_menu_to_selected_monitor_top_center() {
+        for dpi in [1., 1.25, 1.5, 2.] {
+            let mon = IslandMonitor { scale_factor: dpi, ..monitor() };
+            let anchor = Anchor { monitor_id: mon.id.clone(), center_ratio: 0.73, top: 180. };
+            let (dragged, _) = canvas_geometry(&mon, IslandSize::Medium, Some(&anchor));
+            let (reset, canvas) = canvas_geometry(&mon, IslandSize::Medium, None);
+            assert_ne!(dragged, reset);
+            assert!((reset.x + canvas.width as i32 / 2 - (mon.x + mon.width as i32 / 2)).abs() <= 1);
+            assert_eq!(reset.y, mon.y + (2. * dpi).round() as i32);
+            let (_, menu, _) = geometry(&mon, IslandSize::Medium, IslandForm::Menu, None, 200.);
+            assert!(canvas.height as f64 >= menu.height as f64 * 1.05);
         }
     }
 }

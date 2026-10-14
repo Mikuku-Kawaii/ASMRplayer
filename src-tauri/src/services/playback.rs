@@ -414,6 +414,15 @@ impl PlaybackService {
         });
     }
 
+    pub fn notify_affinity(&self, work_id: &str) {
+        if let Some(ref app) = *self.app_handle.lock() { let _ = app.emit("library:affinity", work_id); }
+    }
+
+    pub fn active_subtitles(&self) -> serde_json::Value {
+        let guard = self.inner.lock();
+        serde_json::json!({ "eventSeq": self.event_seq.load(Ordering::SeqCst), "versionId": guard.current_version_id, "cues": guard.active_subtitle_cues })
+    }
+
     /// Updates the active subtitle cues for the currently loaded version (if matching) and broadcasts
     /// them to the local AMLL server + Windows SMTC / WinIsland LRC bridge.
     pub fn set_active_subtitle_cues_for_version(
@@ -1104,6 +1113,25 @@ impl PlaybackService {
         group_path: &str,
         start_version_id: Option<String>,
     ) -> AppResult<PlaybackSnapshot> {
+        self.play_directory_group_at(work_id, group_path, start_version_id, false).await
+    }
+
+    pub async fn play_work(&self, work_id: &str, group_path: Option<String>, from_start: bool) -> AppResult<PlaybackSnapshot> {
+        let detail = self.db.get_work_detail(work_id)?;
+        let last_track = detail.tracks.iter().find(|t| t.versions.iter().any(|v| Some(&v.id) == detail.last_version_id.as_ref()));
+        let group = group_path.or_else(|| last_track.map(|t| t.logical_dir_path.clone()))
+            .or_else(|| detail.directory_groups.first().map(|g| g.group_path.clone()))
+            .ok_or_else(|| AppError::new(ErrorCode::SourceNotFound, "作品中没有可播放的音轨"))?;
+        self.play_directory_group_at(work_id, &group, detail.last_version_id, from_start).await
+    }
+
+    async fn play_directory_group_at(
+        &self,
+        work_id: &str,
+        group_path: &str,
+        start_version_id: Option<String>,
+        from_start: bool,
+    ) -> AppResult<PlaybackSnapshot> {
         let detail = self.db.get_work_detail(work_id)?;
         let mut queue_pairs: Vec<(String, Option<String>)> = Vec::new();
         let mut seen_versions = std::collections::HashSet::new();
@@ -1125,10 +1153,13 @@ impl PlaybackService {
             ));
         }
 
-        let active_idx = start_version_id
+        let group_completed = detail.tracks.iter().filter(|t| t.logical_dir_path == group_path)
+            .all(|t| t.versions.first().is_some_and(|v| v.completed));
+        let restart = from_start || group_completed;
+        let active_idx = if restart { 0 } else { start_version_id
             .as_ref()
             .and_then(|sv| queue_pairs.iter().position(|(vid, _)| vid == sv))
-            .unwrap_or(0);
+            .unwrap_or(0) };
 
         let target_version = queue_pairs[active_idx].0.clone();
         let active_qid = self.db.replace_queue_items(&queue_pairs, active_idx)?;
@@ -1136,7 +1167,7 @@ impl PlaybackService {
             let mut guard = self.inner.lock();
             guard.current_queue_item_id = active_qid;
         }
-        self.play(&target_version, None).await
+        self.play_with_position(&target_version, None, false, None, restart.then_some(0)).await
     }
 
     /// T1117 / R37: Smartly selects the best playable `(version_id, preferred_source_id)` pairs for a work,
@@ -1381,18 +1412,19 @@ impl PlaybackService {
     }
 
     pub async fn toggle_pause(&self) -> AppResult<PlaybackSnapshot> {
-        let (state, cur_ver, cur_src, user_paused) = {
+        let (state, cur_ver, cur_src, user_paused, completed) = {
             let guard = self.inner.lock();
             (
                 guard.state.clone(),
                 guard.current_version_id.clone(),
                 guard.active_source.clone(),
                 guard.user_paused_intent,
+                guard.current_completed,
             )
         };
 
         // If restored from startup in paused state and mpv hasn't loaded the file yet, load & play!
-        if (state == "paused" || state == "idle" || state == "ended") && cur_src.is_none() {
+        if (state == "paused" || state == "idle" || state == "ended") && (cur_src.is_none() || completed || state == "ended") {
             if let Some(vid) = cur_ver {
                 return self.play(&vid, None).await;
             }
@@ -3087,9 +3119,51 @@ mod playback_tests {
         let replay = playback.play("v", None).await.unwrap();
         assert!(replay.position_ms < 2000, "completed replay must start at zero");
         assert!(!playback.inner.lock().current_completed);
+        {
+            let mut state = playback.inner.lock();
+            state.state = "ended".into();
+            state.current_completed = true;
+            state.position_ms = 24000;
+        }
+        let replay = playback.toggle_pause().await.unwrap();
+        assert!(replay.position_ms < 2000, "play after EOF must restart even with an active source");
         playback.prepare_for_update().await.unwrap();
         assert_eq!(playback.get_snapshot().unwrap().state, "paused");
         assert!(playback.inner.lock().active_source.is_none());
+    }
+
+    #[tokio::test]
+    async fn work_resume_and_explicit_restart_keep_queue_scope_and_completion_history() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tests/fixtures/audio/stereo_lr_check.mp3");
+        db.with_conn(|conn| {
+            conn.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('w','Work','now','now');
+                INSERT INTO collected_works(work_id,created_at) VALUES('w','now');")?;
+            for (id, group) in [("1", "WAV"), ("2", "WAV"), ("3", "MP3")] {
+                conn.execute("INSERT INTO tracks(id,work_id,title,logical_dir_path,sort_key,created_at) VALUES(?1,'w',?1,?2,?1,'now')", params![id,group])?;
+                conn.execute("INSERT INTO track_versions(id,track_id,version_label,duration_ms,created_at) VALUES(?1,?1,'Original',24000,'now')", [id])?;
+                conn.execute("INSERT INTO media_sources(id,version_id,source_kind,absolute_path,format,availability,created_at,updated_at) VALUES(?1,?1,'local_imported',?2,'mp3','available','now','now')", params![id,fixture.to_string_lossy()])?;
+            }
+            Ok(())
+        }).unwrap();
+        db.save_playback_position("1", 24000, true, true).unwrap();
+        db.save_playback_position("2", 24000, true, true).unwrap();
+        let playback = PlaybackService::new(db.clone(), AsmrOneProvider::new(db.clone()));
+        let replay = playback.play_work("w", None, false).await.unwrap();
+        assert_eq!(replay.current_version_id.as_deref(), Some("1"));
+        assert!(replay.position_ms < 2000);
+        assert_eq!(db.get_queue_items().unwrap().iter().map(|q| q.version_id.as_str()).collect::<Vec<_>>(), vec!["1", "2"]);
+        assert_eq!(db.list_works("all", None).unwrap()[0].listening_status, ListeningStatus::Played);
+        playback.seek_ms(5000).await.unwrap();
+        let resumed = playback.play_work("w", None, false).await.unwrap();
+        assert_eq!(resumed.current_version_id.as_deref(), Some("1"));
+        assert!(resumed.position_ms >= 4000 && resumed.position_ms < 7000);
+        let restarted = playback.play_work("w", Some("WAV".into()), true).await.unwrap();
+        assert_eq!(restarted.current_version_id.as_deref(), Some("1"));
+        assert!(restarted.position_ms < 2000);
+        assert_eq!(db.list_works("all", None).unwrap()[0].listening_status, ListeningStatus::Played);
+        playback.prepare_for_update().await.unwrap();
     }
 
     #[tokio::test]

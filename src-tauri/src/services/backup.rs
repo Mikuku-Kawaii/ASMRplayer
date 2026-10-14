@@ -347,6 +347,7 @@ mod tests {
             version_label: "other".into(),
             position_ms: 9000,
             completed: false,
+            ever_completed: false,
             updated_at: Utc::now().to_rfc3339(),
         });
         let env = encrypt_backup_bundle(&b, "test-passphrase").unwrap();
@@ -462,7 +463,7 @@ fn validate(bundle: &UserBackupBundleDto) -> AppResult<()> {
 fn counts(b: &UserBackupBundleDto) -> Vec<RestoreCount> {
     use RestoreScope::*;
     [
-        (Favorites, b.favorites.len()),
+        (Favorites, b.favorites.len() + b.favorite_versions.len()),
         (Positions, b.playback_positions.len()),
         (Bookmarks, b.bookmarks.len()),
         (AbLoops, b.ab_loops.len()),
@@ -479,6 +480,7 @@ fn select(mut b: UserBackupBundleDto, scopes: &[RestoreScope]) -> UserBackupBund
     use RestoreScope::*;
     if !scopes.contains(&Favorites) {
         b.favorites.clear();
+        b.favorite_versions.clear();
     }
     if !scopes.contains(&Positions) {
         b.playback_positions.clear();

@@ -42,7 +42,7 @@ pub fn strip_audio_double_extension(filename: &str) -> String {
     }
 
     for lang_ext in &[
-        ".zh", ".chs", ".cht", ".sc", ".tc", ".cn", ".jp", ".ja", ".en", ".zh-cn", ".zh-tw",
+        ".ja-zh", ".jp-cn", ".zh-ja", ".jpn", ".zho", ".zh", ".chs", ".cht", ".sc", ".tc", ".cn", ".jp", ".ja", ".en", ".zh-cn", ".zh-tw",
     ] {
         if let Some(stripped) = s.strip_suffix(lang_ext) {
             if !stripped.is_empty() {
@@ -1553,6 +1553,7 @@ pub fn normalize_subtitle_match_stem(filename: &str) -> String {
         "(効果音あり)",
         "（効果音なし）",
         "(効果音なし)",
+        "[中日双语]", "【中日双语】", "[日中双语]", "【日中双语】", "[中日字幕]", "【中日字幕】",
         "[中文字幕]",
         "【中文字幕】",
         "(中文字幕)",
@@ -2303,7 +2304,23 @@ pub fn parse_subtitle_bytes(bytes: &[u8], offset_ms: i64) -> AppResult<Vec<Subti
         }
     }
 
-    Ok(cues)
+    Ok(merge_parallel_cues(cues))
+}
+
+// Preserve bilingual blocks with identical timing instead of selecting only one line.
+fn merge_parallel_cues(mut cues: Vec<SubtitleCueDto>) -> Vec<SubtitleCueDto> {
+    cues.sort_by_key(|c| (c.start_ms,c.end_ms));
+    let mut merged: Vec<SubtitleCueDto> = Vec::new();
+    for mut cue in cues {
+        if let Some(previous) = merged.last_mut() {
+            if previous.start_ms == cue.start_ms && previous.end_ms == cue.end_ms {
+                if previous.text != cue.text { previous.text.push('\n'); previous.text.push_str(&cue.text); }
+                continue;
+            }
+        }
+        cue.index=merged.len()+1; merged.push(cue);
+    }
+    merged
 }
 
 fn contains_lrc_timestamp(text: &str) -> bool {
@@ -2357,9 +2374,22 @@ fn parse_lrc_cues(clean: &str, offset_ms: i64) -> Vec<SubtitleCueDto> {
             for t in times {
                 raw_entries.push((t, text.to_string()));
             }
+        } else if !line.trim().is_empty() && !line.trim().starts_with('[') {
+            if let Some((_,text))=raw_entries.last_mut() { text.push('\n'); text.push_str(line.trim()); }
         }
     }
     raw_entries.sort_by_key(|(t, _)| *t);
+    let mut grouped: Vec<(i64,String)> = Vec::new();
+    for (time,text) in raw_entries {
+        if let Some((last_time,last_text))=grouped.last_mut() {
+            if *last_time == time {
+                if !text.is_empty() && *last_text != text { if !last_text.is_empty() { last_text.push('\n'); } last_text.push_str(&text); }
+                continue;
+            }
+        }
+        grouped.push((time,text));
+    }
+    let raw_entries=grouped;
 
     let mut cues = Vec::new();
     for i in 0..raw_entries.len() {
@@ -2413,6 +2443,17 @@ fn parse_timestamp_ms(ts: &str) -> Option<i64> {
 mod library_tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn bilingual_lrc_and_parallel_srt_preserve_both_languages() {
+        let cues=parse_subtitle_bytes("[00:01.00]おやすみ\n[00:01.00]晚安\n[00:05.00]また明日\n明天见".as_bytes(),200).unwrap();
+        assert_eq!(cues.len(),2); assert_eq!(cues[0].text,"おやすみ\n晚安");
+        assert_eq!(cues[0].start_ms,1200); assert_eq!(cues[0].end_ms,5200);
+        assert_eq!(cues[1].text,"また明日\n明天见");
+        let cues=parse_subtitle_bytes("1\n00:00:01,000 --> 00:00:04,000\nおやすみ\n\n2\n00:00:01,000 --> 00:00:04,000\n晚安\n\n3\n00:00:06,000 --> 00:00:09,000\nまた明日\n明天见".as_bytes(),0).unwrap();
+        assert_eq!(cues.len(),2); assert_eq!(cues[0].text,"おやすみ\n晚安"); assert_eq!(cues[1].text,"また明日\n明天见");
+        assert_eq!(strip_audio_double_extension("01_耳かき.ja-zh.srt"),"01_耳かき");
+    }
 
     #[test]
     fn test_natural_sort_key_orders_2_before_10() {
