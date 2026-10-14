@@ -93,10 +93,42 @@ M3 规定交互状态不通过随意更换色相实现，而是通过在容器�
 遵循 M3 Shape Token 阶梯，保持圆角语义统一：
 
 - **Extra Small (`4px–5px`)**：内联技术标识、紧凑状态徽章 (`.badge`)。
-- **Small (`6px–8px`)**：文本输入框 (`.input-text`)、下拉框 (`.input-select`)、紧凑动作按钮 (`.btn`, `.btn-sm`)。
+- **Small (`6px–8px`)**：文本输入框 (`.input-text`)、紧凑动作按钮 (`.btn`, `.btn-sm`)。表单下拉选择触发器为 `9px`，工具栏胶囊变体为 `9999px`，浮层为 `12px`，详见“统一下拉选择控件规范”。
 - **Medium (`10px–12px`)**：作品卡片 (`.work-card`)、设置卡片 (`.settings-card`)、音轨数据表外框 (`.tracks-table`)。
 - **Large (`14px–16px`)**：作品详情头图卡片 (`.detail-hero-card`)、模态弹窗卡片 (`.modal-card`)。
 - **Full / Pill (`9999px`)**：播放栏主控圆按钮 (`.btn-play-main`)、筛选/功能切换胶囊 (`.btn-chip`)、作品标签 (`.tag-pill`)。
+
+### 1.4a 统一下拉选择控件规范
+
+**唯一实现**：`src/components/Select.tsx`，样式集中在 `src/styles.css` 的 `.app-select*`。所有新增和改造的单选下拉使用此组件，禁止重新引入 `<select>` / `<option>` 系统原生弹出界面，也不允许逐页复制浮层样式。标签批量筛选复用 `src/components/TagFilterPopover.tsx`，由 `OnlineFilters` / `LibraryFilters` 提供数据；保留最多五项、草稿确认提交的多选按钮语义，不能替换成单选。音频库入口位于搜索框左侧。
+
+**受控 API**：`value: string`、`options: readonly { value: string; label: string; disabled?: boolean }[]`、`onValueChange(value)` 为必需参数；可选 `id`、`disabled`、`size="regular" | "compact"`（默认 regular）、`className`（仅布局）、`placeholder`（未匹配值时显示）及 ARIA 属性。选项 value 必须唯一。只有确认与当前值不同的可用选项才调用回调；方向键和字符定位仅改变导航高亮。保存时机、失败回退、加载禁用由业务层保持原有语义。
+
+```tsx
+import { Select } from "../../components/Select";
+
+<label htmlFor="sort-direction">排序方向</label>
+<Select id="sort-direction" size="compact" variant="chip" value={sort}
+  options={[{ value: "desc", label: "降序" }, { value: "asc", label: "升序" }]}
+  onValueChange={setSort} />
+
+// 动作型选择不保存选中值：执行后仍显示占位文案，允许重复选择同一动作。
+<Select aria-label="镜像预设" value="" size="compact"
+  options={[{ value: "", label: "镜像预设..." }, ...mirrorOptions]}
+  onValueChange={value => { if (value) void applyMirror(value); }} />
+```
+
+**尺寸与状态**：常规触发器最小高 `36px`、`14px` 字号，紧凑触发器最小高 `32px`、`13px` 字号；均为 `400` 字重、`9px` 圆角、`--bg-elevated` 色阶、`1px --border-subtle` 描边、lucide `ChevronDown`。浮层与触发器间隔 `6px`，`12px` 圆角、`6px` 内边距、弱描边与由 `--bg-root` 混合的轻阴影。菜单项最小高 `36px`（长文案自动增高），`14px / 20px`、`400` 字重、`8px 10px` 内边距与 `7px` 圆角。悬停用 `--bg-hover`；已选用 `--accent-bg`、`--accent` 和右侧 `Check`，不使用复选框或系统灰色选中条。键盘导航另加内侧焦点环，不改变 `aria-selected`；鼠标导航不显示该环。触发器仅 `:focus-visible` 显示焦点环，禁用透明度 `.38`。
+
+**浮层与内容**：React Portal 挂在最近的 `[role="dialog"]` / `dialog` / `[aria-modal="true"]`，无弹窗则挂在 body；通过手动 Popover API 进入浏览器顶层，避开 overflow、transform、z-index 与原生 dialog 层级限制，保留弹窗 DOM 包含关系。固定定位基于触发器 `getBoundingClientRect()`，监听祖先滚动、ResizeObserver、窗口和 visualViewport 的缩放/尺寸/滚动；下方不足时自动向上展开，水平方向约束在视口 `8px` 安全边距。菜单宽度至少 `200px` 或触发器宽度，最大不超过视口；最大高 `300px` 且受可用空间限制，内部滚动并阻断滚动穿透。导航只滚动菜单，不滚动页面。触发器单行省略、title 提供完整文本；菜单内完整展示并合理换行，包括无空格长路径。
+
+**工具栏变体**：可选 API `variant="field" | "chip"`，默认 `field`，遵循上面的表单尺寸。与筛选等胶囊按钮并排时使用 `size="compact" variant="chip"`，直接复用 `.btn-chip`：高 `30px`、`9999px` 圆角、字号 `12px`、字重 `500`、内边距 `4px 10px`，颜色和悬停态与相邻按钮一致；浮层、选项和键盘行为仍使用同一实现。禁止页面单独覆盖触发器圆角与字号。
+
+**动效**：展开和关闭均为 `180ms` 淡入/淡出和 `4px` 轻微位移，向上展开时反转位移方向。关闭阶段立刻撤销交互和无障碍暴露，动画结束卸载。`prefers-reduced-motion: reduce` 关闭位移动画并立即卸载，不拖延交互。
+
+**键盘与无障碍**：触发器是可关联 label 的 button，使用 `role="combobox"`、`aria-expanded`、`aria-controls`、`aria-activedescendant` 和 `aria-disabled`；浮层为 listbox，选项为 option，正确声明选中与禁用。优先 `label htmlFor` + `id`，无可见标签时提供准确的中文 `aria-label`。焦点保留在触发器：方向键导航（跳过禁用项）、Home/End 首尾、输入字符前缀定位（700ms 缓冲，重复字符轮换）；Enter/Space 展开或确认，Escape 关闭并保留焦点，Tab 正常离开且关闭。鼠标确认后回到触发器，点击或聚焦外部关闭且不抢焦点。快捷键必须隔离全局播放/快进；弹窗的捕获阶段 Escape 处理必须先让已展开 Select 消费，Tab 仍由弹窗原有焦点管理处理。相关实现见 `UpdateDialog.tsx`。
+
+**回归**：公共交互测试在 `src/components/Select.test.tsx`。替换业务控件时验证原值、默认值、禁用、保存/错误逻辑与动作型占位复位；实际检查短菜单、长文案、长列表、边缘、缩放、滚动和弹窗，不能仅根据 jsdom 宣称视觉验收。
 
 ### 1.5 M3 Five-Tier Button System (五级按钮规范)
 
@@ -223,7 +255,7 @@ ASMR 用户的本地音频文件体量大、整理成本高。界面上的每一
 | **收藏按钮** | 未收藏 / 已收藏 | `收藏` / `已收藏` | `加入收藏` / `取消收藏` |
 
 #### 法则 5：按钮字数、计数格式与标点禁令
-- **字数控制**：常规按钮保持 **2～6 个汉字**，避免按钮内文字换行（`.btn { white-space: nowrap; }`）。
+- **字数控制**：常规操作按钮保持 **2～6 个汉字**，避免按钮内文字换行（`.btn { white-space: nowrap; }`）。Select 触发器展示选中项，长度不受操作按钮字数限制；遵循单行省略、完整 title 和浮层内换行规则。
 - **动态计数格式**：在按钮上附带数量时，统一使用半角括号且括号前留 1 个半角空格，例如：`开始下载 (4)`、`切换来源 (2)`、`播放队列 (12)`。
 - **标点禁令**：按钮文字末尾**严禁出现句号（`。`）、感叹号（`！`）或冒号（`：`）**。
 - **连接符规范**：A–B 循环与时间区间统一使用 en-dash `–`（如 `A–B 循环`、`01:20 – 03:45`）；多级状态组合使用中圆点 ` · `（前后各一空格，如 `继续收听 · 第 2 轨 · 14:20`）。
