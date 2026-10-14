@@ -1,8 +1,8 @@
 import { useLayoutEffect, useRef } from "react";
 
 // T1414: depend on content/available width, never playback ticks. WAAPI keeps motion
-// off React's render loop; each endpoint pauses for reading before reversing.
-export function ScrollingText({ text, identity, className }: { text: string; identity: string; className: string }) {
+// off React's render loop; endpoints pause for reading before looping or reversing.
+export function ScrollingText({ text, identity, className, loop = false }: { text: string; identity: string; className: string; loop?: boolean }) {
   const viewport = useRef<HTMLSpanElement>(null);
   const content = useRef<HTMLSpanElement>(null);
   useLayoutEffect(() => {
@@ -19,21 +19,26 @@ export function ScrollingText({ text, identity, className }: { text: string; ide
       distance = next; reduced = !!media?.matches; animation?.cancel();
       if (next < 2 || reduced || !line.animate) return;
       const travel = next / 28 * 1000;
-      const duration = 2 * travel + 2800;
+      const duration = (loop ? travel : 2 * travel) + 2800;
       const pause = 1400 / duration;
-      animation = line.animate([
+      animation = line.animate(loop ? [
+        { transform: "translateX(0)", offset: 0 },
+        { transform: "translateX(0)", offset: pause },
+        { transform: `translateX(-${next}px)`, offset: 1 - pause },
+        { transform: `translateX(-${next}px)`, offset: 1 },
+      ] : [
         { transform: "translateX(0)", offset: 0 },
         { transform: "translateX(0)", offset: pause },
         { transform: `translateX(-${next}px)`, offset: .5 },
         { transform: `translateX(-${next}px)`, offset: .5 + pause },
         { transform: "translateX(0)", offset: 1 },
-      ], { duration, iterations: Infinity, easing: "linear" });
+      ], { duration, iterations: Infinity, easing: "linear", direction: "normal" });
     };
     const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : undefined;
     observer?.observe(box); observer?.observe(line); measure();
     media?.addEventListener?.("change", measure);
     return () => { observer?.disconnect(); media?.removeEventListener?.("change", measure); animation?.cancel(); };
-  }, [text, identity]);
+  }, [text, identity, loop]);
   return <span ref={viewport} className={`${className} island-scrolling-text`} aria-label={text}>
     <span key={`${identity}:${text}`} className="island-text-transition" aria-hidden="true">
       <span ref={content} className="island-scrolling-line">{text}</span>

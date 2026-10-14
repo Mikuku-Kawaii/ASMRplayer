@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ScrollingText } from "./ScrollingText";
-import { Play, Pause, SkipBack, SkipForward, Volume2, Volume1, Disc3, ExternalLink, EyeOff, Eye, X, ChevronUp, ChevronLeft, MoreHorizontal } from "lucide-react";
+import { Play, Pause, SkipBack, SkipForward, Volume2, Volume1, Disc3, ExternalLink, EyeOff, Eye, X, ChevronUp, ChevronLeft, MoreHorizontal, RotateCcw } from "lucide-react";
 import {
   PlaybackSnapshot, SubtitleCueDto, WorkDetailDto, AutoMatchedSubtitleDto, AppSettingsDto,
   IslandForm, IslandLayout, IslandPreferences, formatDurationMs, callCommand,
@@ -145,8 +145,10 @@ export function DesktopIsland() {
   }, [changeForm]);
 
   const position = seekPreview ?? snapshot.positionMs;
-  const cueIndex = cues.findIndex(c => position >= c.startMs && position <= c.endMs);
-  const cue = cues[cueIndex];
+  // Keep the latest started cue through gaps. Derive it from the current
+  // position so seeking backwards also restores the correct cue (or title).
+  const cue = cues.reduce<SubtitleCueDto | undefined>((latest, candidate) =>
+    candidate.startMs <= position && (!latest || candidate.startMs > latest.startMs) ? candidate : latest, undefined);
   const lines = privacy ? [] : (cue?.text ?? "").split(/\n| \/\/ /).map(s => s.trim()).filter(Boolean);
   const primaryText = privacy ? "ASMR Audio Track" : lines[0] || snapshot.currentTrackTitle || "ASMR Player";
   const subtitleText = lines[0] || "";
@@ -157,9 +159,11 @@ export function DesktopIsland() {
     if (layout.revision <= 0) return;
     // Acknowledge only after React has committed the exact host layout. Hidden
     // WebViews can throttle RAF indefinitely, so use a post-commit task instead.
-    const timer = setTimeout(() => { void run("island_layout_ready", { revision: layout.revision }); }, 0);
+    const timer = setTimeout(() => {
+      void callCommand("island_layout_ready", { revision: layout.revision }).catch(e => setError(normalizeAppError(e).message));
+    }, 0);
     return () => clearTimeout(timer);
-  }, [layout.revision, run]);
+  }, [layout.revision]);
   useLayoutEffect(() => {
     // Measure only when the cue changes, never on each playback tick.
     if (textMeasure.current) textMeasure.current.textContent = subtitleText;
@@ -236,14 +240,14 @@ export function DesktopIsland() {
       <div key={form} className={`island-content island-content-${form}`} style={{ width: layout.width - 2, height: layout.height - 2 }}>
       {form === "compact" && <>
         <div className={`island-avatar-wrap ${playing ? "island-cover-breathing" : "is-paused"}`}>{coverImage}</div>
-        <ScrollingText className="island-compact-text" text={privacy ? primaryText : compactText.text} identity={privacy ? textIdentity : compactText.identity} />
+        <ScrollingText className="island-compact-text" text={privacy ? primaryText : compactText.text} identity={privacy ? textIdentity : compactText.identity} loop={!hasSubtitles} />
         <div aria-hidden="true" className={`island-waveform-bars ${playing ? "is-dancing" : "is-frozen"}`}>{[1, 2, 3, 4, 5, 6].map(n => <span key={n} className={`island-bar bar-${n}`} />)}</div>
       </>}
       {form === "expanded" && <>
         <div className="island-header">
           <div className="island-cover-large-wrap">{coverImage}</div>
           <div className="island-subtitles-stage">
-            <ScrollingText className="island-sub-primary" text={primaryText} identity={textIdentity} /><div key={`${textIdentity}:${lines[1] ?? ""}`} className="island-sub-secondary island-text-transition">{privacy ? "隐私模式" : lines[1] || snapshot.currentWorkTitle || "选择音轨开始收听"}</div>
+            <ScrollingText className="island-sub-primary" text={primaryText} identity={textIdentity} loop={!hasSubtitles} /><div key={`${textIdentity}:${lines[1] ?? ""}`} className="island-sub-secondary island-text-transition">{privacy ? "隐私模式" : lines[1] || snapshot.currentWorkTitle || "选择音轨开始收听"}</div>
           </div>
           <button type="button" className="island-btn-icon" aria-label="收起灵动岛" aria-description="收起灵动岛 (Esc)" onClick={() => changeForm("compact")}><ChevronUp size={16} /></button>
         </div>
@@ -273,10 +277,14 @@ export function DesktopIsland() {
         <div className="island-menu-heading"><span>灵动岛</span><button type="button" className="island-btn-icon" aria-description="返回播放控制" aria-label="返回播放控制" onClick={() => changeForm("expanded")}><ChevronLeft size={16} /></button></div>
         <button type="button" className="island-menu-item" onClick={() => void run("island_focus_main_window")}><ExternalLink size={14} />打开主软件</button>
         <button type="button" className="island-menu-item" onClick={() => void togglePrivacy()}>{privacy ? <Eye size={14} /> : <EyeOff size={14} />}{privacy ? "关闭脱敏模式" : "脱敏模式"}</button>
-        <div className="island-menu-volume">
-          <button type="button" className="island-menu-item" aria-label="提高音量" aria-description="每次提高 5 点音量" onClick={() => adjustVolume(5)}><Volume2 size={14} />提高音量</button>
-          <button type="button" className="island-menu-item" aria-label="降低音量" aria-description="每次降低 5 点音量" onClick={() => adjustVolume(-5)}><Volume1 size={14} />降低音量</button>
-        </div>
+        <button type="button" className="island-menu-item" aria-label="提高音量" aria-description="每次提高 5 点音量" onClick={() => adjustVolume(5)}><Volume2 size={14} />提高音量</button>
+        <button type="button" className="island-menu-item" aria-label="降低音量" aria-description="每次降低 5 点音量" onClick={() => adjustVolume(-5)}><Volume1 size={14} />降低音量</button>
+        <button type="button" className="island-menu-item" title="恢复到所选屏幕顶部居中位置" onClick={() => {
+          layoutQueue.current = layoutQueue.current.then(async () => {
+            try { applyLayout(await callCommand<IslandLayout>("island_reset_position")); setError(""); }
+            catch (e) { setError(normalizeAppError(e).message); }
+          });
+        }}><RotateCcw size={14} />恢复原位</button>
         <button type="button" className="island-menu-item" onClick={() => void run("window_toggle_island", { open: false })}><X size={14} />关闭灵动岛</button>
       </div>}
       {error && <div className="island-error" role="alert" aria-description={error}>{error}</div>}
