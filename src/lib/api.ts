@@ -14,6 +14,7 @@ export interface UpdateSnapshot {
   currentVersion: string;
   latestVersion: string | null;
   notes: string | null;
+  publishedAt?: string | null;
   checkedAt: string | null;
   downloadedBytes: number;
   totalBytes: number | null;
@@ -35,7 +36,38 @@ export interface Page<T> {
   totalCount: number;
 }
 
+export interface CollectionFilters {
+  keyword: string;
+  voiceActors: string[];
+  tags: string[];
+  collected: boolean | null;
+  favorite: boolean | null;
+  listening: "any" | "unplayed" | "played";
+  offline: boolean | null;
+}
+
+export interface SmartCollection {
+  id: string;
+  name: string;
+  filters: CollectionFilters;
+  updatedAt: string;
+}
+
+export interface OnlineFilter {
+  kind: "voiceActor" | "circle" | "tag";
+  value: string;
+  exclude: boolean;
+}
+
+export interface ProviderTag {
+  id: string;
+  name: string;
+  label: string;
+  count: number;
+}
+
 export interface WorkSummary {
+  isListened?: boolean;
   id: string;
   title: string;
   rjCode?: string | null;
@@ -44,6 +76,7 @@ export interface WorkSummary {
   tags: string[];
   coverRef?: string | null;
   hasLocal: boolean;
+  hasLocalImported?: boolean;
   hasOnline: boolean;
   hasDownloaded: boolean;
   availability: string;
@@ -55,6 +88,20 @@ export interface WorkSummary {
   lastPlayedAt?: string | null;
   sourceWorkId?: string | null;
   updatedAt: string;
+}
+
+export type BulkAction = { kind: "collected" | "favorite" | "listened"; value: boolean } | { kind: "addTags" | "removeTags"; tags: string[] };
+export interface BulkItem {
+  workId: string;
+  title: string;
+  status: "ready" | "unchanged" | "failed" | "applied" | "undone" | "undoFailed";
+  error: string | null;
+}
+export interface BulkReport {
+  id: string;
+  action: BulkAction;
+  phase: "preview" | "applied" | "undone" | "undoPartial";
+  items: BulkItem[];
 }
 
 export interface WorkOverrideDto {
@@ -224,7 +271,16 @@ export interface BookmarkDto {
   positionMs: number;
   note: string;
   createdAt: string;
+  tags: string[];
+  workTitle: string;
+  versionLabel: string;
+  linked: boolean;
+  playable: boolean;
 }
+
+export interface BookmarkSearchPage { items: BookmarkDto[]; total: number }
+export interface BookmarkBundle { schemaVersion: number; bookmarks: BackupBookmarkRecordDto[] }
+export interface BookmarkRestoreReport { restored: number; unlinked: number; skipped: number }
 
 export interface SleepTimerDto {
   mode: "off" | "minutes" | "end_of_track";
@@ -457,6 +513,8 @@ export interface DownloadPreviewDto {
 }
 
 export interface DownloadTaskDto {
+  priority: number;
+  nextRetryAt?: string | null;
   id: string;
   workId: string;
   workTitle: string;
@@ -504,10 +562,10 @@ export interface IslandPlacementDto {
 }
 
 export type IslandForm = "compact" | "expanded" | "toast" | "menu";
-export type IslandSize = "extra_small" | "small" | "medium" | "large" | "extra_large";
 export interface IslandLayout { revision: number; form: IslandForm; scale: number; width: number; height: number; radius?: number; animate?: boolean; nativeGlass?: boolean }
 export interface IslandPreferences {
-  size: IslandSize;
+  compactScale: number;
+  expandedScale: number;
   monitorId: string;
   activeMonitorId: string;
   monitors: { id: string; name: string; width: number; height: number; scaleFactor: number; primary: boolean }[];
@@ -516,6 +574,10 @@ export interface IslandPreferences {
 export async function subscribeIslandLayout(handler: (value: IslandLayout) => void): Promise<UnlistenFn> {
   if (!isTauriRuntime()) return () => {};
   return listen<IslandLayout>("island:layout", e => handler(e.payload));
+}
+export async function subscribeActiveSubtitles(handler: (value: { eventSeq: number; versionId: string; cues: SubtitleCueDto[] }) => void): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) return () => {};
+  return listen<{ eventSeq: number; versionId: string; cues: SubtitleCueDto[] }>("playback:subtitles", e => handler(e.payload));
 }
 export async function subscribeSettingsUpdated(handler: (value: AppSettingsDto) => void): Promise<UnlistenFn> {
   if (!isTauriRuntime()) return () => {};
@@ -556,6 +618,11 @@ export interface BackupBookmarkRecordDto {
   positionMs: number;
   note: string;
   createdAt: string;
+  tags?: string[];
+  workId?: string;
+  workTitle?: string;
+  versionLabel?: string;
+  updatedAt?: string;
 }
 
 export interface BackupAbLoopRecordDto {
@@ -588,12 +655,14 @@ export interface UserBackupBundleDto {
   schemaVersion: number;
   exportedAt: string;
   favorites: BackupFavoriteRecordDto[];
-  positions: BackupPositionRecordDto[];
+  playbackPositions: BackupPositionRecordDto[];
   bookmarks: BackupBookmarkRecordDto[];
   abLoops: BackupAbLoopRecordDto[];
   workOverrides: BackupWorkOverrideRecordDto[];
   workDspOverrides: BackupWorkDspOverrideRecordDto[];
   customDspPresets: DspPresetDto[];
+  dspGlobalConfig: DspConfigDto;
+  dspGlobalPresetId: string | null;
 }
 
 export interface BackupRestoreReportDto {
@@ -601,9 +670,8 @@ export interface BackupRestoreReportDto {
   positionsRestored: number;
   bookmarksRestored: number;
   abLoopsRestored: number;
-  workOverridesRestored: number;
-  workDspOverridesRestored: number;
-  customDspPresetsRestored: number;
+  overridesRestored: number;
+  dspPresetsRestored: number;
 }
 
 export interface ProviderWork {
@@ -962,4 +1030,18 @@ export function isDesktopIslandWindow(): boolean {
 export async function subscribeIslandGlass(handler: (enabled: boolean) => void): Promise<UnlistenFn> {
   if (!isTauriRuntime()) return () => {};
   return listen<boolean>("island:glass", e => handler(e.payload));
+}
+
+export interface AudioOutputStateDto {
+  devices: { id: string; name: string }[];
+  selectedDevice: string;
+}
+export interface QueuePlanDto { id: string; name: string; itemCount: number; updatedAt: string }
+export interface QueuePlanEntryDto {
+  versionId: string; preferredSourceId: string | null; workTitle: string;
+  trackTitle: string; versionLabel: string; unavailableReason: string | null;
+}
+export interface QueuePlanPreviewDto {
+  plan: QueuePlanDto; items: QueuePlanEntryDto[]; previewToken: string;
+  queueToken: string; currentQueueCount: number;
 }

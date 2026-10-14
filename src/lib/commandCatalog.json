@@ -1,0 +1,19 @@
+[
+  {"id":"command_search","label":"搜索命令","category":"导航","keywords":"操作 查找 command search","defaultBinding":"Ctrl+KeyK"},
+  {"id":"play_pause","label":"播放 / 暂停","category":"播放","keywords":"继续 收听 pause play","defaultBinding":"Space"},
+  {"id":"seek_back","label":"快退 5 秒","category":"播放","keywords":"后退 seek backward","defaultBinding":"ArrowLeft"},
+  {"id":"seek_forward","label":"快进 5 秒","category":"播放","keywords":"前进 seek forward","defaultBinding":"ArrowRight"},
+  {"id":"previous","label":"上一首","category":"播放","keywords":"音轨 previous","defaultBinding":"Ctrl+ArrowLeft"},
+  {"id":"next","label":"下一首","category":"播放","keywords":"音轨 next","defaultBinding":"Ctrl+ArrowRight"},
+  {"id":"volume_down","label":"降低音量","category":"播放","keywords":"声音 volume","defaultBinding":"Ctrl+ArrowDown"},
+  {"id":"volume_up","label":"提高音量","category":"播放","keywords":"声音 volume","defaultBinding":"Ctrl+ArrowUp"},
+  {"id":"queue","label":"打开播放队列","category":"面板","keywords":"队列方案 queue","defaultBinding":"Ctrl+Shift+KeyQ"},
+  {"id":"bookmarks","label":"打开书签笔记","category":"面板","keywords":"标签 笔记 bookmark","defaultBinding":"Ctrl+KeyB"},
+  {"id":"subtitles","label":"打开字幕面板","category":"面板","keywords":"字幕 subtitle","defaultBinding":"Ctrl+Shift+KeyS"},
+  {"id":"immersive","label":"展开 / 收起播放页","category":"面板","keywords":"沉浸 immersive","defaultBinding":"Ctrl+KeyI"},
+  {"id":"library","label":"前往我的音频库","category":"导航","keywords":"本地 library","defaultBinding":"Ctrl+Digit1"},
+  {"id":"online","label":"前往在线浏览","category":"导航","keywords":"搜索 在线 online","defaultBinding":"Ctrl+Digit2"},
+  {"id":"favorites","label":"前往喜欢","category":"导航","keywords":"收藏 favorite","defaultBinding":"Ctrl+Digit3"},
+  {"id":"downloads","label":"前往下载任务","category":"导航","keywords":"离线 download","defaultBinding":"Ctrl+Digit4"},
+  {"id":"settings","label":"打开设置","category":"导航","keywords":"快捷键 配置 settings shortcuts","defaultBinding":"Ctrl+Comma"}
+]
