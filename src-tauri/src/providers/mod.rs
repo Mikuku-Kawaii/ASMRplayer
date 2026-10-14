@@ -1106,13 +1106,17 @@ impl AsmrOneProvider {
         let now_str = Utc::now().to_rfc3339();
         let mut downloaded_count = 0usize;
 
-        for node in leaves.into_iter().filter(|n| n.node_type == "subtitle") {
+        for node in leaves.into_iter().filter(|n| n.node_type == "subtitle" ||
+            (n.node_type == "text" && n.title.to_ascii_lowercase().ends_with(".txt") && n.byte_size.unwrap_or(0) <= 2_000_000)) {
             let Some(url) = node.download_url.clone().or(node.stream_url.clone()) else {
                 continue;
             };
             let Ok(text_content) = self.get_text_with_retry(&url).await else {
                 continue;
             };
+            // A bilingual transcript exported as TXT is usable only with a real timeline.
+            // Never invent timing for readme files or untimed scripts.
+            if node.node_type == "text" && crate::services::library::parse_subtitle_bytes(text_content.as_bytes(), 0).map(|c| c.is_empty()).unwrap_or(true) { continue; }
             let safe_name: String = node
                 .title
                 .chars()
@@ -1156,7 +1160,7 @@ impl AsmrOneProvider {
                     .optional()?;
                 if let Some(aid) = existing {
                     conn.execute(
-                        "UPDATE attachments SET absolute_path = ?1, availability = 'available' WHERE id = ?2",
+                        "UPDATE attachments SET absolute_path = ?1, availability = 'available', attachment_type = 'subtitle' WHERE id = ?2",
                         params![abs_str, aid],
                     )?;
                 } else {
@@ -1269,7 +1273,7 @@ impl AsmrOneProvider {
 
         let _ = self.db.with_conn(|conn| {
             conn.execute(
-                "UPDATE attachments SET absolute_path = ?1, availability = 'available' WHERE id = ?2",
+                "UPDATE attachments SET absolute_path = ?1, availability = 'available', attachment_type = 'subtitle' WHERE id = ?2",
                 params![abs_str, attachment_id],
             )?;
             Ok(())
