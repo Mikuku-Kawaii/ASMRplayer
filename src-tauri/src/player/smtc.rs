@@ -46,6 +46,18 @@ mod imp {
         is_playback_position_change_enabled: Arc<AtomicBool>,
         metadata_generation: Arc<AtomicU64>,
         last_metadata: Mutex<Option<CachedSmtcMetadata>>,
+        button_token: Option<i64>,
+        seek_token: Option<i64>,
+    }
+
+    impl Drop for NativeSmtcController {
+        fn drop(&mut self) {
+            self.metadata_generation.fetch_add(1, Ordering::SeqCst);
+            self.is_playback_position_change_enabled.store(false, Ordering::Relaxed);
+            if let Some(token) = self.button_token.take() { let _ = self.smtc.RemoveButtonPressed(token); }
+            if let Some(token) = self.seek_token.take() { let _ = self.smtc.RemovePlaybackPositionChangeRequested(token); }
+            let _ = self.smtc.SetIsEnabled(false);
+        }
     }
 
     impl NativeSmtcController {
@@ -86,7 +98,7 @@ mod imp {
 
             // Subscribe to hardware / OS transport buttons
             let cb_btn = cb.clone();
-            let _ = smtc.ButtonPressed(&TypedEventHandler::<
+            let button_token = smtc.ButtonPressed(&TypedEventHandler::<
                 SystemMediaTransportControls,
                 SystemMediaTransportControlsButtonPressedEventArgs,
             >::new(move |_sender, args| {
@@ -108,12 +120,12 @@ mod imp {
                     }
                 }
                 Ok(())
-            }));
+            })).ok();
 
             // Task 3: Subscribe to external Seek requests (Windows Lock Screen, WinIsland, etc.)
             let cb_seek = cb;
             let seek_enabled_flag = is_playback_position_change_enabled.clone();
-            let _ = smtc.PlaybackPositionChangeRequested(&TypedEventHandler::<
+            let seek_token = smtc.PlaybackPositionChangeRequested(&TypedEventHandler::<
                 SystemMediaTransportControls,
                 PlaybackPositionChangeRequestedEventArgs,
             >::new(move |_sender, args| {
@@ -128,13 +140,15 @@ mod imp {
                     }
                 }
                 Ok(())
-            }));
+            })).ok();
 
             Ok(Self {
                 smtc,
                 is_playback_position_change_enabled,
                 metadata_generation,
                 last_metadata: Mutex::new(None),
+                button_token,
+                seek_token,
             })
         }
 

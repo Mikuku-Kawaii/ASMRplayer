@@ -1,4 +1,4 @@
-use crate::domain::{AppError, AppResult, ErrorCode};
+use crate::domain::{AppError, AppResult, ErrorCode, AudioOutputDeviceDto};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -90,6 +90,7 @@ pub struct MpvController {
     af_graph: Arc<Mutex<String>>,
     hardware_acceleration: Arc<Mutex<bool>>,
     audio_exclusive: Arc<Mutex<bool>>,
+    audio_device: Arc<Mutex<String>>,
 }
 
 impl MpvController {
@@ -101,6 +102,7 @@ impl MpvController {
             af_graph: Arc::new(Mutex::new(String::new())),
             hardware_acceleration: Arc::new(Mutex::new(true)),
             audio_exclusive: Arc::new(Mutex::new(false)),
+            audio_device: Arc::new(Mutex::new("auto".into())),
         }
     }
 
@@ -118,6 +120,35 @@ impl MpvController {
 
     pub fn set_audio_exclusive_flag(&self, exclusive: bool) {
         *self.audio_exclusive.lock() = exclusive;
+    }
+
+    pub fn set_initial_audio_device(&self, device: String) {
+        *self.audio_device.lock() = device;
+    }
+
+    pub fn selected_audio_device(&self) -> String {
+        self.audio_device.lock().clone()
+    }
+
+    pub async fn audio_devices(&self) -> AppResult<Vec<AudioOutputDeviceDto>> {
+        let value = self.command(json!(["get_property", "audio-device-list"])).await?;
+        let list = value.as_array().ok_or_else(|| AppError::new(ErrorCode::MpvIpcError, "无法读取输出设备列表"))?;
+        let mut devices = vec![AudioOutputDeviceDto { id: "auto".into(), name: "系统默认设备".into() }];
+        for item in list {
+            if let Some(id) = item["name"].as_str().filter(|id| id.starts_with("wasapi/")) {
+                devices.push(AudioOutputDeviceDto {
+                    id: id.into(),
+                    name: item["description"].as_str().unwrap_or(id).into(),
+                });
+            }
+        }
+        Ok(devices)
+    }
+
+    pub async fn set_audio_device(&self, device: &str) -> AppResult<()> {
+        self.command(json!(["set_property", "audio-device", device])).await?;
+        *self.audio_device.lock() = device.into();
+        Ok(())
     }
 
     pub fn is_audio_exclusive(&self) -> bool {
@@ -211,6 +242,7 @@ impl MpvController {
         let hw_accel = *self.hardware_acceleration.lock();
         let exclusive = *self.audio_exclusive.lock();
         let current_af = self.af_graph.lock().clone();
+        let device = self.audio_device.lock().clone();
 
         let ctx = unsafe { (api.mpv_create)() };
         if ctx.is_null() {
@@ -231,6 +263,7 @@ impl MpvController {
             let _ = api.set_option_str(ctx, "sub", "no");
             let _ = api.set_option_str(ctx, "audio-display", "no");
             let _ = api.set_option_str(ctx, "ao", "wasapi");
+            api.set_option_str(ctx, "audio-device", &device)?;
             let _ = api.set_option_str(
                 ctx,
                 "audio-exclusive",

@@ -3,11 +3,26 @@ use parking_lot::{Mutex, RwLock};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 pub const DEFAULT_AMLL_PORT: u16 = 23330;
+const MAX_AMLL_CLIENTS: usize = 8;
+// Covers handshake workers as well as established sockets.
+struct ConnectionSlot(Arc<AtomicUsize>);
+impl ConnectionSlot {
+    fn acquire(count: &Arc<AtomicUsize>) -> Option<Self> {
+        count.fetch_update(Ordering::AcqRel, Ordering::Relaxed,
+            |n| (n < MAX_AMLL_CLIENTS).then_some(n + 1)).ok()?;
+        Some(Self(count.clone()))
+    }
+}
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::AcqRel); }
+}
+struct WsClient { stream: TcpStream, _slot: ConnectionSlot }
+
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AmllTrackState {
@@ -29,7 +44,8 @@ static GLOBAL_AMLL_HUB: std::sync::OnceLock<Arc<AmllBroadcastHub>> = std::sync::
 
 pub struct AmllBroadcastHub {
     state: RwLock<AmllTrackState>,
-    ws_clients: Mutex<Vec<TcpStream>>,
+    ws_clients: Mutex<Vec<WsClient>>,
+    connections: Arc<AtomicUsize>,
     winisland_was_online: AtomicBool,
     port: u16,
 }
@@ -45,6 +61,7 @@ impl AmllBroadcastHub {
                 let hub = Arc::new(Self {
                     state: RwLock::new(AmllTrackState::default()),
                     ws_clients: Mutex::new(Vec::new()),
+                    connections: Arc::new(AtomicUsize::new(0)),
                     winisland_was_online: AtomicBool::new(false),
                     port,
                 });
@@ -71,16 +88,18 @@ impl AmllBroadcastHub {
                     return;
                 };
                 for stream in listener.incoming().flatten() {
+                    hub.prune_disconnected_clients();
+                    let Some(slot) = ConnectionSlot::acquire(&hub.connections) else { continue; };
                     let hub_conn = hub.clone();
-                    std::thread::spawn(move || {
-                        Self::handle_incoming_connection(hub_conn, stream);
+                    let _ = std::thread::Builder::new().name("amll-client".into()).spawn(move || {
+                        Self::handle_incoming_connection(hub_conn, stream, slot);
                     });
                 }
             })
             .ok();
     }
 
-    fn handle_incoming_connection(hub: Arc<Self>, mut stream: TcpStream) {
+    fn handle_incoming_connection(hub: Arc<Self>, mut stream: TcpStream, slot: ConnectionSlot) {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
         let _ = stream.set_nodelay(true);
@@ -140,7 +159,8 @@ impl AmllBroadcastHub {
                     }
                     let progress_msg = build_amll_progress_message(&snap);
                     let _ = stream.write_all(&encode_ws_text_frame(&progress_msg));
-                    hub.ws_clients.lock().push(stream);
+                    let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
+                    hub.ws_clients.lock().push(WsClient { stream, _slot: slot });
                 }
             }
             return;
@@ -210,10 +230,25 @@ impl AmllBroadcastHub {
         }
     }
 
+    fn prune_disconnected_clients(&self) {
+        // Paused playback may not broadcast, so reap closed sockets before admitting reconnects.
+        self.ws_clients.lock().retain_mut(|client| {
+            if client.stream.set_nonblocking(true).is_err() { return false; }
+            let mut byte = [0];
+            let connected = match client.stream.peek(&mut byte) {
+                Ok(0) => false,
+                Ok(_) => byte[0] & 0x0f != 8, // WebSocket close frame
+                Err(error) => matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted),
+            };
+            client.stream.set_nonblocking(false).is_ok() && connected
+        });
+    }
+
     pub fn broadcast_ws_message(&self, json_text: &str) {
-        let frame = encode_ws_text_frame(json_text);
         let mut clients = self.ws_clients.lock();
-        clients.retain_mut(|stream| stream.write_all(&frame).is_ok());
+        if clients.is_empty() { return; }
+        let frame = encode_ws_text_frame(json_text);
+        clients.retain_mut(|client| client.stream.write_all(&frame).is_ok());
     }
 
     /// Updates the active track and its matched subtitle cues, writes `.lrc` into `cache_dir/smtc_lrc`,
@@ -233,6 +268,17 @@ impl AmllBroadcastHub {
         cues: Vec<SubtitleCueDto>,
     ) -> bool {
         let clean_title = sanitize_smtc_track_title(raw_title);
+        // Progress-only updates must not reformat/copy whole subtitle documents or rewrite files.
+        let unchanged = {
+            let guard = self.state.read();
+            guard.version_id == version_id && guard.title == clean_title
+                && guard.artist == artist && guard.album == album
+                && guard.cover_path == cover_path && guard.cues == cues
+        };
+        if unchanged {
+            self.update_progress(position_ms, duration_ms, is_playing);
+            return false;
+        }
         let active_cue_text = find_active_cue_at(&cues, position_ms);
         let lrc_text = if cues.is_empty() {
             String::new()
@@ -254,35 +300,23 @@ impl AmllBroadcastHub {
             duration_ms,
             position_ms,
             is_playing,
-            cues: cues.clone(),
+            cues,
             active_cue_text,
             lrc_text,
             ttml_text,
         };
 
-        let track_or_cues_changed = {
-            let mut guard = self.state.write();
-            let changed = guard.version_id != next_state.version_id
-                || guard.title != next_state.title
-                || guard.artist != next_state.artist
-                || guard.cues.len() != next_state.cues.len()
-                || guard.lrc_text != next_state.lrc_text;
-            *guard = next_state.clone();
-            changed
+        *self.state.write() = next_state.clone();
+
+        let smtc_lrc_dir = cache_dir.join("smtc_lrc");
+        let winisland_config_updated = if !next_state.cues.is_empty() {
+            let _ = write_smtc_lrc_files(&smtc_lrc_dir, &clean_title, artist, &next_state.lrc_text);
+            self.sync_winisland_config(&smtc_lrc_dir, true)
+        } else {
+            self.sync_winisland_config(&smtc_lrc_dir, false)
         };
 
-        let mut winisland_config_updated = false;
-        let smtc_lrc_dir = cache_dir.join("smtc_lrc");
-        if !cues.is_empty() {
-            let _ = write_smtc_lrc_files(&smtc_lrc_dir, &clean_title, artist, &next_state.lrc_text);
-            winisland_config_updated =
-                self.sync_winisland_config(&smtc_lrc_dir, true);
-        } else if track_or_cues_changed {
-            winisland_config_updated =
-                self.sync_winisland_config(&smtc_lrc_dir, false);
-        }
-
-        if track_or_cues_changed {
+        if !self.ws_clients.lock().is_empty() {
             for msg in build_amll_track_messages(&next_state) {
                 self.broadcast_ws_message(&msg);
             }
@@ -778,6 +812,60 @@ fn base64_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_slots_are_bounded_and_released_after_disconnect() {
+        let count = Arc::new(AtomicUsize::new(0));
+        for _ in 0..1000 {
+            let slots: Vec<_> = (0..MAX_AMLL_CLIENTS).map(|_| ConnectionSlot::acquire(&count).unwrap()).collect();
+            assert!(ConnectionSlot::acquire(&count).is_none());
+            drop(slots);
+            assert_eq!(count.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn closed_clients_are_reaped_even_when_playback_is_paused() {
+        let hub = AmllBroadcastHub {
+            state: RwLock::new(AmllTrackState::default()), ws_clients: Mutex::new(Vec::new()),
+            connections: Arc::new(AtomicUsize::new(0)), winisland_was_online: AtomicBool::new(false), port: 0,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        for _ in 0..32 {
+            let peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            hub.ws_clients.lock().push(WsClient { stream, _slot: ConnectionSlot::acquire(&hub.connections).unwrap() });
+            peer.shutdown(std::net::Shutdown::Both).unwrap();
+            let start = std::time::Instant::now();
+            while hub.connections.load(Ordering::Relaxed) != 0 {
+                hub.prune_disconnected_clients();
+                assert!(start.elapsed() < Duration::from_secs(2));
+                std::thread::yield_now();
+            }
+            assert!(hub.ws_clients.lock().is_empty());
+        }
+    }
+
+    #[test]
+    fn progress_only_updates_retain_subtitle_documents_without_disk_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let cues = vec![SubtitleCueDto { index: 0, start_ms: 0, end_ms: 10000, text: "subtitle".into() }];
+        let hub = AmllBroadcastHub {
+            state: RwLock::new(AmllTrackState { version_id: Some("v".into()), title: "Track".into(),
+                cues: cues.clone(), lrc_text: "retained document".into(), ..Default::default() }),
+            ws_clients: Mutex::new(Vec::new()), connections: Arc::new(AtomicUsize::new(0)),
+            winisland_was_online: AtomicBool::new(false), port: 0,
+        };
+        let original = hub.state.read().lrc_text.as_ptr();
+        for position in 0..1000 {
+            assert!(!hub.update_track_and_subtitles(dir.path(), Some("v".into()), "Track", "", "",
+                None, 10000, position, true, cues.clone()));
+        }
+        assert_eq!(hub.state.read().lrc_text.as_ptr(), original);
+        assert_eq!(hub.state.read().position_ms, 999);
+        assert_eq!(hub.state.read().active_cue_text.as_deref(), Some("subtitle"));
+        assert!(!dir.path().join("smtc_lrc").exists());
+    }
 
     #[test]
     fn test_websocket_accept_rfc6455_vector() {
