@@ -1,19 +1,24 @@
 use crate::db::Database;
 use crate::domain::*;
 use chrono::{Duration as ChronoDuration, Utc};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use reqwest::{header, StatusCode};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
+mod media_cache;
+use media_cache::MediaCache;
+mod filters;
+pub use filters::{OnlineFilter, ProviderTag};
+use filters::build_filter_query;
+
 pub const PROVIDER_ASMR_ONE: &str = "asmr_one";
 pub const DEFAULT_API_BASE: &str = "https://api.asmr-200.com";
-const KEYRING_SERVICE: &str = "com.asmrplayer.desktop";
+const KEYRING_SERVICE: &str = if cfg!(debug_assertions) { "com.asmrplayer.desktop.debug" } else { "com.asmrplayer.desktop" };
 const KEYRING_ACCOUNT: &str = "asmr_one_auth_token";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -449,10 +454,16 @@ pub struct AsmrOneProvider {
     proxy_url: Arc<RwLock<Option<String>>>,
     auth_token_mem: Arc<RwLock<Option<String>>>,
     nsfw_enabled: Arc<RwLock<bool>>,
-    media_cache: Arc<RwLock<HashMap<(String, String), (Vec<ProviderLeafNode>, chrono::DateTime<Utc>)>>>,
+    media_cache: Arc<RwLock<MediaCache>>,
+    http_client: Arc<Mutex<Option<(Option<String>, reqwest::Client)>>>,
 }
 
 impl AsmrOneProvider {
+    pub async fn list_tags(&self) -> AppResult<Vec<ProviderTag>> {
+        let body = self.get_text_with_retry(&format!("{}/api/tags/", self.api_base())).await?;
+        filters::parse_tags(&body)
+    }
+
     pub fn new(db: Database) -> Self {
         let api_base = db
             .get_setting("api_base_url")
@@ -484,7 +495,8 @@ impl AsmrOneProvider {
             proxy_url: Arc::new(RwLock::new(proxy_url)),
             auth_token_mem: Arc::new(RwLock::new(token_initial)),
             nsfw_enabled: Arc::new(RwLock::new(nsfw_enabled)),
-            media_cache: Arc::new(RwLock::new(HashMap::new())),
+            media_cache: Arc::new(RwLock::new(MediaCache::default())),
+            http_client: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -555,25 +567,49 @@ impl AsmrOneProvider {
         self.auth_token_mem.read().is_some()
     }
 
-    pub fn build_client(&self) -> AppResult<reqwest::Client> {
+    /// T1508: streaming downloads have no API-style total deadline. The download
+    /// service bounds each network wait separately, excluding intentional throttling.
+    pub fn build_download_client(&self) -> AppResult<reqwest::Client> {
         let mut builder = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(8))
+            .pool_max_idle_per_host(2)
+            .user_agent("ASMRPlayer-Desktop/0.3.0 (Windows NT 10.0; Win64; x64)");
+        if let Some(proxy) = self.proxy_url() {
+            builder = builder.proxy(reqwest::Proxy::all(proxy).map_err(|_| {
+                AppError::new(ErrorCode::InvalidInput, "下载代理配置无效，请检查网络设置")
+            })?);
+        }
+        builder.build().map_err(|_| AppError::new(ErrorCode::NetworkUnavailable, "无法创建下载连接"))
+    }
+
+    pub fn build_client(&self) -> AppResult<reqwest::Client> {
+        let proxy_url = self.proxy_url();
+        let mut cached = self.http_client.lock();
+        if let Some((proxy, client)) = cached.as_ref() {
+            if *proxy == proxy_url { return Ok(client.clone()); }
+        }
+        let mut builder = reqwest::Client::builder()
+            .pool_max_idle_per_host(2)
+            .pool_idle_timeout(Duration::from_secs(30))
             .timeout(Duration::from_secs(15))
             .connect_timeout(Duration::from_secs(8))
             .user_agent("ASMRPlayer-Desktop/0.3.0 (Windows NT 10.0; Win64; x64)");
 
-        if let Some(proxy_str) = self.proxy_url() {
-            let proxy = reqwest::Proxy::all(&proxy_str).map_err(|e| {
+        if let Some(proxy_str) = &proxy_url {
+            let proxy = reqwest::Proxy::all(proxy_str).map_err(|e| {
                 AppError::new(ErrorCode::InvalidInput, format!("代理配置无效: {}", e))
             })?;
             builder = builder.proxy(proxy);
         }
 
-        builder.build().map_err(|e| {
+        let client = builder.build().map_err(|e| {
             AppError::new(
                 ErrorCode::NetworkUnavailable,
                 format!("创建 HTTP 客户端失败: {}", e),
             )
-        })
+        })?;
+        *cached = Some((proxy_url, client.clone()));
+        Ok(client)
     }
 
     pub async fn get_text_with_retry(&self, url: &str) -> AppResult<String> {
@@ -673,8 +709,8 @@ impl AsmrOneProvider {
         let nodes = parse_tracks_v2_json(&work.source_work_id, &tracks_body)?;
 
         self.media_cache.write().insert(
-            (PROVIDER_ASMR_ONE.to_string(), work.source_work_id.clone()),
-            (nodes.clone(), Utc::now()),
+            (format!("{PROVIDER_ASMR_ONE}@{base}"), work.source_work_id.clone()),
+            Arc::new(nodes.clone()),
         );
 
         Ok((work, nodes, tracks_body))
@@ -1250,36 +1286,23 @@ impl AsmrOneProvider {
         purpose: MediaPurpose,
         force_refresh: bool,
     ) -> AppResult<ResolvedMedia> {
+        let base = self.api_base();
         let key = (
-            media_ref.provider.clone(),
+            format!("{}@{}", media_ref.provider, base),
             media_ref.source_work_id.clone(),
         );
 
-        let nodes = if !force_refresh {
-            let cached = self.media_cache.read().get(&key).cloned();
-            if let Some((list, ts)) = cached {
-                if Utc::now() - ts < ChronoDuration::minutes(15) {
-                    Some(list)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let nodes = if force_refresh { None } else { self.media_cache.write().get(&key) };
 
         let leaf_list = match nodes {
             Some(list) => list,
             None => {
-                let base = self.api_base();
                 let tracks_url = format!("{}/api/tracks/{}?v=2", base, media_ref.source_work_id);
                 let tracks_body = self.get_text_with_retry(&tracks_url).await?;
-                let parsed = parse_tracks_v2_json(&media_ref.source_work_id, &tracks_body)?;
+                let parsed = Arc::new(parse_tracks_v2_json(&media_ref.source_work_id, &tracks_body)?);
                 self.media_cache
                     .write()
-                    .insert(key, (parsed.clone(), Utc::now()));
+                    .insert(key, parsed.clone());
                 parsed
             }
         };
@@ -1523,35 +1546,12 @@ impl AsmrOneProvider {
         let base = self.api_base();
         let sub_flag = if subtitle_only { 1 } else { 0 };
 
-        if !self.nsfw_enabled() && !q.contains("$age:") && !q.contains("$nsfw:") {
-            let sfw_q = format!("{} $age:general$", q);
-            let sfw_url = format!(
-                "{}/api/search/{}?order={}&sort={}&page={}&subtitle={}",
-                base,
-                urlencoding::encode(&sfw_q),
-                urlencoding::encode(effective_order),
-                urlencoding::encode(sort),
-                up_page,
-                sub_flag
-            );
-            if let Ok(body) = self.get_text_with_retry(&sfw_url).await {
-                if let Ok(parsed) = parse_works_page_json(&body, up_page) {
-                    let raw_len = parsed.items.len();
-                    if raw_len > 0 {
-                        let filtered =
-                            self.apply_nsfw_filter(Self::fill_default_cover_urls(&base, parsed));
-                        if !filtered.items.is_empty() {
-                            return Ok((filtered, raw_len));
-                        }
-                    }
-                }
-            }
-        }
-
+        // Empty results and failures must never trigger a broader, unfiltered query.
+        let q = if self.nsfw_enabled() { q.to_owned() } else { format!("{q} $age:general$") };
         let url = format!(
             "{}/api/search/{}?order={}&sort={}&page={}&subtitle={}",
             base,
-            urlencoding::encode(q),
+            urlencoding::encode(&q),
             urlencoding::encode(effective_order),
             urlencoding::encode(sort),
             up_page,
@@ -1625,6 +1625,19 @@ impl AsmrOneProvider {
         })
     }
 
+    pub async fn search_filtered_works(
+        &self,
+        keyword: &str,
+        filters: &[OnlineFilter],
+        page: u32,
+        order: &str,
+        sort: &str,
+        subtitle_only: bool,
+    ) -> AppResult<Page<ProviderWork>> {
+        let query = build_filter_query(keyword, filters)?;
+        self.search_works(&query, page, order, sort, subtitle_only).await
+    }
+
     pub async fn search_works(
         &self,
         keyword: &str,
@@ -1667,12 +1680,9 @@ impl AsmrOneProvider {
                         break;
                     }
                 }
-                Err(e) => {
-                    if offset_page == 0 {
-                        return Err(e);
-                    }
-                    break;
-                }
+                // A 12-item client page may span two upstream pages. Do not report
+                // a successful partial result when the second request failed.
+                Err(e) => return Err(e),
             }
         }
 
@@ -1908,6 +1918,33 @@ mod provider_tests {
     use tempfile::tempdir;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn successive_requests_reuse_one_connection() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            for _ in 0..2 {
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).expect("both requests must arrive on the same socket");
+                    header.push(byte[0]);
+                }
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").unwrap();
+            }
+        });
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        let provider = AsmrOneProvider::new(db);
+        for _ in 0..2 {
+            assert_eq!(tokio::time::timeout(Duration::from_secs(4), provider.get_text_with_retry(&url)).await.unwrap().unwrap(), "ok");
+        }
+        server.join().unwrap();
+    }
 
     #[test]
     fn test_normalize_work_id_input() {
