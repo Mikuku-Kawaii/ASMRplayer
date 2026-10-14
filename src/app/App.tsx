@@ -19,6 +19,7 @@ import {
   Subtitles,
   ListMusic,
   AppWindow,
+  Search,
 } from "lucide-react";
 import {
   PlaybackSnapshot,
@@ -45,6 +46,11 @@ import { OnlineView } from "../features/online/OnlineView";
 import { DownloadsView } from "../features/downloads/DownloadsView";
 import { SettingsView } from "../features/settings/SettingsView";
 import { useUpdater } from "../features/settings/useUpdater";
+import { ReleaseHistoryHost } from "../features/settings/ReleaseHistory";
+import { openUpdateDialog, UpdateDialogHost } from "../features/settings/UpdateDialog";
+import { ShortcutProvider, useShortcuts } from "../features/commands/ShortcutProvider";
+import { CommandPalette } from "../features/commands/CommandPalette";
+import { commands, eventBinding, shortcutTargetBlocked, shortcutTitle } from "../lib/shortcuts";
 
 type NavPage =
   | "library"
@@ -54,13 +60,20 @@ type NavPage =
   | "downloads"
   | "settings";
 
-export const App: React.FC = () => {
-  const { snapshot: update } = useUpdater();
+export const App: React.FC = () => <ShortcutProvider><AppShell /></ShortcutProvider>;
+
+const AppShell: React.FC = () => {
+  const { bindings, ready: shortcutsReady } = useShortcuts();
+  const [commandSearchOpen, setCommandSearchOpen] = useState(false);
+  const [releaseHistoryOpen, setReleaseHistoryOpen] = useState(false);
+  const commandPending = useRef(false);
+  const { snapshot: update, run: runUpdate } = useUpdater();
   const [activeNav, setActiveNav] = useState<NavPage>("library");
   const [selectedWorkId, setSelectedWorkId] = useState<string | null>(null);
+  const [bookmarkVersion, setBookmarkVersion] = useState<string | undefined>();
   const [snapshot, setSnapshot] = useState<PlaybackSnapshot>(defaultSnapshot);
   const [drawerTab, setDrawerTab] = useState<
-    "none" | "queue" | "bookmarks" | "subtitles" | "dsp"
+    "none" | "queue" | "bookmarks" | "subtitles" | "dsp" | "audio"
   >("none");
   const [globalError, setGlobalError] = useState<AppError | null>(null);
   const [isMaximized, setIsMaximized] = useState<boolean>(false);
@@ -166,58 +179,6 @@ export const App: React.FC = () => {
       if (unlistenTick) unlistenTick();
     };
   }, [applySnapshot, applyTick]);
-
-  // Global keyboard shortcuts (Space = Play/Pause, ArrowLeft/Right = -5s/+5s seek, Escape = Close Immersive Stage)
-  // Do NOT intercept when focus is inside an input, textarea, or select element!
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.tagName === "SELECT" ||
-          target.isContentEditable)
-      ) {
-        return;
-      }
-
-      if (e.code === "Escape" && isImmersiveOpen) {
-        e.preventDefault();
-        setIsImmersiveOpen(false);
-        return;
-      }
-
-      if (e.code === "Space") {
-        e.preventDefault();
-        void callCommand<PlaybackSnapshot>("toggle_pause")
-          .then(applySnapshot)
-          .catch((err) => setGlobalError(normalizeAppError(err)));
-      } else if (e.code === "ArrowLeft" && snapshot.currentVersionId) {
-        e.preventDefault();
-        void callCommand<PlaybackSnapshot>("seek_ms", {
-          positionMs: Math.max(0, snapshot.positionMs - 5000),
-        })
-          .then(applySnapshot)
-          .catch((err) => setGlobalError(normalizeAppError(err)));
-      } else if (e.code === "ArrowRight" && snapshot.currentVersionId) {
-        e.preventDefault();
-        void callCommand<PlaybackSnapshot>("seek_ms", {
-          positionMs: snapshot.positionMs + 5000,
-        })
-          .then(applySnapshot)
-          .catch((err) => setGlobalError(normalizeAppError(err)));
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [
-    applySnapshot,
-    isImmersiveOpen,
-    snapshot.currentVersionId,
-    snapshot.positionMs,
-  ]);
 
   // Load work cover & synchronized subtitle cues for Immersive Stage & Mini-Player
   useEffect(() => {
@@ -429,13 +390,14 @@ export const App: React.FC = () => {
   ]);
 
   const handleToggleDrawer = (
-    tab: "queue" | "bookmarks" | "subtitles" | "dsp"
+    tab: "queue" | "bookmarks" | "subtitles" | "dsp" | "audio"
   ) => {
     setDrawerTab((cur) => (cur === tab ? "none" : tab));
   };
 
   const handleOpenWorkDetail = useCallback(
-    (workId: string) => {
+    (workId: string, versionId?: string) => {
+      setBookmarkVersion(versionId);
       setIsImmersiveOpen(false);
       detailHistoryRef.current.push({
         workId: selectedWorkId,
@@ -493,28 +455,72 @@ export const App: React.FC = () => {
     [selectedWorkId, activeNav]
   );
 
-  const handleSelectNav = (page: NavPage) => {
+  const handleSelectNav = useCallback((page: NavPage) => {
     setIsImmersiveOpen(false);
     detailHistoryRef.current = [];
     setSelectedWorkId(null);
     setActiveNav(page);
     setLibraryRefreshTick((t) => t + 1);
-  };
+  }, []);
+
+  const commandDisabledReason = useCallback((id: string): string | null => {
+    if (id === "play_pause" && !snapshot.currentVersionId && snapshot.queue.length === 0) return "队列为空，请先选择音轨";
+    if (["seek_back", "seek_forward"].includes(id) && !snapshot.currentVersionId) return "尚未选择音轨";
+    if (["previous", "next"].includes(id) && snapshot.queue.length === 0) return "播放队列为空";
+    if (isMiniMode && !["play_pause", "seek_back", "seek_forward", "previous", "next", "volume_up", "volume_down"].includes(id)) return "请先展开完整窗口";
+    return null;
+  }, [snapshot.currentVersionId, snapshot.queue.length, isMiniMode]);
+
+  const executeCommand = useCallback(async (id: string) => {
+    if (commandPending.current) throw new Error("上一条命令正在执行，请稍后重试");
+    const reason = commandDisabledReason(id); if (reason) throw new Error(reason);
+    if (id === "command_search") { setCommandSearchOpen(true); return; }
+    if (["library", "online", "favorites", "downloads", "settings"].includes(id)) { handleSelectNav(id as NavPage); return; }
+    if (["queue", "bookmarks", "subtitles"].includes(id)) { setDrawerTab(id as "queue" | "bookmarks" | "subtitles"); return; }
+    if (id === "immersive") { setIsImmersiveOpen(value => !value); return; }
+    commandPending.current = true;
+    try {
+      let next: PlaybackSnapshot;
+      if (id === "play_pause") next = await callCommand<PlaybackSnapshot>("toggle_pause");
+      else if (id === "previous" || id === "next") next = await callCommand<PlaybackSnapshot>("step_queue", { delta: id === "next" ? 1 : -1 });
+      else if (id === "seek_back" || id === "seek_forward") next = await callCommand<PlaybackSnapshot>("seek_ms", { positionMs: Math.max(0, Math.min(snapshot.durationMs ?? Infinity, snapshot.positionMs + (id === "seek_forward" ? 5000 : -5000))) });
+      else if (id === "volume_up" || id === "volume_down") next = await callCommand<PlaybackSnapshot>("set_volume", { volume: Math.max(0, Math.min(200, snapshot.volume + (id === "volume_up" ? 5 : -5))) });
+      else throw new Error("命令不存在，请重新打开命令搜索");
+      applySnapshot(next);
+    } finally { commandPending.current = false; }
+  }, [applySnapshot, commandDisabledReason, handleSelectNav, snapshot.durationMs, snapshot.positionMs, snapshot.volume]);
 
   useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229 || !shortcutsReady || shortcutTargetBlocked(event.target)) return;
+      if (event.code === "Escape" && isImmersiveOpen) { event.preventDefault(); setIsImmersiveOpen(false); return; }
+      // Native button/link activation must retain Space/Enter and normal navigation.
+      if (event.target instanceof Element && event.target.closest('button, a, [role="button"]') && !event.ctrlKey && !event.altKey) return;
+      const binding = eventBinding(event); if (!binding) return;
+      const command = commands.find(item => bindings[item.id] === binding); if (!command) return;
+      event.preventDefault();
+      if (!commandPending.current) void executeCommand(command.id).catch(error => setGlobalError(normalizeAppError(error)));
+    };
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  }, [bindings, executeCommand, isImmersiveOpen, shortcutsReady]);
+
+  useEffect(() => {
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     void subscribeIslandVisibility((isOpen) => {
-      setIsIslandOpen(isOpen);
+      if (!disposed) setIsIslandOpen(isOpen);
     }).then((fn) => {
-      unlisten = fn;
-    });
+      if (disposed) fn(); else unlisten = fn;
+    }).catch(() => {});
     void callCommand<boolean>("is_island_open")
       .then((open) => {
-        if (typeof open === "boolean") setIsIslandOpen(open);
+        if (!disposed && typeof open === "boolean") setIsIslandOpen(open);
       })
       .catch(() => {});
     return () => {
-      if (unlisten) unlisten();
+      disposed = true;
+      unlisten?.();
     };
   }, []);
 
@@ -649,6 +655,8 @@ export const App: React.FC = () => {
         isImmersiveOpen ? "is-immersive-open" : ""
       }`}
     >
+      <UpdateDialogHost update={update} run={runUpdate} enabled={!isMiniMode && !commandSearchOpen && !releaseHistoryOpen} />
+      {commandSearchOpen && <CommandPalette onClose={() => setCommandSearchOpen(false)} onExecute={executeCommand} disabledReason={commandDisabledReason} />}
       <ErrorBanner
         error={globalError}
         onRestartEngine={
@@ -903,6 +911,7 @@ export const App: React.FC = () => {
         </div>
 
         <div className="titlebar-controls">
+          <button type="button" className="titlebar-btn" aria-label="搜索命令" title={shortcutTitle("搜索命令", bindings.command_search)} onClick={() => setCommandSearchOpen(true)}><Search size={14} /></button>
           <button
             type="button"
             className={`titlebar-btn ${isIslandOpen ? "active-island active-pin" : ""}`}
@@ -1042,8 +1051,9 @@ export const App: React.FC = () => {
               </button>
             </li>
           </ul>
+          <ReleaseHistoryHost enabled={!isMiniMode && !commandSearchOpen} onOpenChange={setReleaseHistoryOpen} />
           {update?.latestVersion && !update.dismissed && ["available", "ready"].includes(update.phase) && (
-            <button type="button" className="btn btn-secondary update-nav-notice" onClick={() => handleSelectNav("settings")}>
+            <button type="button" className="btn btn-secondary update-nav-notice" onClick={openUpdateDialog}>
               <Download size={16} />{update.phase === "ready" ? "更新已备妥" : `发现新版本 v${update.latestVersion}`}
             </button>
           )}
@@ -1201,6 +1211,7 @@ export const App: React.FC = () => {
           {selectedWorkId && (
             <WorkDetailView
               workId={selectedWorkId}
+              focusVersionId={bookmarkVersion}
               onBack={handleBackFromDetail}
               onSnapshotChange={applySnapshot}
               onOpenDownloads={() => {
@@ -1294,6 +1305,7 @@ export const App: React.FC = () => {
           onClose={() => setDrawerTab("none")}
           snapshot={snapshot}
           onSnapshotChange={applySnapshot}
+          onOpenWorkDetail={handleOpenWorkDetail}
           onSubtitlesChanged={() => setSubtitleRefreshTick((t) => t + 1)}
           onError={setGlobalError}
         />
