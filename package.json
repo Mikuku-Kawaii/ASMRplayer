@@ -1,7 +1,7 @@
 {
   "name": "asmr-player",
   "private": true,
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Windows local & asmr.one desktop ASMR player built with Tauri 2, React, TypeScript, Rust, SQLite, and mpv",
   "type": "module",
   "scripts": {
@@ -11,6 +11,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "vitest run --environment jsdom --globals",
+    "perf:baseline": "pwsh -NoProfile -File scripts/performance/run.ps1",
+    "perf:test": "node --test scripts/performance/report.test.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -18,7 +20,9 @@
     "@tauri-apps/plugin-dialog": "^2.2.0",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

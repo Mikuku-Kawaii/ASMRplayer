@@ -76,3 +76,12 @@ Thumbs.db
 /tests/
 *.test.ts
 *.test.tsx
+
+# Local acceptance reports and regression tooling
+/docs/releases/*-acceptance.md
+/docs/releases/performance-baseline.md
+/docs/releases/ui-refinements.md
+/scripts/performance/
+/src-tauri/src/regression_baseline.rs
+*_tests.rs
+/vitest.config.ts
