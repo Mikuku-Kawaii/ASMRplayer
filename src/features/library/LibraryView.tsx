@@ -32,6 +32,9 @@ import {
   AppError,
 } from "../../lib/api";
 import { DownloadTaskModal } from "../../components/DownloadTaskModal";
+import { LibraryFilters, LibraryFilterSummary, matchesLibraryTags } from "./LibraryFilters";
+import { RemoveWorkDialog, skipsLibraryRemovalConfirmation } from "./RemoveWorkDialog";
+import { BulkOrganizer } from "./BulkOrganizer";
 
 interface LibraryViewProps {
   filterMode: "all" | "local" | "favorites" | "recent";
@@ -48,7 +51,7 @@ interface LibraryViewProps {
 const PAGE_SIZE = 24;
 
 interface ContextMenuState {
-  work: WorkSummary;
+  work: WorkSummary | null;
   x: number;
   y: number;
 }
@@ -66,7 +69,18 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 }) => {
   const [works, setWorks] = useState<WorkSummary[]>([]);
   const [loading, setLoading] = useState(false);
+  const [queryError, setQueryError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const tagsActive = selectedTags.length > 0;
+  const [selecting, setSelecting] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const toggleSelected = (id: string) => setSelectedIds(previous => {
+    const next = new Set(previous);
+    if (next.has(id)) next.delete(id); else if (next.size < 500) next.add(id);
+    return next;
+  });
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [playingAllFavorites, setPlayingAllFavorites] = useState(false);
 
@@ -88,6 +102,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
   // Right-click context menu state
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const contextWork = contextMenu?.work;
 
   // Download preview modal from context menu
   const [dlPreview, setDlPreview] = useState<DownloadPreviewDto | null>(null);
@@ -100,7 +115,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   const [deleteTargetWork, setDeleteTargetWork] = useState<WorkSummary | null>(
     null
   );
-  const [alsoDeleteDownloaded, setAlsoDeleteDownloaded] = useState(false);
+  const removingWork = useRef(false);
 
   // Sync external CV / Tag search keyword when triggered from WorkDetailView
   useEffect(() => {
@@ -118,17 +133,23 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         filter: filterMode,
         search: searchQuery.trim() || null,
       });
-      if (seq === requestSeq.current) setWorks(list);
+      if (seq === requestSeq.current) { setWorks(tagsActive ? list.filter(work => matchesLibraryTags(work, selectedTags)) : list); setQueryError(""); }
     } catch (e) {
-      if (seq === requestSeq.current) onError(normalizeAppError(e));
+      if (seq === requestSeq.current) {
+        const error = normalizeAppError(e);
+        setWorks([]); setQueryError(error.message);
+        onError(error);
+      }
     } finally {
       if (seq === requestSeq.current) setLoading(false);
     }
-  }, [filterMode, searchQuery, onError]);
+  }, [filterMode, searchQuery, onError, tagsActive, selectedTags]);
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [filterMode, searchQuery]);
+    setWorks([]);
+    setSelectedIds(new Set());
+  }, [filterMode, searchQuery, selectedTags]);
 
   useEffect(() => {
     void loadWorks();
@@ -136,15 +157,16 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   }, [loadWorks, refreshTick]);
 
   useEffect(() => {
-    if (!contextMenu) return;
+    if (!contextMenu && !selecting) return;
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setContextMenu(null);
+        if (!contextMenu && !bulkBusy) { setSelecting(false); setSelectedIds(new Set()); }
       }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [contextMenu]);
+  }, [contextMenu, selecting, bulkBusy]);
 
   const handleChooseFolder = async (
     mode: "single_work" | "library_root",
@@ -317,15 +339,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     clientX: number,
     clientY: number
   ) => {
-    const clampedX = Math.min(
-      clientX,
-      Math.max(16, window.innerWidth - 260)
-    );
-    const clampedY = Math.min(
-      clientY,
-      Math.max(16, window.innerHeight - 310)
-    );
-    setContextMenu({ work, x: clampedX, y: clampedY });
+    setContextMenu({ work, x: clientX, y: clientY });
   };
 
   // Context Menu Action: Open unified download tree modal ("创建下载任务")
@@ -407,27 +421,22 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     }
   };
 
-  // Context Menu Action: Confirm remove work from library
-  const handleConfirmDeleteWork = async () => {
-    if (!deleteTargetWork) return;
-    const target = deleteTargetWork;
-    setDeleteTargetWork(null);
+  const removeWork = async (target: WorkSummary, deleteDownloadedFiles: boolean) => {
+    if (removingWork.current) return;
+    removingWork.current = true;
     setBusyWorkId(target.id);
     try {
-      const snap = await callCommand<PlaybackSnapshot>(
-        "delete_work_from_library",
-        {
-          workId: target.id,
-          deleteDownloadedFiles: alsoDeleteDownloaded,
-        }
-      );
+      const snap = await callCommand<PlaybackSnapshot>("delete_work_from_library", { workId: target.id, deleteDownloadedFiles });
       onSnapshotChange(snap);
       await loadWorks();
-    } catch (err) {
-      onError(normalizeAppError(err));
-    } finally {
-      setBusyWorkId(null);
-    }
+    } finally { removingWork.current = false; setBusyWorkId(null); }
+  };
+
+  const requestRemoveWork = (work: WorkSummary) => {
+    if (removingWork.current) return;
+    if (skipsLibraryRemovalConfirmation()) {
+      void removeWork(work, false).catch(error => onError(normalizeAppError(error)));
+    } else setDeleteTargetWork(work);
   };
 
   // Play all favorite works in order, preferring With-SE + WAV format
@@ -463,7 +472,11 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     : 0;
 
   return (
-    <div className="page-container">
+    <div className="page-container library-page" onContextMenu={e => {
+      if ((e.target as HTMLElement).closest('article, input, textarea, button, [role="menu"], [role="dialog"]')) return;
+      e.preventDefault(); e.stopPropagation();
+      setContextMenu({ work: null, x: e.clientX, y: e.clientY });
+    }}>
       {/* M3 Top App Bar */}
       <header className="top-app-bar" aria-label="音频库顶栏">
         <div className="top-bar-primary-row">
@@ -538,12 +551,14 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         </div>
 
         <div className="top-bar-controls-row">
+          <LibraryFilters key={filterMode} value={selectedTags} onChange={setSelectedTags} scope={filterMode} />
           <div className="search-input-wrap">
             <Search size={15} className="text-muted" />
             <input
               type="text"
               className="input-text"
               placeholder="搜索标题、RJ号、社团、声优或标签..."
+              aria-label="搜索音频库"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
@@ -573,6 +588,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           )}
         </div>
       </header>
+
+      <LibraryFilterSummary value={selectedTags} onChange={setSelectedTags} />
+      {loading && <p className="smart-collections-message" role="status">正在查询作品…</p>}
+      {queryError && <div className="smart-collections-message" role="alert">{queryError} <button className="btn btn-secondary btn-sm" type="button" disabled={loading} onClick={() => void loadWorks()}>重试查询</button></div>}
 
       {/* 本地目录导入预览弹窗 (支持单文件/深层子目录智能回溯作品根目录) */}
       {importMode && (
@@ -767,72 +786,17 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         />
       )}
 
-      {/* 从音频库移除作品确认弹窗（M3 安全边界法则） */}
-      {deleteTargetWork && (
-        <section className="modal-card">
-          <div className="modal-header">
-            <h3>从音频库移除作品 · 《{deleteTargetWork.title}》</h3>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => setDeleteTargetWork(null)}
-            >
-              取消
-            </button>
-          </div>
-          <p className="text-muted">
-            此操作将从软件数据库中移除该作品的索引、播放队列项与关联记录，
-            <strong>绝不会删除磁盘上的本地导入原始音频文件</strong>。
-          </p>
-          {deleteTargetWork.hasDownloaded && (
-            <div className="track-actions">
-              <button
-                type="button"
-                className={`dsp-scope-toggle-btn ${
-                  alsoDeleteDownloaded ? "is-lit" : "is-dim"
-                }`}
-                aria-pressed={alsoDeleteDownloaded}
-                onClick={() => setAlsoDeleteDownloaded((v) => !v)}
-              >
-                <span>
-                  同时删除离线文件（仅清理下载目录内的软件下载副本与 .part
-                  临时文件）
-                </span>
-              </button>
-            </div>
-          )}
-          <div className="modal-footer">
-            <button
-              type="button"
-              className="btn btn-ghost"
-              onClick={() => setDeleteTargetWork(null)}
-            >
-              取消
-            </button>
-            <button
-              type="button"
-              className="btn btn-danger"
-              onClick={() => void handleConfirmDeleteWork()}
-            >
-              <Trash2 size={14} />
-              <span>
-                {alsoDeleteDownloaded
-                  ? "移除作品并删除离线文件"
-                  : "确认移除作品索引"}
-              </span>
-            </button>
-          </div>
-        </section>
-      )}
+      {deleteTargetWork && <RemoveWorkDialog work={deleteTargetWork}
+        onConfirm={deleteFiles => removeWork(deleteTargetWork, deleteFiles)} onClose={() => setDeleteTargetWork(null)} />}
 
-      {works.length === 0 && !loading ? (
+      {works.length === 0 && !loading && !queryError ? (
         <div className="empty-state-box">
           <h3>
-            {filterMode === "favorites"
+            {tagsActive ? "没有符合当前条件的作品" : filterMode === "favorites"
               ? "暂无喜欢的作品"
               : filterMode === "recent"
               ? "暂无收听记录"
-              : "暂无收藏或导入的作品"}
+              : "还没有移入或导入的作品"}
           </h3>
         </div>
       ) : (
@@ -841,11 +805,26 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             {visibleWorks.map((work) => (
               <article
                 key={work.id}
-                className="work-card"
+                className={`work-card ${selecting && selectedIds.has(work.id) ? "is-bulk-selected" : ""}`}
+                tabIndex={0}
+                aria-label={selecting ? `${work.title}，${selectedIds.has(work.id) ? "已选中" : "未选中"}` : work.title}
+                onKeyDown={e => {
+                  if (e.target !== e.currentTarget) return;
+                  if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+                    e.preventDefault(); e.stopPropagation();
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    openContextMenuAt(work, rect.left + 16, rect.top + 16);
+                  } else if (e.key === " " || e.key === "Enter") {
+                    e.preventDefault(); e.stopPropagation();
+                    if (selecting) { if (!bulkBusy) toggleSelected(work.id); } else onSelectWork(work.id);
+                  }
+                }}
+                onClickCapture={e => { if (selecting) { e.preventDefault(); e.stopPropagation(); if (!bulkBusy) toggleSelected(work.id); } }}
                 onClick={() => onSelectWork(work.id)}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
+                  e.currentTarget.focus({ preventScroll: true });
                   openContextMenuAt(work, e.clientX, e.clientY);
                 }}
               >
@@ -867,6 +846,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
                 <div className="work-card-header">
                   <div className="work-badges">
+                    {work.isListened !== undefined && <span className="badge">{work.isListened ? "已听" : "未听"}</span>}
                     {work.rjCode && (
                       <span className="badge badge-rj">{work.rjCode}</span>
                     )}
@@ -894,15 +874,15 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   </div>
 
                   <div className="work-card-header-actions">
-                    <button
+                    {!(work.hasLocalImported ?? (work.hasLocal && !work.hasDownloaded)) && <button
                       type="button"
                       className={`btn-fav ${work.isCollected ? "active" : ""}`}
                       onClick={(e) => void handleToggleCollected(work.id, e)}
-                      aria-label={work.isCollected ? "取消收藏" : "收藏到音频库"}
-                      title={work.isCollected ? "取消收藏" : "收藏到音频库"}
+                      aria-label={work.isCollected ? "移出我的音频库" : "移到我的音频库"}
+                      title={work.isCollected ? "移出我的音频库（保留已下载文件）" : "移到我的音频库"}
                     >
                       <Bookmark size={15} />
-                    </button>
+                    </button>}
                     <button
                       type="button"
                       className={`btn-fav ${work.isFavorite ? "active" : ""}`}
@@ -987,37 +967,18 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       )}
 
       {/* 右键浮动菜单 (M3 Surface Container High) */}
-      {contextMenu && (
-        <>
-          <div
-            className="context-menu-backdrop"
-            onClick={() => setContextMenu(null)}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              setContextMenu(null);
-            }}
-          />
-          <div
-            className="m3-context-menu"
-            role="menu"
-            aria-label="作品操作菜单"
-            style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
-          >
-            <div className="m3-context-menu-header">
-              <div className="m3-context-menu-title">
-                {contextMenu.work.title}
-              </div>
-              <div className="m3-context-menu-sub">
-                {contextMenu.work.rjCode ?? "作品"}
-              </div>
-            </div>
-
+      <BulkOrganizer context={contextMenu} onClose={() => setContextMenu(null)} selecting={selecting}
+        onSelecting={value => { setSelecting(value); setSelectedIds(new Set(value && contextWork ? [contextWork.id] : [])); }}
+        selectedIds={[...selectedIds]} onBusy={setBulkBusy}
+        onSelectVisible={() => setSelectedIds(previous => new Set([...previous, ...visibleWorks.map(w => w.id)].slice(0, 500)))}
+        visibleCount={visibleWorks.length} onChanged={() => { setSelectedIds(new Set()); void loadWorks(); }}>
+        {contextWork && <>
             <button
               type="button"
               className="m3-menu-item"
               role="menuitem"
               onClick={() => {
-                const wid = contextMenu.work.id;
+                const wid = contextWork.id;
                 setContextMenu(null);
                 onSelectWork(wid);
               }}
@@ -1026,65 +987,65 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               <span>打开作品详情</span>
             </button>
 
-            {contextMenu.work.lastVersionId && (
+            {contextWork.lastVersionId && (
               <button
                 type="button"
                 className="m3-menu-item"
                 role="menuitem"
-                onClick={() => void handleResumeWork(contextMenu.work)}
+                onClick={() => void handleResumeWork(contextWork)}
               >
                 <Play size={15} />
                 <span>继续收听</span>
               </button>
             )}
 
-            <button
+            {!(contextWork.hasLocalImported ?? (contextWork.hasLocal && !contextWork.hasDownloaded)) && <button
               type="button"
               className="m3-menu-item"
               role="menuitem"
-              onClick={() => void handleToggleCollected(contextMenu.work.id)}
+              onClick={() => void handleToggleCollected(contextWork.id)}
             >
               <Bookmark size={15} />
               <span>
-                {contextMenu.work.isCollected ? "取消收藏" : "收藏到音频库"}
+                {contextWork.isCollected ? "移出我的音频库" : "移到我的音频库"}
               </span>
-            </button>
+            </button>}
 
             <button
               type="button"
               className="m3-menu-item"
               role="menuitem"
-              onClick={() => void handleToggleFavorite(contextMenu.work.id)}
+              onClick={() => void handleToggleFavorite(contextWork.id)}
             >
               <Heart size={15} />
               <span>
-                {contextMenu.work.isFavorite ? "取消喜欢" : "加入喜欢"}
+                {contextWork.isFavorite ? "取消喜欢" : "加入喜欢"}
               </span>
             </button>
 
-            {(!contextMenu.work.hasLocal ||
-              contextMenu.work.rjCode ||
-              contextMenu.work.hasOnline) && <div className="m3-menu-divider" />}
+            {(!contextWork.hasLocal ||
+              contextWork.rjCode ||
+              contextWork.hasOnline) && <div className="m3-menu-divider" />}
 
-            {!contextMenu.work.hasLocal &&
-              (contextMenu.work.hasOnline || Boolean(contextMenu.work.rjCode)) && (
+            {!contextWork.hasLocal &&
+              (contextWork.hasOnline || Boolean(contextWork.rjCode)) && (
                 <button
                   type="button"
                   className="m3-menu-item"
                   role="menuitem"
-                  onClick={() => void handleOpenDownloadModal(contextMenu.work)}
+                  onClick={() => void handleOpenDownloadModal(contextWork)}
                 >
                   <Download size={15} />
                   <span>创建下载任务…</span>
                 </button>
               )}
 
-            {(contextMenu.work.rjCode || contextMenu.work.hasOnline) && (
+            {(contextWork.rjCode || contextWork.hasOnline) && (
               <button
                 type="button"
                 className="m3-menu-item"
                 role="menuitem"
-                onClick={() => void handleSyncWorkMeta(contextMenu.work)}
+                onClick={() => void handleSyncWorkMeta(contextWork)}
               >
                 <RefreshCw size={15} />
                 <span>同步 asmr.one 封面与标签</span>
@@ -1093,13 +1054,13 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
             <div className="m3-menu-divider" />
 
-            {contextMenu.work.hasDownloaded && (
+            {contextWork.hasDownloaded && (
               <button
                 type="button"
                 className="m3-menu-item danger"
                 role="menuitem"
                 onClick={() =>
-                  void handleDeleteDownloadedOnly(contextMenu.work)
+                  void handleDeleteDownloadedOnly(contextWork)
                 }
               >
                 <Trash2 size={15} />
@@ -1112,18 +1073,16 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               className="m3-menu-item danger"
               role="menuitem"
               onClick={() => {
-                const target = contextMenu.work;
+                const target = contextWork;
                 setContextMenu(null);
-                setAlsoDeleteDownloaded(false);
-                setDeleteTargetWork(target);
+                requestRemoveWork(target);
               }}
             >
               <Trash2 size={15} />
               <span>从音频库移除…</span>
             </button>
-          </div>
-        </>
-      )}
+        </>}
+      </BulkOrganizer>
     </div>
   );
 };

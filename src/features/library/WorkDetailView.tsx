@@ -1,3 +1,4 @@
+import { Select } from "../../components/Select";
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   ArrowLeft,
@@ -171,6 +172,7 @@ export function pickBestDefaultDirectoryGroup(
 }
 
 interface WorkDetailViewProps {
+  focusVersionId?: string;
   workId: string;
   onBack: () => void;
   onSnapshotChange: (snap: PlaybackSnapshot) => void;
@@ -181,6 +183,7 @@ interface WorkDetailViewProps {
 
 export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
   workId,
+  focusVersionId,
   onBack,
   onSnapshotChange,
   onOpenDownloads,
@@ -268,6 +271,20 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
   useEffect(() => {
     void loadDetail();
   }, [loadDetail]);
+
+  useEffect(() => {
+    if (!focusVersionId || detail?.id !== workId) return;
+    const track = detail.tracks.find(t => t.versions.some(v => v.id === focusVersionId));
+    if (!track) return;
+    setSelectedGroupPath(track.logicalDirPath);
+    setVisibleTrackLimit(detail.tracks.length);
+    const frame = requestAnimationFrame(() => {
+      const row = document.getElementById(`bookmark-version-${focusVersionId}`);
+      row?.scrollIntoView?.({ block: "center", behavior: "auto" });
+      row?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [detail, focusVersionId, workId]);
 
   const handlePlayVersion = async (
     versionId: string,
@@ -742,25 +759,23 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                 </button>
               ) : null}
 
-              <button
+              {!isLocalWork && <button
                 type="button"
-                className={
-                  detail.isCollected ? "btn btn-tonal" : "btn btn-secondary"
-                }
+                className={detail.isCollected ? "btn btn-tonal" : "btn btn-secondary"}
                 onClick={() => void handleToggleCollected()}
                 aria-pressed={detail.isCollected}
                 title={
                   detail.isCollected
-                    ? "已收藏（位于「我的音频库」），点击移出"
-                    : "收藏到「我的音频库」"
+                    ? "移出我的音频库（保留已下载文件）"
+                    : "移到我的音频库"
                 }
               >
                 <Bookmark
                   size={16}
                   fill={detail.isCollected ? "currentColor" : "none"}
                 />
-                <span>{detail.isCollected ? "已收藏" : "收藏"}</span>
-              </button>
+                <span>{detail.isCollected ? "已在我的音频库" : "移到我的音频库"}</span>
+              </button>}
 
               <button
                 type="button"
@@ -1012,30 +1027,18 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
 
             <div className="override-row">
               <label>合并同版本音轨</label>
-              <select
-                className="input-select"
+              <Select
+                aria-label="保留的目标版本"
                 value={mergeTargetVer}
-                onChange={(e) => setMergeTargetVer(e.target.value)}
-              >
-                <option value="">选择保留的目标版本...</option>
-                {allVersionsFlat.map((v) => (
-                  <option key={v.versionId} value={v.versionId}>
-                    {v.label}
-                  </option>
-                ))}
-              </select>
-              <select
-                className="input-select"
+                onValueChange={setMergeTargetVer}
+                options={[{ value: "", label: "选择保留的目标版本..." }, ...allVersionsFlat.map(v => ({ value: v.versionId, label: v.label }))]}
+              />
+              <Select
+                aria-label="合并入目标的源版本"
                 value={mergeSourceVer}
-                onChange={(e) => setMergeSourceVer(e.target.value)}
-              >
-                <option value="">选择合并入目标的源版本...</option>
-                {allVersionsFlat.map((v) => (
-                  <option key={v.versionId} value={v.versionId}>
-                    {v.label}
-                  </option>
-                ))}
-              </select>
+                onValueChange={setMergeSourceVer}
+                options={[{ value: "", label: "选择合并入目标的源版本..." }, ...allVersionsFlat.map(v => ({ value: v.versionId, label: v.label }))]}
+              />
               <button
                 type="button"
                 className="btn btn-secondary btn-sm"
@@ -1162,7 +1165,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
               track.versions.map((ver) => {
                 const metrics = metricsByVer[ver.id];
                 return (
-                  <tr key={ver.id} className="track-row">
+                  <tr key={ver.id} id={`bookmark-version-${ver.id}`} tabIndex={-1} className={`track-row ${focusVersionId === ver.id ? "bookmark-version-target" : ""}`}>
                     <td>
                       <div className="track-title-cell">
                         <span className="track-main-name">{track.title}</span>
