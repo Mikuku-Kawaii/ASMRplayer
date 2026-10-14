@@ -104,10 +104,10 @@ export function SmartCollections({ filters, keyword, onChange }: Props) {
           <label>标签名称<input className="input-text" value={tags} maxLength={2048} placeholder="多个标签用逗号分隔" onChange={e => { setTags(e.target.value); change({ tags: terms(e.target.value) }); }} /></label>
           <label>收藏状态<Select aria-label="收藏状态" value={triValue(current.collected)} disabled={busy} options={[{ value: "any", label: "不限收藏" }, { value: "true", label: "已收藏到音频库" }, { value: "false", label: "未收藏到音频库" }]} onValueChange={v => change({ collected: triParse(v) })} /></label>
           <label>喜欢状态<Select aria-label="喜欢状态" value={triValue(current.favorite)} disabled={busy} options={[{ value: "any", label: "不限喜欢" }, { value: "true", label: "已喜欢" }, { value: "false", label: "未喜欢" }]} onValueChange={v => change({ favorite: triParse(v) })} /></label>
-          <label>收听状态<Select aria-label="收听状态" value={current.listening} disabled={busy} options={[{ value: "any", label: "不限收听" }, { value: "unplayed", label: "未听" }, { value: "played", label: "已听" }]} onValueChange={v => change({ listening: v as CollectionFilters["listening"] })} /></label>
+          <label>收听状态<Select aria-label="收听状态" value={current.listening} disabled={busy} options={[{ value: "any", label: "不限收听" }, { value: "unplayed", label: "未听" }, { value: "inProgress", label: "在听" }, { value: "played", label: "听过" }]} onValueChange={v => change({ listening: v as CollectionFilters["listening"] })} /></label>
           <label>离线可用<Select aria-label="离线可用" value={triValue(current.offline)} disabled={busy} options={[{ value: "any", label: "不限来源" }, { value: "true", label: "有可用本地音轨" }, { value: "false", label: "无可用本地音轨" }]} onValueChange={v => change({ offline: triParse(v) })} /></label>
         </div>
-        <p className="smart-collections-hint">关键词沿用上方搜索框。声优、标签按完整名称匹配，每类最多 16 项，所有条件同时满足。查询已入库记录（含未收藏作品）；已听表示有收听记录，不代表整部听完。</p>
+        <p className="smart-collections-hint">关键词沿用上方搜索框。声优、标签按完整名称匹配，每类最多 16 项，所有条件同时满足。查询已入库记录（含未收藏作品）；在听表示已开始收听；听过表示已完整听完一个播放目录，或已手动标记。</p>
         <div className="smart-collections-save">
           <label>集合名称<input className="input-text" value={name} maxLength={64} placeholder="例如：未听的离线耳かき" onChange={e => setName(e.target.value)} /></label>
           <button type="button" className="btn btn-secondary btn-sm" disabled={busy || loading || !name.trim()} onClick={() => void save(false)}>{busy ? "正在保存…" : selectedId ? "保存更改" : "保存集合"}</button>

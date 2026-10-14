@@ -26,7 +26,8 @@ import {
   DownloadTaskDto,
   PlaybackSnapshot,
   AssociationHistoryDto,
-  TrackAcousticMetricsDto,
+  MediaAffinity,
+  subscribeLibraryAffinity,
   callCommand,
   formatDurationMs,
   normalizeAppError,
@@ -193,6 +194,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
   const [detail, setDetail] = useState<WorkDetailDto | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectedGroupPath, setSelectedGroupPath] = useState<string>("");
+  const [startingPlayback, setStartingPlayback] = useState(false);
   const [isDirCollapsed, setIsDirCollapsed] = useState<boolean>(true);
   const [visibleTrackLimit, setVisibleTrackLimit] = useState<number>(100);
   const lastInitWorkIdRef = useRef<string | null>(null);
@@ -210,10 +212,8 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
   const [syncingMeta, setSyncingMeta] = useState(false);
   const [fetchingSubs, setFetchingSubs] = useState(false);
 
-  // Track acoustic LUFS / True Peak analysis cache
-  const [metricsByVer, setMetricsByVer] = useState<
-    Record<string, TrackAcousticMetricsDto>
-  >({});
+  const [favoritePending, setFavoritePending] = useState<string | null>(null);
+  const favoriteGate = useRef(false);
 
   // Download preview modal state (web asmr.one style file tree selector)
   const [dlPreview, setDlPreview] = useState<DownloadPreviewDto | null>(null);
@@ -271,6 +271,18 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
   useEffect(() => {
     void loadDetail();
   }, [loadDetail]);
+  useEffect(() => {
+    let disposed = false; let stop: (() => void) | undefined;
+    let revision = 0;
+    void subscribeLibraryAffinity(id => {
+      if (disposed || id !== workId) return;
+      const request = ++revision;
+      void callCommand<WorkDetailDto>("get_work_detail", { workId }).then(next => {
+        if (!disposed && request === revision) setDetail(prev => prev && next && prev.id === next.id ? { ...prev, isFavorite: next.isFavorite, isCollected: next.isCollected, tracks: next.tracks } : prev);
+      }).catch(e => { if (!disposed) onError(normalizeAppError(e)); });
+    }).then(fn => { if (disposed) fn(); else stop = fn; });
+    return () => { disposed = true; stop?.(); };
+  }, [workId, onError]);
 
   useEffect(() => {
     if (!focusVersionId || detail?.id !== workId) return;
@@ -326,6 +338,22 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
       onSnapshotChange(snap);
     } catch (e) {
       onError(normalizeAppError(e));
+    }
+  };
+
+  const handlePlayWork = async (fromStart: boolean) => {
+    if (startingPlayback) return;
+    setStartingPlayback(true);
+    try {
+      const snap = await callCommand<PlaybackSnapshot>("play_work", {
+        workId, fromStart,
+        groupPath: fromStart || !detail?.lastVersionId ? selectedGroupPath : null,
+      });
+      onSnapshotChange(snap);
+    } catch (e) {
+      onError(normalizeAppError(e));
+    } finally {
+      setStartingPlayback(false);
     }
   };
 
@@ -389,19 +417,15 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
     }
   };
 
-  const handleAnalyzeTrackAcoustics = async (versionId: string) => {
+  const handleFavoriteTrack = async (versionId: string) => {
+    if (favoriteGate.current) return;
+    favoriteGate.current = true; setFavoritePending(versionId);
     try {
-      const metrics = await callCommand<TrackAcousticMetricsDto>(
-        "analyze_track_acoustics",
-        { versionId }
-      );
-      setMetricsByVer((prev) => ({
-        ...prev,
-        [versionId]: metrics,
-      }));
-    } catch (e) {
-      onError(normalizeAppError(e));
-    }
+      const next = await callCommand<MediaAffinity>("toggle_version_favorite", { versionId });
+      setDetail(prev => prev && prev.id === next.workId ? { ...prev, isFavorite: next.isFavorite,
+        tracks: prev.tracks.map(t => ({ ...t, versions: t.versions.map(v => v.id === versionId ? { ...v, isFavorite: next.isVersionFavorite } : v) })) } : prev);
+    } catch (e) { onError(normalizeAppError(e)); }
+    finally { favoriteGate.current = false; setFavoritePending(null); }
   };
 
   const handleSaveOverrideField = async (
@@ -734,30 +758,30 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                 <button
                   type="button"
                   className="btn btn-primary"
-                  onClick={() =>
-                    detail.lastVersionId &&
-                    void handlePlayVersion(detail.lastVersionId, null)
-                  }
+                  disabled={startingPlayback}
+                  onClick={() => void handlePlayWork(false)}
                 >
                   <Play size={16} />
                   <span>
-                    继续收听 ({formatDurationMs(detail.lastPositionMs)})
+                    {detail.tracks.some(t => t.versions.some(v => v.id === detail.lastVersionId && v.completed))
+                      ? "播放" : `继续收听 (${formatDurationMs(detail.lastPositionMs)})`}
                   </span>
                 </button>
               ) : detail.directoryGroups.length > 0 ? (
                 <button
                   type="button"
                   className="btn btn-primary"
-                  onClick={() =>
-                    void handlePlayGroup(
-                      selectedGroupPath || detail.directoryGroups[0]!.groupPath
-                    )
-                  }
+                  disabled={startingPlayback}
+                  onClick={() => void handlePlayWork(false)}
                 >
                   <Play size={16} />
                   <span>播放</span>
                 </button>
               ) : null}
+
+              {detail.directoryGroups.length > 0 && <button type="button" className="btn btn-secondary"
+                disabled={startingPlayback} title="从当前目录第一条音轨的开头播放"
+                onClick={() => void handlePlayWork(true)}><RotateCcw size={16} />从头播放</button>}
 
               {!isLocalWork && <button
                 type="button"
@@ -1163,7 +1187,6 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
           <tbody>
             {filteredTracks.slice(0, visibleTrackLimit).map((track) =>
               track.versions.map((ver) => {
-                const metrics = metricsByVer[ver.id];
                 return (
                   <tr key={ver.id} id={`bookmark-version-${ver.id}`} tabIndex={-1} className={`track-row ${focusVersionId === ver.id ? "bookmark-version-target" : ""}`}>
                     <td>
@@ -1172,21 +1195,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                         {ver.associationState === "pending_confirm" && (
                           <span className="badge badge-warn">待确认变更</span>
                         )}
-                        {metrics && (
-                          <span
-                            className="badge badge-tech tabular-nums"
-                            title={`EBU R128 综合响度 ${metrics.integratedLufs.toFixed(
-                              1
-                            )} LUFS · 真实峰值 ${metrics.truePeakDbtp.toFixed(
-                              1
-                            )} dBTP · 动态范围 ${metrics.dynamicRangeDr.toFixed(
-                              1
-                            )} LU`}
-                          >
-                            {metrics.integratedLufs.toFixed(1)} LUFS ·{" "}
-                            {metrics.truePeakDbtp.toFixed(1)} dBTP
-                          </span>
-                        )}
+
                       </div>
                     </td>
                     <td>{track.logicalDirPath || "根目录"}</td>
@@ -1263,10 +1272,13 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                         <button
                           type="button"
                           className="btn btn-ghost btn-sm"
-                          onClick={() => void handleAnalyzeTrackAcoustics(ver.id)}
-                          title="扫描并计算该音轨的 EBU R128 响度 (LUFS)、真实峰值 (dBTP) 与 64 点波形包络"
+                          onClick={() => void handleFavoriteTrack(ver.id)}
+                          disabled={favoritePending !== null}
+                          aria-pressed={!!ver.isFavorite}
+                          title={ver.isFavorite ? "取消喜爱单曲" : "喜爱单曲，也将作品加入喜爱"}
+                          aria-label={`${ver.isFavorite ? "取消喜爱" : "喜爱"}单曲：${track.title}`}
                         >
-                          <span>{metrics ? "重测响度" : "响度/波形"}</span>
+                          <Heart size={14} fill={ver.isFavorite ? "currentColor" : "none"} />
                         </button>
                       </div>
                     </td>

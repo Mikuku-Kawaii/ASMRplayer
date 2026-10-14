@@ -1,3 +1,4 @@
+import { subscribeLibraryAffinity } from "../../lib/api";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -155,6 +156,11 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     void loadWorks();
     return () => { requestSeq.current += 1; };
   }, [loadWorks, refreshTick]);
+  useEffect(() => {
+    let disposed = false; let stop: (() => void) | undefined;
+    void subscribeLibraryAffinity(() => { if (!disposed) void loadWorks(); }).then(fn => { if (disposed) fn(); else stop = fn; });
+    return () => { disposed = true; stop?.(); };
+  }, [loadWorks]);
 
   useEffect(() => {
     if (!contextMenu && !selecting) return;
@@ -296,9 +302,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       return;
     }
     try {
-      const snap = await callCommand<PlaybackSnapshot>("play_version", {
-        versionId: work.lastVersionId,
-        preferredSourceId: null,
+      const snap = await callCommand<PlaybackSnapshot>("play_work", {
+        workId: work.id,
       });
       onSnapshotChange(snap);
     } catch (err) {
@@ -846,7 +851,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
                 <div className="work-card-header">
                   <div className="work-badges">
-                    {work.isListened !== undefined && <span className="badge">{work.isListened ? "已听" : "未听"}</span>}
+                    {(work.listeningStatus !== undefined || work.isListened !== undefined) && <span className="badge">{work.listeningStatus === "played" ? "听过" : work.listeningStatus === "inProgress" || (!work.listeningStatus && work.isListened) ? "在听" : "未听"}</span>}
                     {work.rjCode && (
                       <span className="badge badge-rj">{work.rjCode}</span>
                     )}

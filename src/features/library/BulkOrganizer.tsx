@@ -7,7 +7,7 @@ function describe(action: BulkAction) {
   switch (action.kind) {
     case "collected": return action.value ? "移到我的音频库" : "移出我的音频库（保留文件）";
     case "favorite": return action.value ? "加入喜欢" : "取消喜欢";
-    case "listened": return action.value ? "标为已听" : "标为未听";
+    case "listened": return action.value ? "标为听过" : "标为未听";
     case "addTags": return `添加标签：${action.tags.join("、")}`;
     case "removeTags": return `移除标签：${action.tags.join("、")}`;
   }
@@ -82,7 +82,7 @@ export function BulkOrganizer({ context, onClose, children, selecting, onSelecti
         {item("取消喜欢", () => preview({ kind: "favorite", value: false }), !selectedIds.length)}
         {item("添加标签…", () => { setTagKind("addTags"); setTags(""); setPage("tags"); }, !selectedIds.length)}
         {item("移除标签…", () => { setTagKind("removeTags"); setTags(""); setPage("tags"); }, !selectedIds.length)}
-        {item("标为已听", () => preview({ kind: "listened", value: true }), !selectedIds.length)}
+        {item("标为听过", () => preview({ kind: "listened", value: true }), !selectedIds.length)}
         {item("标为未听", () => preview({ kind: "listened", value: false }), !selectedIds.length)}
         <div className="m3-menu-divider" />
         {item("全选已显示作品", () => { onSelectVisible(); onClose(); }, !visibleCount)}
