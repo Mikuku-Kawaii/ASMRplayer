@@ -95,16 +95,22 @@ pub fn run() {
             });
             for config in &app.config().app.windows {
                 if app.get_webview_window(&config.label).is_none() {
-                    tauri::WebviewWindowBuilder::from_config(app, config)?.visible(false).build()?;
+                    tauri::WebviewWindowBuilder::from_config(app, config)?
+                        .zoom_hotkeys_enabled(false).visible(false).build()?;
                 }
             }
             if let Some(main_win) = app.get_webview_window("main") {
+                main_win.set_zoom(services::interface_scale::read(&db).map_err(|e| e.message)?)?;
                 commands::restore_window_placement_from_db(&main_win, &db);
                 if app.config().app.windows.iter().any(|config| config.label == "main" && config.visible) {
                     main_win.show()?;
                 }
             }
-            island.initialize();
+            // Loaded WebViews can already be executing island_set_form. Its worker
+            // holds the layout-operation lock while querying monitors on the UI
+            // thread. Never wait for that lock from setup on the UI thread.
+            let startup_island = island.clone();
+            tauri::async_runtime::spawn_blocking(move || startup_island.initialize());
             // Host-owned scheduling remains active in the tray. A wake-up creates
             // at most one overdue backup; failures wait five minutes before retry.
             tauri::async_runtime::spawn(async move {
@@ -245,6 +251,9 @@ pub fn run() {
                     }
                 }
                 if window.label() == "main" && window.is_visible().unwrap_or(false) {
+                    if matches!(event, WindowEvent::Resized(_)) {
+                        let _ = window.emit("window:maximized", window.is_maximized().unwrap_or(false));
+                    }
                     let app_handle = window.app_handle();
                     if let Some(webview_win) = app_handle.get_webview_window("main") {
                         let state = app_handle.state::<AppState>();
@@ -293,6 +302,9 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            commands::get_interface_scale,
+            commands::set_interface_scale,
+            commands::get_window_maximized,
             commands::get_desktop_lyrics_settings,
             commands::update_desktop_lyrics_settings,
             commands::desktop_lyrics_ready,
