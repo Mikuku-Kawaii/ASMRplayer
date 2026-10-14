@@ -12,6 +12,7 @@ pub enum ListeningFilter {
     #[default]
     Any,
     Unplayed,
+    InProgress,
     Played,
 }
 
@@ -172,8 +173,9 @@ impl Database {
                     .is_none_or(|value| value == offline.contains(&work.id))
                 && match filters.listening {
                     ListeningFilter::Any => true,
-                    ListeningFilter::Played => work.is_listened,
-                    ListeningFilter::Unplayed => !work.is_listened,
+                    ListeningFilter::Played => work.listening_status == crate::domain::ListeningStatus::Played,
+                    ListeningFilter::InProgress => work.listening_status == crate::domain::ListeningStatus::InProgress,
+                    ListeningFilter::Unplayed => work.listening_status == crate::domain::ListeningStatus::Unplayed,
                 }
                 && contains_all(&work.voice_actors, &filters.voice_actors)
                 && contains_all(&work.tags, &filters.tags)
@@ -341,7 +343,7 @@ mod tests {
             .is_empty());
         assert_eq!(
             db.query_smart_collection(&CollectionFilters {
-                listening: ListeningFilter::Played,
+                listening: ListeningFilter::InProgress,
                 ..Default::default()
             })
             .unwrap()

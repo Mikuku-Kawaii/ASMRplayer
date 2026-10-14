@@ -230,8 +230,8 @@ fn tags_after(current: &[String], action: &BulkAction) -> Vec<String> {
 fn changes(before: &FieldState, action: &BulkAction) -> bool {
     match action {
         BulkAction::Collected { value }
-        | BulkAction::Favorite { value }
-        | BulkAction::Listened { value } => before.flag != *value,
+        | BulkAction::Favorite { value } => before.flag != *value,
+        BulkAction::Listened { value } => before.row.as_ref().is_none_or(|row| (row[0] == "1") != *value),
         _ => tags_after(&before.tags, action) != before.tags,
     }
 }

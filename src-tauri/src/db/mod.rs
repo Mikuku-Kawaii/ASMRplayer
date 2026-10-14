@@ -4,6 +4,8 @@ pub mod bulk_library;
 pub mod bookmark_notes;
 pub mod queue_plans;
 pub mod shortcuts;
+pub mod listening;
+pub mod affinity;
 
 use crate::domain::{redact_sensitive, AppError, AppResult, ErrorCode};
 use chrono::Utc;
@@ -61,6 +63,8 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (11, "011_bookmark_notes", include_str!("../../migrations/011_bookmark_notes.sql")),
     (12, "012_queue_plans", include_str!("../../migrations/012_queue_plans.sql")),
     (13, "013_download_schedule", include_str!("../../migrations/013_download_schedule.sql")),
+    (14, "014_listening_completion", include_str!("../../migrations/014_listening_completion.sql")),
+    (15, "015_favorite_versions", include_str!("../../migrations/015_favorite_versions.sql")),
 ];
 
 #[derive(Clone)]

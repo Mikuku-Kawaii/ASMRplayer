@@ -555,6 +555,7 @@ impl Database {
     pub fn list_works(&self, filter: &str, search: Option<&str>) -> AppResult<Vec<WorkSummary>> {
         self.with_conn(|conn| {
             let listening_states = super::bulk_library::listening_states(conn)?;
+            let listening_statuses = super::listening::statuses(conn)?;
             // 1. Preload all user overrides in a single query (T901: eliminates N queries)
             let mut all_overrides: HashMap<String, BTreeMap<String, (String, Option<String>)>> =
                 HashMap::new();
@@ -827,6 +828,7 @@ impl Database {
                 };
 
                 results.push(WorkSummary {
+                    listening_status: listening_statuses.get(&id).copied().unwrap_or_default(),
                     is_listened: listening_states.get(&id).copied().unwrap_or(false),
                     id,
                     title,
@@ -1212,6 +1214,7 @@ impl Database {
                         }
 
                         versions.push(TrackVersionDto {
+                            is_favorite: conn.query_row("SELECT EXISTS(SELECT 1 FROM favorite_versions WHERE version_id=?1)", [&v_id], |r| r.get(0))?,
                             id: v_id,
                             track_id: tr_id,
                             version_label,
@@ -1832,6 +1835,11 @@ impl Database {
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()?;
+            let target_favorite: Option<String> = tx.query_row("SELECT created_at FROM favorite_versions WHERE version_id=?1", [target_version_id], |r| r.get(0)).optional()?;
+            let source_favorite: Option<String> = tx.query_row("SELECT created_at FROM favorite_versions WHERE version_id=?1", [source_version_id], |r| r.get(0)).optional()?;
+            if let Some(date) = &source_favorite { tx.execute("INSERT OR IGNORE INTO favorite_versions(version_id,created_at) VALUES(?1,?2)",params![target_version_id,date])?; }
+            let target_ever: bool = tx.query_row("SELECT COALESCE((SELECT ever_completed FROM playback_positions WHERE version_id=?1),0)", [target_version_id], |r| r.get(0))?;
+            let source_ever: bool = tx.query_row("SELECT COALESCE((SELECT ever_completed FROM playback_positions WHERE version_id=?1),0)", [source_version_id], |r| r.get(0))?;
 
             let moved_media_ids: Vec<String> = {
                 let mut s = tx.prepare("SELECT id FROM media_sources WHERE version_id = ?1")?;
@@ -1871,6 +1879,7 @@ impl Database {
                 }
             }
 
+            tx.execute("UPDATE playback_positions SET ever_completed=MAX(ever_completed,?2) WHERE version_id=?1", params![target_version_id, source_ever])?;
             let snapshot = serde_json::json!({
                 "source_version": {
                     "id": source_version_id,
@@ -1881,6 +1890,10 @@ impl Database {
                 },
                 "target_position": tgt_pos,
                 "source_position": src_pos,
+                "target_favorite": target_favorite,
+                "source_favorite": source_favorite,
+                "target_ever_completed": target_ever,
+                "source_ever_completed": source_ever,
                 "moved_media_ids": moved_media_ids,
                 "moved_bookmark_ids": moved_bookmark_ids,
             });
@@ -2022,6 +2035,9 @@ impl Database {
                         )?;
                     }
                 }
+                if snap["target_position"].is_null() {
+                    tx.execute("DELETE FROM playback_positions WHERE version_id=?1", params![primary_id])?;
+                }
                 if let Some(sp) = snap["source_position"].as_array() {
                     if sp.len() == 3 {
                         tx.execute(
@@ -2034,6 +2050,17 @@ impl Database {
                                 sp[2].as_str().unwrap_or(&now)
                             ],
                         )?;
+                    }
+                }
+                for (id,key) in [(&primary_id,"target_favorite"),(&secondary_id,"source_favorite")] {
+                    if let Some(value) = snap.get(key) {
+                        tx.execute("DELETE FROM favorite_versions WHERE version_id=?1",[id])?;
+                        if let Some(date)=value.as_str() { tx.execute("INSERT INTO favorite_versions(version_id,created_at) VALUES(?1,?2)",params![id,date])?; }
+                    }
+                }
+                for (id, key) in [(&primary_id, "target_ever_completed"), (&secondary_id, "source_ever_completed")] {
+                    if let Some(ever) = snap[key].as_bool() {
+                        tx.execute("UPDATE playback_positions SET ever_completed=MAX(completed,?2) WHERE version_id=?1", params![id, ever])?;
                     }
                 }
             }
@@ -2308,7 +2335,7 @@ impl Database {
             let playback_positions = {
                 let mut stmt = conn.prepare(
                     "SELECT pp.version_id, w.rj_code, t.title, tv.version_label,
-                            pp.position_ms, pp.completed, pp.updated_at
+                            pp.position_ms, pp.completed, pp.updated_at, pp.ever_completed
                      FROM playback_positions pp
                      JOIN track_versions tv ON tv.id = pp.version_id
                      JOIN tracks t ON t.id = tv.track_id
@@ -2323,6 +2350,7 @@ impl Database {
                         version_label: r.get(3)?,
                         position_ms: r.get(4)?,
                         completed: r.get::<_, i64>(5)? == 1,
+                        ever_completed: r.get::<_, bool>(7)?,
                         updated_at: r.get(6)?,
                     })
                 })?;
@@ -2409,6 +2437,11 @@ impl Database {
             };
 
             Ok(UserBackupBundleDto {
+                favorite_versions: {
+                    let mut stmt = conn.prepare("SELECT version_id,created_at FROM favorite_versions ORDER BY created_at")?;
+                    let rows = stmt.query_map([], |r| Ok(BackupVersionFavorite { version_id: r.get(0)?, created_at: r.get(1)? }))?;
+                    rows.collect::<Result<Vec<_>, _>>()?
+                },
                 schema_version: 1,
                 exported_at: Utc::now().to_rfc3339(),
                 favorites,
@@ -2555,19 +2588,29 @@ impl Database {
                 }
             }
 
+            for favorite in &bundle.favorite_versions {
+                let work: Option<String> = tx.query_row("SELECT t.work_id FROM track_versions v JOIN tracks t ON t.id=v.track_id WHERE v.id=?1", [&favorite.version_id], |r| r.get(0)).optional()?;
+                if let Some(work) = work {
+                    tx.execute("INSERT OR IGNORE INTO favorite_versions VALUES(?1,?2)", params![favorite.version_id,favorite.created_at])?;
+                    tx.execute("INSERT OR IGNORE INTO favorites VALUES(?1,?2)", params![work,favorite.created_at])?;
+                    report.favorites_restored += 1;
+                }
+            }
+
             // 4. Playback positions (idempotent: keep newer timestamp on conflict)
             for pos in &bundle.playback_positions {
                 if let Some(vid) =
                     resolve_version_id(&tx, &pos.version_id, pos.rj_code.as_deref(), &pos.track_title)
                 {
                     tx.execute(
-                        "INSERT INTO playback_positions (version_id, position_ms, completed, updated_at)
-                         VALUES (?1, ?2, ?3, ?4)
+                        "INSERT INTO playback_positions (version_id, position_ms, completed, updated_at, ever_completed)
+                         VALUES (?1, ?2, ?3, ?4, ?5)
                          ON CONFLICT(version_id) DO UPDATE SET
+                           ever_completed = MAX(playback_positions.ever_completed, excluded.ever_completed),
                            position_ms = CASE WHEN excluded.updated_at >= playback_positions.updated_at THEN excluded.position_ms ELSE playback_positions.position_ms END,
                            completed = CASE WHEN excluded.updated_at >= playback_positions.updated_at THEN excluded.completed ELSE playback_positions.completed END,
                            updated_at = CASE WHEN excluded.updated_at >= playback_positions.updated_at THEN excluded.updated_at ELSE playback_positions.updated_at END",
-                        params![vid, pos.position_ms.max(0), if pos.completed { 1 } else { 0 }, pos.updated_at],
+                        params![vid, pos.position_ms.max(0), if pos.completed { 1 } else { 0 }, pos.updated_at, pos.ever_completed || pos.completed],
                     )?;
                     report.positions_restored += 1;
                 }
