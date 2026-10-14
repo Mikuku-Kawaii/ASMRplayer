@@ -1,4 +1,5 @@
 import { DesktopLyricsSettings } from "./DesktopLyricsSettings";
+import { InterfaceScaleSettings } from "./InterfaceScaleSettings";
 import { Select } from "../../components/Select";
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -42,7 +43,7 @@ interface SettingsViewProps {
 }
 
 const settingsSections = [
-  { id:"privacy-window", members:["privacy-window", "shortcuts"], title:"通用与快捷键", hint:"隐私、窗口与键位", icon:ShieldAlert, keywords:"全年龄 关闭 托盘 NSFW SMTC 键盘 热键 命令 搜索" },
+  { id:"privacy-window", members:["privacy-window", "shortcuts"], title:"通用与快捷键", hint:"隐私、窗口与键位", icon:ShieldAlert, keywords:"全年龄 关闭 托盘 NSFW SMTC 键盘 热键 命令 搜索 界面 缩放 大小 DPI 比例" },
   { id:"desktop-island", members:["desktop-island", "desktop-lyrics"], title:"桌面显示", hint:"灵动岛与桌面歌词", icon:AppWindow, keywords:"大小 屏幕 比例 吸附 全屏 音量 提示 字幕 字号 双语 日文 中文 锁定 穿透 字体 颜色 透明度" },
   { id:"audio-engine", members:["audio-engine"], title:"音频与播放", hint:"输出与硬件加速", icon:Volume2, keywords:"独占 引擎 GPU" },
   { id:"network-online", members:["network-online"], title:"网络与在线", hint:"镜像、代理与账户", icon:Globe, keywords:"api token 令牌 预设" },
@@ -413,6 +414,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
           </div>
 
           <div className="settings-group-body">
+            <InterfaceScaleSettings />
             {/* NSFW 敏感内容显示开关（默认关闭） */}
             <div className="settings-row">
               <div className="settings-label-block">
