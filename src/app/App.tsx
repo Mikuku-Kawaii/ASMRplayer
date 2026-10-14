@@ -36,6 +36,7 @@ import {
   subscribePlaybackSnapshot,
   subscribePlaybackTick,
   subscribeIslandVisibility,
+  subscribeWindowMaximized,
   normalizeAppError,
   AppError,
 } from "../lib/api";
@@ -79,6 +80,22 @@ const AppShell: React.FC = () => {
   >("none");
   const [globalError, setGlobalError] = useState<AppError | null>(null);
   const [isMaximized, setIsMaximized] = useState<boolean>(false);
+  useEffect(() => {
+    let disposed = false;
+    let eventReceived = false;
+    let unlisten: (() => void) | undefined;
+    void subscribeWindowMaximized(value => {
+      eventReceived = true;
+      if (!disposed) setIsMaximized(value);
+    }).then(fn => {
+      if (disposed) { fn(); return; }
+      unlisten = fn;
+      return callCommand<boolean>("get_window_maximized").then(value => {
+        if (!disposed && !eventReceived && typeof value === "boolean") setIsMaximized(value);
+      });
+    }).catch(() => {});
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
   const [isAlwaysOnTop, setIsAlwaysOnTop] = useState<boolean>(false);
   const [libraryRefreshTick, setLibraryRefreshTick] = useState<number>(0);
 
@@ -897,7 +914,6 @@ const AppShell: React.FC = () => {
       <header
         className="app-titlebar"
         data-tauri-drag-region
-        onDoubleClick={() => void handleToggleMaximizeWindow()}
         aria-label="窗口顶栏"
       >
         <div className="titlebar-left" data-tauri-drag-region>
