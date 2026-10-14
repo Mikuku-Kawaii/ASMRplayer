@@ -1,5 +1,7 @@
+import { useSubtitleFollow } from "../features/lyrics/useSubtitleFollow";
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import {
+  ChevronDown, ExternalLink,
   Headphones,
   Globe,
   Heart,
@@ -183,6 +185,7 @@ const AppShell: React.FC = () => {
   // Load work cover & synchronized subtitle cues for Immersive Stage & Mini-Player
   useEffect(() => {
     let cancelled = false;
+    setImmersiveCues([]);
     if (!snapshot.currentWorkId) {
       setImmersiveCoverUrl(null);
       setImmersiveCues([]);
@@ -633,9 +636,8 @@ const AppShell: React.FC = () => {
     }
   };
 
-  const activeImmersiveCueIdx = immersiveCues.findIndex(
-    (c) => snapshot.positionMs >= c.startMs && snapshot.positionMs <= c.endMs
-  );
+  const activeImmersiveCueIdx = immersiveCues.reduce((active, cue, i) => cue.startMs <= snapshot.positionMs ? i : active, -1);
+  const subtitleFollow = useSubtitleFollow(activeImmersiveCueIdx, snapshot.currentVersionId, isImmersiveOpen);
   const currentActiveCue =
     activeImmersiveCueIdx >= 0 ? immersiveCues[activeImmersiveCueIdx] : null;
   const miniProgressPct =
@@ -1088,34 +1090,33 @@ const AppShell: React.FC = () => {
                   {snapshot.currentWorkId && (
                     <button
                       type="button"
-                      className="btn btn-secondary btn-sm"
+                      className="btn btn-icon" title="查看作品详情" aria-label="查看作品详情"
                       onClick={() =>
                         snapshot.currentWorkId &&
                         handleOpenWorkDetail(snapshot.currentWorkId)
                       }
                     >
-                      <span>查看作品详情</span>
+                      <ExternalLink size={19} aria-hidden="true" />
                     </button>
                   )}
                   <button
                     type="button"
-                    className="btn btn-secondary btn-sm"
+                    className="btn btn-icon" title="字幕设置" aria-label="字幕设置"
                     onClick={() => handleToggleDrawer("subtitles")}
                   >
-                    <Subtitles size={14} />
-                    <span>字幕设置</span>
+                    <Settings size={19} aria-hidden="true" />
                   </button>
                   <button
                     type="button"
-                    className="btn btn-ghost btn-sm"
+                    className="btn btn-icon" title="收起舞台" aria-label="收起舞台"
                     onClick={() => setIsImmersiveOpen(false)}
                   >
-                    <span>收起舞台</span>
+                    <ChevronDown size={21} aria-hidden="true" />
                   </button>
                 </div>
               </header>
 
-              <div className="immersive-lyrics-stage">
+              <div className="immersive-lyrics-stage" {...subtitleFollow} tabIndex={0} aria-label="同步字幕">
                 {immersiveCues.length === 0 ? (
                   <div className="immersive-empty-lyrics">
                     <p>当前音轨暂无已匹配的同步字幕 (.lrc / .srt / .vtt)</p>
@@ -1165,7 +1166,7 @@ const AppShell: React.FC = () => {
                           : null;
                       return (
                         <li
-                          key={cue.index}
+                          key={cue.index} data-cue-index={idx}
                           className={`immersive-lyric-line ${
                             isActive
                               ? "is-active"
@@ -1207,7 +1208,7 @@ const AppShell: React.FC = () => {
           </section>
         )}
 
-        <main className="main-content" ref={mainRef}>
+        <main className={`main-content ${activeNav === "settings" && !selectedWorkId ? "is-settings-page" : ""}`} ref={mainRef}>
           {selectedWorkId && (
             <WorkDetailView
               workId={selectedWorkId}
