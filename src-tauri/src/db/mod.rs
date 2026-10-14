@@ -1,4 +1,9 @@
 pub mod repo;
+pub mod smart_collections;
+pub mod bulk_library;
+pub mod bookmark_notes;
+pub mod queue_plans;
+pub mod shortcuts;
 
 use crate::domain::{redact_sensitive, AppError, AppResult, ErrorCode};
 use chrono::Utc;
@@ -10,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const MIGRATIONS: &[(i64, &str, &str)] = &[
+    // Append migrations below in ascending order to preserve upgrade backups.
     (
         1,
         "001_initial_core",
@@ -50,6 +56,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "008_volume_max_boost",
         include_str!("../../migrations/008_volume_max_boost.sql"),
     ),
+    (9, "009_smart_collections", include_str!("../../migrations/009_smart_collections.sql")),
+    (10, "010_bulk_library", include_str!("../../migrations/010_bulk_library.sql")),
+    (11, "011_bookmark_notes", include_str!("../../migrations/011_bookmark_notes.sql")),
+    (12, "012_queue_plans", include_str!("../../migrations/012_queue_plans.sql")),
+    (13, "013_download_schedule", include_str!("../../migrations/013_download_schedule.sql")),
 ];
 
 #[derive(Clone)]
@@ -317,8 +328,12 @@ mod tests {
         let path = dir.path().join("asmr_player.db");
         let mut conn = Connection::open(&path).unwrap();
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;").unwrap();
-        Database::run_migrations(&mut conn, &path, false).unwrap();
-        conn.execute("DELETE FROM _schema_migrations WHERE version=8", []).unwrap();
+        // Build the old schema itself, rather than replaying ALTER TABLE on new columns.
+        conn.execute_batch("CREATE TABLE _schema_migrations(version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL);").unwrap();
+        for (version, name, sql) in MIGRATIONS.iter().filter(|(version, _, _)| *version <= 7) {
+            conn.execute_batch(sql).unwrap();
+            conn.execute("INSERT INTO _schema_migrations VALUES (?1,?2,'now')", params![version,name]).unwrap();
+        }
         conn.execute("INSERT INTO works (id,title,created_at,updated_at) VALUES ('wal','WAL work','now','now')", []).unwrap();
         Database::run_migrations(&mut conn, &path, true).unwrap();
         let backup = fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.path())
@@ -326,6 +341,29 @@ mod tests {
         let copy = Connection::open(backup).unwrap();
         let title: String = copy.query_row("SELECT title FROM works WHERE id='wal'", [], |r| r.get(0)).unwrap();
         assert_eq!(title, "WAL work");
+    }
+
+    #[test]
+    fn bookmark_upgrade_preserves_existing_notes_t1503() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        let mut conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE _schema_migrations(version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL);").unwrap();
+        for (version, name, sql) in MIGRATIONS.iter().filter(|(version, _, _)| *version <= 10) {
+            conn.execute_batch(sql).unwrap();
+            conn.execute("INSERT INTO _schema_migrations VALUES (?1,?2,'now')", params![version,name]).unwrap();
+        }
+        conn.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('w','Work','now','now');
+            INSERT INTO tracks(id,work_id,title,sort_key,created_at) VALUES('t','w','Track','1','now');
+            INSERT INTO track_versions(id,track_id,version_label,created_at) VALUES('v','t','Original','now');
+            INSERT INTO bookmarks(id,version_id,position_ms,note,created_at,updated_at) VALUES('b','v',12500,'旧书签笔记','now','now');").unwrap();
+        Database::run_migrations(&mut conn, &path, true).unwrap();
+        let record = bookmark_notes::read_records(&conn).unwrap().pop().unwrap();
+        assert_eq!(record.version_id, "v");
+        assert_eq!(record.note, "旧书签笔记");
+        assert_eq!(record.position_ms, 12500);
+        assert!(record.tags.is_empty());
+        assert_eq!(Database::run_migrations(&mut conn, &path, true).unwrap(), 0);
     }
 
     #[test]

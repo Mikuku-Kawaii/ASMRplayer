@@ -2,7 +2,7 @@ use crate::db::Database;
 use crate::domain::*;
 use chrono::Utc;
 use parking_lot::Mutex;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
@@ -554,6 +554,7 @@ impl Database {
 
     pub fn list_works(&self, filter: &str, search: Option<&str>) -> AppResult<Vec<WorkSummary>> {
         self.with_conn(|conn| {
+            let listening_states = super::bulk_library::listening_states(conn)?;
             // 1. Preload all user overrides in a single query (T901: eliminates N queries)
             let mut all_overrides: HashMap<String, BTreeMap<String, (String, Option<String>)>> =
                 HashMap::new();
@@ -635,6 +636,7 @@ impl Database {
                 "WITH src_agg AS (
                     SELECT t.work_id,
                            MAX(CASE WHEN ms.source_kind IN ('local_imported', 'local_downloaded') THEN 1 ELSE 0 END) AS has_local,
+                           MAX(CASE WHEN ms.source_kind = 'local_imported' THEN 1 ELSE 0 END) AS has_local_imported,
                            MAX(CASE WHEN ms.source_kind = 'local_downloaded' THEN 1 ELSE 0 END) AS has_downloaded,
                            MAX(CASE WHEN ms.source_kind = 'online_provider' THEN 1 ELSE 0 END) AS has_online_src,
                            MAX(CASE WHEN ms.availability = 'available' THEN 1 ELSE 0 END) AS any_available,
@@ -667,7 +669,8 @@ impl Database {
                         COALESCE(sa.has_online_src, 0),
                         COALESCE(sa.any_available, 0),
                         COALESCE(sa.any_offline_disk, 0),
-                        CASE WHEN c.work_id IS NOT NULL THEN 1 ELSE 0 END AS is_col
+                        CASE WHEN c.work_id IS NOT NULL THEN 1 ELSE 0 END AS is_col,
+                        COALESCE(sa.has_local_imported, 0)
                  FROM works w
                  LEFT JOIN favorites f ON f.work_id = w.id
                  LEFT JOIN collected_works c ON c.work_id = w.id
@@ -704,6 +707,7 @@ impl Database {
                     r.get::<_, i64>(19)? == 1,
                     r.get::<_, i64>(20)? == 1,
                     r.get::<_, i64>(21)? == 1,
+                    r.get::<_, i64>(22)? == 1,
                 ))
             })?;
 
@@ -733,6 +737,7 @@ impl Database {
                     any_available,
                     any_offline_disk,
                     is_collected,
+                    has_local_imported,
                 ) = row?;
 
                 if filter == "favorites" && !is_favorite {
@@ -822,6 +827,7 @@ impl Database {
                 };
 
                 results.push(WorkSummary {
+                    is_listened: listening_states.get(&id).copied().unwrap_or(false),
                     id,
                     title,
                     rj_code,
@@ -831,6 +837,7 @@ impl Database {
                     cover_ref,
                     has_local,
                     has_online,
+                    has_local_imported,
                     has_downloaded,
                     availability,
                     is_collected,
@@ -1570,88 +1577,6 @@ impl Database {
         })
     }
 
-    pub fn list_bookmarks(&self, work_id: Option<&str>, version_id: Option<&str>) -> AppResult<Vec<BookmarkDto>> {
-        self.with_conn(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT b.id, b.version_id, t.title, t.work_id, b.position_ms, b.note, b.created_at
-                 FROM bookmarks b
-                 JOIN track_versions tv ON tv.id = b.version_id
-                 JOIN tracks t ON t.id = tv.track_id
-                 WHERE (?1 IS NULL OR t.work_id = ?1)
-                   AND (?2 IS NULL OR b.version_id = ?2)
-                 ORDER BY b.position_ms ASC",
-            )?;
-            let rows = stmt.query_map(params![work_id, version_id], |r| {
-                Ok(BookmarkDto {
-                    id: r.get(0)?,
-                    version_id: r.get(1)?,
-                    track_title: r.get(2)?,
-                    work_id: r.get(3)?,
-                    position_ms: r.get(4)?,
-                    note: r.get(5)?,
-                    created_at: r.get(6)?,
-                })
-            })?;
-            let mut out = Vec::new();
-            for row in rows {
-                out.push(row?);
-            }
-            Ok(out)
-        })
-    }
-
-    pub fn add_bookmark(&self, version_id: &str, position_ms: i64, note: &str) -> AppResult<BookmarkDto> {
-        if position_ms < 0 {
-            return Err(AppError::new(ErrorCode::InvalidInput, "书签位置不能为负数"));
-        }
-        let id = Uuid::new_v4().to_string();
-        let now = Utc::now().to_rfc3339();
-        self.with_conn(|conn| {
-            let (track_title, work_id): (String, String) = conn
-                .query_row(
-                    "SELECT t.title, t.work_id FROM track_versions tv
-                     JOIN tracks t ON t.id = tv.track_id WHERE tv.id = ?1",
-                    params![version_id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()?
-                .ok_or_else(|| AppError::new(ErrorCode::SourceNotFound, "未找到对应音轨版本"))?;
-
-            conn.execute(
-                "INSERT INTO bookmarks (id, version_id, position_ms, note, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![id, version_id, position_ms, note, now, now],
-            )?;
-            Ok(BookmarkDto {
-                id,
-                version_id: version_id.to_string(),
-                track_title,
-                work_id,
-                position_ms,
-                note: note.to_string(),
-                created_at: now,
-            })
-        })
-    }
-
-    pub fn update_bookmark(&self, bookmark_id: &str, note: &str) -> AppResult<()> {
-        let now = Utc::now().to_rfc3339();
-        self.with_conn(|conn| {
-            conn.execute(
-                "UPDATE bookmarks SET note = ?1, updated_at = ?2 WHERE id = ?3",
-                params![note, now, bookmark_id],
-            )?;
-            Ok(())
-        })
-    }
-
-    pub fn delete_bookmark(&self, bookmark_id: &str) -> AppResult<()> {
-        self.with_conn(|conn| {
-            conn.execute("DELETE FROM bookmarks WHERE id = ?1", params![bookmark_id])?;
-            Ok(())
-        })
-    }
-
     pub fn list_ab_loops(&self, version_id: &str) -> AppResult<Vec<AbLoopDto>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
@@ -2346,16 +2271,22 @@ impl Database {
     /// T1006: Exports all user-created assets (favorites, playback positions, bookmarks, A-B loops,
     /// metadata overrides, custom DSP presets, and per-work DSP overrides) into a portable JSON bundle.
     pub fn export_user_backup(&self) -> AppResult<UserBackupBundleDto> {
-        let (dsp_global_config, dsp_global_preset_id) = self
-            .get_dsp_global_state()
-            .unwrap_or_else(|_| (DspConfigDto::default(), Some("asmr_pure_guard".into())));
-        let custom_dsp_presets: Vec<DspPresetDto> = self
-            .list_dsp_presets()?
-            .into_iter()
-            .filter(|p| !p.is_builtin)
-            .collect();
+        self.with_conn(|conn| Self::export_user_backup_on_conn(conn))
+    }
 
-        self.with_conn(|conn| {
+    pub(crate) fn export_user_backup_on_conn(conn: &Connection) -> AppResult<UserBackupBundleDto> {
+        let global: Option<(Option<String>, String)> = conn.query_row(
+            "SELECT active_preset_id, config_json FROM dsp_global_state WHERE id=1", [], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+        let (dsp_global_config, dsp_global_preset_id) = match global {
+            Some((id, raw)) => (serde_json::from_str(&raw).map_err(|_| AppError::new(ErrorCode::InvalidInput,"当前音效配置损坏，未生成备份"))?, id),
+            None => (DspConfigDto::default(), Some("asmr_pure_guard".into())),
+        };
+        let mut presets = conn.prepare("SELECT id,name,description,config_json FROM dsp_presets WHERE is_builtin=0 ORDER BY id")?;
+        let rows = presets.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?;
+        let mut custom_dsp_presets = Vec::new();
+        for row in rows { let (id,name,description,raw) = row?;
+            custom_dsp_presets.push(DspPresetDto { id,name,description,is_builtin:false,config:serde_json::from_str(&raw).map_err(|_| AppError::new(ErrorCode::InvalidInput,"自定义音效配置损坏，未生成备份"))? });
+        }
             let favorites = {
                 let mut stmt = conn.prepare(
                     "SELECT f.work_id, w.rj_code, w.title, f.created_at
@@ -2398,28 +2329,7 @@ impl Database {
                 rows.collect::<Result<Vec<_>, _>>()?
             };
 
-            let bookmarks = {
-                let mut stmt = conn.prepare(
-                    "SELECT b.id, b.version_id, w.rj_code, t.title, b.position_ms, b.note, b.created_at
-                     FROM bookmarks b
-                     JOIN track_versions tv ON tv.id = b.version_id
-                     JOIN tracks t ON t.id = tv.track_id
-                     JOIN works w ON w.id = t.work_id
-                     ORDER BY b.created_at ASC",
-                )?;
-                let rows = stmt.query_map([], |r| {
-                    Ok(BackupBookmarkRecordDto {
-                        id: r.get(0)?,
-                        version_id: r.get(1)?,
-                        rj_code: r.get(2)?,
-                        track_title: r.get(3)?,
-                        position_ms: r.get(4)?,
-                        note: r.get(5)?,
-                        created_at: r.get(6)?,
-                    })
-                })?;
-                rows.collect::<Result<Vec<_>, _>>()?
-            };
+            let bookmarks = super::bookmark_notes::read_records(conn)?;
 
             let ab_loops = {
                 let mut stmt = conn.prepare(
@@ -2485,8 +2395,8 @@ impl Database {
                 let mut out = Vec::new();
                 for row in rows {
                     let (work_id, rj_code, preset_id, cfg_json, enabled, updated_at) = row?;
-                    if let Ok(config) = serde_json::from_str::<DspConfigDto>(&cfg_json) {
-                        out.push(BackupWorkDspOverrideRecordDto {
+                    let config = serde_json::from_str::<DspConfigDto>(&cfg_json).map_err(|_| AppError::new(ErrorCode::InvalidInput, "作品音效配置损坏，备份未生成"))?;
+                    out.push(BackupWorkDspOverrideRecordDto {
                             work_id,
                             rj_code,
                             preset_id,
@@ -2494,7 +2404,6 @@ impl Database {
                             enabled,
                             updated_at,
                         });
-                    }
                 }
                 out
             };
@@ -2512,12 +2421,17 @@ impl Database {
                 dsp_global_config,
                 dsp_global_preset_id,
             })
-        })
     }
 
     /// T1006: Idempotently restores user assets from a `UserBackupBundleDto`, matching works/versions by
-    /// exact ID first and falling back to `(rj_code, track_title)` so cross-machine / re-imported libraries work seamlessly.
+    /// Legacy assets use ID/title matching. T1503 bookmarks only use exact version IDs;
+    /// unmatched notes are retained separately rather than moved to another edit.
     pub fn import_user_backup(&self, bundle: &UserBackupBundleDto) -> AppResult<BackupRestoreReportDto> {
+        self.with_conn(|conn| Self::restore_user_backup_on_conn(conn, bundle, true, true, false))
+    }
+
+    pub(crate) fn restore_user_backup_on_conn(conn: &mut Connection, bundle: &UserBackupBundleDto, apply: bool, restore_dsp: bool, exact_versions: bool) -> AppResult<BackupRestoreReportDto> {
+        if bundle.schema_version != 1 { return Err(AppError::new(ErrorCode::InvalidInput,"不支持此备份版本")); }
         let mut report = BackupRestoreReportDto {
             favorites_restored: 0,
             positions_restored: 0,
@@ -2527,7 +2441,6 @@ impl Database {
             dsp_presets_restored: 0,
         };
 
-        self.with_conn(|conn| {
             let tx = conn.transaction()?;
             let now = Utc::now().to_rfc3339();
 
@@ -2546,8 +2459,8 @@ impl Database {
                 if let Some(rj) = rj_code.filter(|s| !s.trim().is_empty()) {
                     if let Ok(Some(id)) = tx
                         .query_row(
-                            "SELECT id FROM works WHERE rj_code = ?1 ORDER BY updated_at DESC LIMIT 1",
-                            params![rj],
+                            "SELECT id FROM works WHERE rj_code = ?1 AND (?2=0 OR (SELECT COUNT(*) FROM works WHERE rj_code=?1)=1) ORDER BY updated_at DESC LIMIT 1",
+                            params![rj, exact_versions],
                             |r| r.get::<_, String>(0),
                         )
                         .optional()
@@ -2573,7 +2486,7 @@ impl Database {
                 {
                     return Some(id);
                 }
-                if let Some(rj) = rj_code.filter(|s| !s.trim().is_empty()) {
+                if let Some(rj) = rj_code.filter(|s| !exact_versions && !s.trim().is_empty()) {
                     if let Ok(Some(id)) = tx
                         .query_row(
                             "SELECT tv.id
@@ -2614,6 +2527,7 @@ impl Database {
             }
 
             // 2. Global DSP state
+            if restore_dsp {
             if let Ok(cfg_json) = serde_json::to_string(&bundle.dsp_global_config) {
                 tx.execute(
                     "INSERT INTO dsp_global_state (id, active_preset_id, config_json, updated_at)
@@ -2624,6 +2538,8 @@ impl Database {
                        updated_at = excluded.updated_at",
                     params![bundle.dsp_global_preset_id, cfg_json, now],
                 )?;
+            }
+
             }
 
             // 3. Favorites
@@ -2657,26 +2573,14 @@ impl Database {
                 }
             }
 
-            // 5. Bookmarks
-            for bm in &bundle.bookmarks {
-                if let Some(vid) =
-                    resolve_version_id(&tx, &bm.version_id, bm.rj_code.as_deref(), &bm.track_title)
-                {
-                    tx.execute(
-                        "INSERT INTO bookmarks (id, version_id, position_ms, note, created_at, updated_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                         ON CONFLICT(id) DO UPDATE SET
-                           position_ms = excluded.position_ms,
-                           note = excluded.note,
-                           updated_at = excluded.updated_at",
-                        params![bm.id, vid, bm.position_ms.max(0), bm.note, bm.created_at, now],
-                    )?;
-                    report.bookmarks_restored += 1;
-                }
-            }
+            // T1503: exact version IDs only; unmatched notes remain readable and exportable.
+            report.bookmarks_restored = super::bookmark_notes::restore_records(&tx, &bundle.bookmarks, true)?.restored;
 
             // 6. A-B Loops
             for ab in &bundle.ab_loops {
+                if exact_versions && tx.query_row("SELECT EXISTS(SELECT 1 FROM ab_loops WHERE id=?1 AND version_id!=?2)",params![ab.id,ab.version_id],|r|r.get::<_,bool>(0))? {
+                    return Err(AppError::new(ErrorCode::InvalidInput,"循环记录 ID 已属于其他音轨版本，未恢复"));
+                }
                 if ab.start_ms < 0 || ab.start_ms >= ab.end_ms {
                     continue;
                 }
@@ -2734,9 +2638,8 @@ impl Database {
                 }
             }
 
-            tx.commit()?;
+            if apply { tx.commit()?; } else { tx.rollback()?; }
             Ok(report)
-        })
     }
 }
 
@@ -2935,7 +2838,11 @@ mod repo_tests {
         assert!(detail.is_favorite);
         assert_eq!(detail.title, "自定义备份标题");
         assert_eq!(detail.tracks[0].versions[0].position_ms, 64_500);
-        assert_eq!(db2.list_bookmarks(Some("w_new_id"), None).unwrap().len(), 1);
+        assert!(db2.list_bookmarks(Some("w_new_id"), None).unwrap().is_empty());
+        let notes = db2.list_bookmarks(None, None).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].version_id, "v_orig");
+        assert!(!notes[0].linked);
         assert_eq!(db2.list_ab_loops("v_new_id").unwrap().len(), 1);
     }
 }
