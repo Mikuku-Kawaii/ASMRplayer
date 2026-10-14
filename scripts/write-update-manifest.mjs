@@ -38,5 +38,9 @@ for (const [type, filename] of [
 const notes = await readFile(path.join(root, "docs/releases", `${tag}.md`), "utf8");
 await writeFile(path.join(output, "latest.json"), JSON.stringify({ version, notes, pub_date: new Date().toISOString(), platforms }, null, 2) + "\n");
 await writeFile(path.join(output, "SHA256SUMS.txt"), hashes.join("\n") + "\n");
-await copyFile(path.join(root, "THIRD_PARTY_NOTICES.md"), path.join(output, "THIRD_PARTY_NOTICES.md"));
+try {
+  await copyFile(path.join(root, "THIRD_PARTY_NOTICES.md"), path.join(output, "THIRD_PARTY_NOTICES.md"));
+} catch (error) {
+  if (error.code !== "ENOENT") throw error;
+}
 console.log(`Signed release files and latest.json prepared in ${output}`);
