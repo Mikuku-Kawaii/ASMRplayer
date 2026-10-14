@@ -1,6 +1,8 @@
 use crate::db::Database;
+use crate::db::bulk_library::{BulkAction, BulkReport};
+use crate::db::smart_collections::{CollectionFilters, SmartCollection};
 use crate::domain::*;
-use crate::providers::{AsmrOneProvider, ProviderWork};
+use crate::providers::{AsmrOneProvider, OnlineFilter, ProviderTag, ProviderWork};
 use crate::services::download::DownloadService;
 use crate::services::library::LibraryService;
 use crate::services::playback::PlaybackService;
@@ -23,7 +25,7 @@ pub struct AppState {
 pub fn get_island_preferences(state: State<'_, AppState>) -> AppResult<crate::services::island::IslandPreferences> { state.island.preferences() }
 
 #[tauri::command]
-pub async fn set_island_preferences(state: State<'_, AppState>, size: Option<crate::services::island::IslandSize>, monitor_id: Option<String>) -> AppResult<crate::services::island::IslandPreferences> { state.island.set_preferences(size, monitor_id) }
+pub async fn set_island_preferences(state: State<'_, AppState>, compact_scale: Option<f64>, expanded_scale: Option<f64>, monitor_id: Option<String>) -> AppResult<crate::services::island::IslandPreferences> { state.island.set_preferences(compact_scale, expanded_scale, monitor_id) }
 
 #[tauri::command]
 pub async fn island_set_form(state: State<'_, AppState>, form: crate::services::island::IslandForm, animate: Option<bool>, compact_width: Option<f64>) -> AppResult<crate::services::island::IslandLayout> {
@@ -36,7 +38,19 @@ pub async fn island_set_form(state: State<'_, AppState>, form: crate::services::
 pub async fn island_settle_layout(state: State<'_, AppState>, revision: u64) -> AppResult<()> { state.island.settle(revision) }
 
 #[tauri::command]
+pub async fn island_layout_ready(state: State<'_, AppState>, revision: u64) -> AppResult<()> { state.island.layout_ready(revision) }
+
+#[tauri::command]
 pub async fn island_save_current_position(state: State<'_, AppState>) -> AppResult<()> { state.island.save_position() }
+
+#[tauri::command]
+pub fn get_release_history(state: State<'_, AppState>) -> AppResult<crate::services::release_history::ReleaseHistory> { state.updater.history.snapshot() }
+
+#[tauri::command]
+pub async fn refresh_release_history(state: State<'_, AppState>) -> AppResult<crate::services::release_history::ReleaseHistory> { state.updater.history.refresh().await }
+
+#[tauri::command]
+pub fn claim_upgrade_notice(state: State<'_, AppState>, version: String) -> AppResult<bool> { state.updater.history.claim_notice(&version) }
 
 #[tauri::command]
 pub fn get_update_snapshot(state: State<'_, AppState>) -> UpdateSnapshot { state.updater.snapshot() }
@@ -61,11 +75,17 @@ pub async fn install_update(state: State<'_, AppState>) -> AppResult<UpdateSnaps
 
 #[tauri::command]
 pub fn open_release_page() -> AppResult<()> {
+    open_update_link(crate::services::updater::RELEASES_URL.to_owned())
+}
+
+#[tauri::command]
+pub fn open_update_link(url: String) -> AppResult<()> {
+    let url = crate::services::updater::validate_web_link(&url)?;
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         std::process::Command::new("explorer.exe")
-            .arg(crate::services::updater::RELEASES_URL).creation_flags(0x08000000).spawn()?;
+            .arg(url.as_str()).creation_flags(0x08000000).spawn()?;
     }
     Ok(())
 }
@@ -80,8 +100,48 @@ pub fn list_works(
 }
 
 #[tauri::command]
+pub async fn preview_library_batch(state: State<'_, AppState>, work_ids: Vec<String>, action: BulkAction) -> AppResult<BulkReport> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.preview_library_batch(work_ids, action)).await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
+}
+#[tauri::command]
+pub async fn execute_library_batch(state: State<'_, AppState>, id: String, retry_ids: Option<Vec<String>>) -> AppResult<BulkReport> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.execute_library_batch(&id, retry_ids)).await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
+}
+#[tauri::command]
+pub async fn undo_library_batch(state: State<'_, AppState>, id: String) -> AppResult<BulkReport> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.undo_library_batch(&id)).await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
+}
+#[tauri::command]
+pub fn latest_library_batch(state: State<'_, AppState>) -> AppResult<Option<BulkReport>> { state.db.latest_library_batch() }
+
+#[tauri::command]
 pub fn get_work_detail(state: State<'_, AppState>, work_id: String) -> AppResult<WorkDetailDto> {
     state.db.get_work_detail(&work_id)
+}
+
+#[tauri::command]
+pub fn list_smart_collections(state: State<'_, AppState>) -> AppResult<Vec<SmartCollection>> {
+    state.db.list_smart_collections()
+}
+
+#[tauri::command]
+pub fn save_smart_collection(state: State<'_, AppState>, id: Option<String>, name: String, filters: CollectionFilters) -> AppResult<SmartCollection> {
+    state.db.save_smart_collection(id.as_deref(), &name, &filters)
+}
+
+#[tauri::command]
+pub fn remove_smart_collection(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    state.db.remove_smart_collection(&id)
+}
+
+#[tauri::command]
+pub async fn query_smart_collection(state: State<'_, AppState>, filters: CollectionFilters) -> AppResult<Vec<WorkSummary>> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.query_smart_collection(&filters)).await
+        .map_err(|e| AppError::new(ErrorCode::InternalError, format!("集合查询失败：{e}")))?
 }
 
 #[tauri::command]
@@ -219,6 +279,11 @@ pub async fn browse_online_works(
 }
 
 #[tauri::command]
+pub async fn list_online_tags(state: State<'_, AppState>) -> AppResult<Vec<ProviderTag>> {
+    state.provider.list_tags().await
+}
+
+#[tauri::command]
 pub async fn search_online_works(
     state: State<'_, AppState>,
     keyword: String,
@@ -226,10 +291,11 @@ pub async fn search_online_works(
     order: String,
     sort: String,
     subtitle_only: bool,
+    filters: Option<Vec<OnlineFilter>>,
 ) -> AppResult<Page<ProviderWork>> {
     state
         .provider
-        .search_works(&keyword, page, &order, &sort, subtitle_only)
+        .search_filtered_works(&keyword, &filters.unwrap_or_default(), page, &order, &sort, subtitle_only)
         .await
 }
 
@@ -335,6 +401,36 @@ pub fn clear_queue(state: State<'_, AppState>) -> AppResult<PlaybackSnapshot> {
 }
 
 #[tauri::command]
+pub async fn list_queue_plans(state: State<'_, AppState>) -> AppResult<Vec<QueuePlanDto>> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.list_queue_plans()).await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn save_queue_plan(state: State<'_, AppState>, name: String) -> AppResult<QueuePlanDto> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.save_queue_plan(&name)).await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn rename_queue_plan(state: State<'_, AppState>, plan_id: String, name: String) -> AppResult<QueuePlanDto> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.rename_queue_plan(&plan_id, &name)).await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn preview_queue_plan(state: State<'_, AppState>, plan_id: String) -> AppResult<QueuePlanPreviewDto> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.preview_queue_plan(&plan_id)).await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn apply_queue_plan(state: State<'_, AppState>, request: ApplyQueuePlanRequest) -> AppResult<PlaybackSnapshot> {
+    let playback = state.playback.clone();
+    tauri::async_runtime::spawn_blocking(move || playback.apply_queue_plan(&request)).await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
+}
+
+#[tauri::command]
 pub async fn restart_player_engine(state: State<'_, AppState>) -> AppResult<PlaybackSnapshot> {
     state.playback.restart_engine().await
 }
@@ -380,24 +476,27 @@ pub fn delete_ab_loop(state: State<'_, AppState>, loop_id: String) -> AppResult<
 }
 
 #[tauri::command]
-pub fn list_bookmarks(
+pub async fn list_bookmarks(
     state: State<'_, AppState>,
     work_id: Option<String>,
     version_id: Option<String>,
 ) -> AppResult<Vec<BookmarkDto>> {
-    state
-        .db
-        .list_bookmarks(work_id.as_deref(), version_id.as_deref())
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.list_bookmarks(work_id.as_deref(), version_id.as_deref()))
+        .await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
 }
 
 #[tauri::command]
-pub fn add_bookmark(
+pub async fn add_bookmark(
     state: State<'_, AppState>,
     version_id: String,
     position_ms: i64,
     note: String,
+    tags: Option<Vec<String>>,
 ) -> AppResult<BookmarkDto> {
-    state.db.add_bookmark(&version_id, position_ms, &note)
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.add_bookmark_note(&version_id, position_ms, &note, &tags.unwrap_or_default()))
+        .await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
 }
 
 #[tauri::command]
@@ -405,8 +504,40 @@ pub fn update_bookmark(
     state: State<'_, AppState>,
     bookmark_id: String,
     note: String,
+    tags: Option<Vec<String>>,
 ) -> AppResult<()> {
-    state.db.update_bookmark(&bookmark_id, &note)
+    state.db.update_bookmark_note(&bookmark_id, &note, tags.as_deref())
+}
+
+#[tauri::command]
+pub async fn search_bookmarks(state: State<'_, AppState>, work_id: Option<String>, version_id: Option<String>, query: String, offset: usize) -> AppResult<BookmarkSearchPage> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.search_bookmarks(work_id.as_deref(),version_id.as_deref(),&query,offset)).await.map_err(|e| AppError::new(ErrorCode::InternalError,e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn play_bookmark(state: State<'_, AppState>, bookmark_id: String) -> AppResult<PlaybackSnapshot> {
+    state.playback.play_bookmark(&bookmark_id).await
+}
+
+#[tauri::command]
+pub async fn export_bookmark_notes(state: State<'_, AppState>, target_path: Option<String>) -> AppResult<BookmarkBundle> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let bundle = db.export_bookmark_notes()?;
+        if let Some(path) = target_path {
+            if !path.to_lowercase().ends_with(".json") { return Err(AppError::new(ErrorCode::InvalidInput,"请选择 .json 书签备份文件")); }
+            let bytes = serde_json::to_vec_pretty(&bundle).map_err(|_| AppError::new(ErrorCode::InternalError,"书签备份编码失败"))?;
+            std::fs::write(path,bytes)?;
+        }
+        Ok(bundle)
+    }).await.map_err(|e| AppError::new(ErrorCode::InternalError,e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn restore_bookmark_notes(state: State<'_, AppState>, bundle: BookmarkBundle, apply: bool) -> AppResult<BookmarkRestoreReport> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.restore_bookmark_notes(&bundle,apply)).await.map_err(|e| AppError::new(ErrorCode::InternalError,e.to_string()))?
 }
 
 #[tauri::command]
@@ -577,6 +708,22 @@ pub fn enqueue_downloads(
 }
 
 #[tauri::command]
+pub fn get_download_policy(state: State<'_, AppState>) -> AppResult<serde_json::Value> {
+    state.downloads.policy_status()
+}
+
+#[tauri::command]
+pub fn set_download_policy(state: State<'_, AppState>, policy: crate::services::download::scheduling::DownloadPolicy) -> AppResult<serde_json::Value> {
+    state.downloads.set_policy(policy)?;
+    state.downloads.policy_status()
+}
+
+#[tauri::command]
+pub fn set_download_priority(state: State<'_, AppState>, task_id: String, priority: i32) -> AppResult<Vec<DownloadTaskDto>> {
+    state.downloads.set_priority(&task_id, priority)
+}
+
+#[tauri::command]
 pub fn list_download_tasks(state: State<'_, AppState>) -> AppResult<Vec<DownloadTaskDto>> {
     state.downloads.list_tasks()
 }
@@ -640,6 +787,16 @@ pub fn list_association_history(
 #[tauri::command]
 pub fn get_app_settings(state: State<'_, AppState>) -> AppResult<AppSettingsDto> {
     state.session.get_settings()
+}
+
+#[tauri::command]
+pub fn get_shortcut_bindings(state: State<'_, AppState>) -> AppResult<crate::db::shortcuts::ShortcutBindings> {
+    state.db.get_shortcut_bindings()
+}
+
+#[tauri::command]
+pub fn save_shortcut_bindings(state: State<'_, AppState>, bindings: crate::db::shortcuts::ShortcutBindings) -> AppResult<crate::db::shortcuts::ShortcutBindings> {
+    state.db.save_shortcut_bindings(bindings)
 }
 
 #[tauri::command]
@@ -713,13 +870,43 @@ pub async fn sync_watched_roots_now(
 }
 
 #[tauri::command]
-pub fn clear_playback_cache(state: State<'_, AppState>) -> AppResult<u64> {
-    state.session.clear_playback_cache()
+pub async fn get_storage_overview(state: State<'_, AppState>) -> AppResult<crate::services::storage::StorageOverview> {
+    let storage = state.session.storage.clone();
+    tokio::task::spawn_blocking(move || storage.overview()).await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn preview_storage_cleanup(state: State<'_, AppState>, category: crate::services::storage::Category, ids: Vec<String>) -> AppResult<crate::services::storage::CleanupPreview> {
+    let storage = state.session.storage.clone();
+    tokio::task::spawn_blocking(move || storage.preview(category, ids)).await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn execute_storage_cleanup(state: State<'_, AppState>, token: String) -> AppResult<crate::services::storage::CleanupResult> {
+    let storage = state.session.storage.clone();
+    tokio::task::spawn_blocking(move || storage.execute(&token)).await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
 }
 
 #[tauri::command]
 pub fn get_diagnostic_logs(state: State<'_, AppState>) -> AppResult<Vec<String>> {
     state.session.get_diagnostics()
+}
+
+#[tauri::command]
+pub async fn preview_diagnostic_bundle(state: State<'_, AppState>) -> AppResult<crate::services::diagnostics::DiagnosticPreview> {
+    let audio = tokio::time::timeout(std::time::Duration::from_secs(3), state.playback.get_audio_output()).await
+        .unwrap_or_else(|_| Err(AppError::new(ErrorCode::MpvIpcError, "音频设备信息读取超时")));
+    let diagnostics = state.session.diagnostics.clone();
+    let playback = state.playback.clone();
+    tokio::task::spawn_blocking(move || diagnostics.preview(audio, playback.get_snapshot())).await
+        .map_err(|_| AppError::new(ErrorCode::InternalError, "生成诊断预览失败"))?
+}
+
+#[tauri::command]
+pub async fn export_diagnostic_bundle(state: State<'_, AppState>, token: String, target_path: String) -> AppResult<()> {
+    let diagnostics = state.session.diagnostics.clone();
+    tokio::task::spawn_blocking(move || diagnostics.export(&token, std::path::Path::new(&target_path))).await
+        .map_err(|_| AppError::new(ErrorCode::InternalError, "导出诊断包失败"))?
 }
 
 #[tauri::command]
@@ -737,45 +924,39 @@ pub fn export_user_backup(
                     format!("序列化用户备份失败: {}", e),
                 )
             })?;
-            std::fs::write(trimmed, json_bytes)?;
+            crate::services::backup::write_export(std::path::Path::new(trimmed), &json_bytes)?;
         }
     }
     Ok(bundle)
 }
 
 #[tauri::command]
-pub async fn import_user_backup(
-    state: State<'_, AppState>,
-    source_path: Option<String>,
-    bundle_json: Option<String>,
-) -> AppResult<BackupRestoreReportDto> {
-    let raw_json = if let Some(ref p) = source_path.filter(|s| !s.trim().is_empty()) {
-        std::fs::read_to_string(p.trim())?
-    } else if let Some(raw) = bundle_json.filter(|s| !s.trim().is_empty()) {
-        raw
-    } else {
-        return Err(AppError::new(
-            ErrorCode::InvalidInput,
-            "请提供有效的备份文件路径或备份 JSON 内容",
-        ));
-    };
-
-    let bundle: UserBackupBundleDto = serde_json::from_str(&raw_json).map_err(|e| {
-        AppError::new(
-            ErrorCode::InvalidInput,
-            format!("解析用户备份 JSON 失败: {}", e),
-        )
-    })?;
-
-    let report = state.db.import_user_backup(&bundle)?;
-    if let Ok((global_cfg, global_preset)) = state.db.get_dsp_global_state() {
-        let _ = state
-            .playback
-            .update_dsp_config(global_cfg, global_preset)
-            .await;
+pub async fn get_backup_status(state: State<'_, AppState>) -> AppResult<crate::services::backup::BackupStatus> {
+    let svc=state.session.backups.clone();tokio::task::spawn_blocking(move ||svc.status()).await.map_err(|e|AppError::new(ErrorCode::InternalError,e.to_string()))?
+}
+#[tauri::command]
+pub async fn set_backup_policy(state: State<'_, AppState>, policy: crate::services::backup::BackupPolicy) -> AppResult<crate::services::backup::BackupStatus> {
+    let svc=state.session.backups.clone();tokio::task::spawn_blocking(move ||svc.set_policy(policy)).await.map_err(|e|AppError::new(ErrorCode::InternalError,e.to_string()))?
+}
+#[tauri::command]
+pub async fn create_user_backup(state: State<'_, AppState>) -> AppResult<crate::services::backup::BackupFile> {
+    let svc=state.session.backups.clone();tokio::task::spawn_blocking(move ||svc.create(false)).await.map_err(|e|AppError::new(ErrorCode::InternalError,e.to_string()))?
+}
+#[tauri::command]
+pub async fn preview_user_backup(state: State<'_, AppState>, raw: Option<String>, file_id: Option<String>, passphrase: Option<String>) -> AppResult<crate::services::backup::RestorePreview> {
+    let svc=state.session.backups.clone();tokio::task::spawn_blocking(move ||svc.preview(raw,file_id,passphrase)).await.map_err(|e|AppError::new(ErrorCode::InternalError,e.to_string()))?
+}
+#[tauri::command]
+pub async fn apply_user_backup(state: State<'_, AppState>, token: String, scopes: Vec<crate::services::backup::RestoreScope>) -> AppResult<crate::services::backup::RestoreResult> {
+    let svc=state.session.backups.clone();
+    let mut result=tokio::task::spawn_blocking(move ||svc.restore(&token,scopes)).await.map_err(|e|AppError::new(ErrorCode::InternalError,e.to_string()))??;
+    if result.dsp_changed {
+        if let Err(e) = state.playback.reload_restored_dsp().await {
+            state.db.append_log("WARN", &format!("备份已恢复，音效运行态刷新失败：{}", e.message));
+            result.runtime_warning = Some("数据已恢复，但当前播放音效刷新失败，请重新选择音效预设。".into());
+        }
     }
-    state.playback.emit_snapshot();
-    Ok(report)
+    state.playback.emit_snapshot();Ok(result)
 }
 
 #[tauri::command]
@@ -795,46 +976,10 @@ pub fn export_encrypted_sync_bundle(
                     format!("序列化加密同步包失败: {}", e),
                 )
             })?;
-            std::fs::write(trimmed, json_bytes)?;
+            crate::services::backup::write_export(std::path::Path::new(trimmed), &json_bytes)?;
         }
     }
     Ok(env)
-}
-
-#[tauri::command]
-pub async fn import_encrypted_sync_bundle(
-    state: State<'_, AppState>,
-    passphrase: String,
-    source_path: Option<String>,
-    envelope_json: Option<String>,
-) -> AppResult<BackupRestoreReportDto> {
-    let raw_json = if let Some(ref p) = source_path.filter(|s| !s.trim().is_empty()) {
-        std::fs::read_to_string(p.trim())?
-    } else if let Some(raw) = envelope_json.filter(|s| !s.trim().is_empty()) {
-        raw
-    } else {
-        return Err(AppError::new(
-            ErrorCode::InvalidInput,
-            "请提供加密同步文件路径或密文 JSON",
-        ));
-    };
-
-    let env: EncryptedSyncEnvelopeDto = serde_json::from_str(&raw_json).map_err(|e| {
-        AppError::new(
-            ErrorCode::InvalidInput,
-            format!("解析加密同步包 JSON 结构失败: {}", e),
-        )
-    })?;
-    let bundle = decrypt_backup_bundle(&env, &passphrase)?;
-    let report = state.db.import_user_backup(&bundle)?;
-    if let Ok((global_cfg, global_preset)) = state.db.get_dsp_global_state() {
-        let _ = state
-            .playback
-            .update_dsp_config(global_cfg, global_preset)
-            .await;
-    }
-    state.playback.emit_snapshot();
-    Ok(report)
 }
 
 #[tauri::command]
@@ -1358,3 +1503,13 @@ pub fn check_fullscreen_avoidance(app: AppHandle, state: State<'_, AppState>) ->
 
 
 
+
+#[tauri::command]
+pub async fn get_audio_output(state: State<'_, AppState>) -> AppResult<AudioOutputStateDto> {
+    state.playback.get_audio_output().await
+}
+
+#[tauri::command]
+pub async fn set_audio_device(state: State<'_, AppState>, device_id: String) -> AppResult<AudioOutputStateDto> {
+    state.playback.set_audio_device(&device_id).await
+}
