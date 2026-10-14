@@ -42,7 +42,7 @@ export interface CollectionFilters {
   tags: string[];
   collected: boolean | null;
   favorite: boolean | null;
-  listening: "any" | "unplayed" | "played";
+  listening: "any" | "unplayed" | "inProgress" | "played";
   offline: boolean | null;
 }
 
@@ -67,6 +67,7 @@ export interface ProviderTag {
 }
 
 export interface WorkSummary {
+  listeningStatus?: "unplayed" | "inProgress" | "played";
   isListened?: boolean;
   id: string;
   title: string;
@@ -128,6 +129,7 @@ export interface MediaSourceDto {
 }
 
 export interface TrackVersionDto {
+  isFavorite?: boolean;
   id: string;
   trackId: string;
   versionLabel: string;
@@ -1044,4 +1046,22 @@ export interface QueuePlanEntryDto {
 export interface QueuePlanPreviewDto {
   plan: QueuePlanDto; items: QueuePlanEntryDto[]; previewToken: string;
   queueToken: string; currentQueueCount: number;
+}
+
+export interface MediaAffinity {
+  workId: string; versionId: string; isCollected: boolean; isFavorite: boolean;
+  isVersionFavorite: boolean; isLocalImported: boolean;
+}
+export async function subscribeLibraryAffinity(handler: (workId: string) => void): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) return () => {};
+  return listen<string>("library:affinity", e => handler(e.payload));
+}
+export interface DesktopLyricsSettingsDto {
+  enabled: boolean; locked: boolean; fontSize: number; color: "lavender" | "white" | "amber";
+  fontFamily: "system" | "yahei" | "dengxian" | "simsun" | "kaiti" | "meiryo";
+  backgroundEnabled: boolean; backgroundOpacity: number; showTranslation: boolean; revision: number;
+}
+export async function subscribeDesktopLyricsSettings(handler: (s: DesktopLyricsSettingsDto) => void): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) return () => {};
+  return listen<DesktopLyricsSettingsDto>("desktop-lyrics:settings", e => handler(e.payload));
 }
