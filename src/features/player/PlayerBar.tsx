@@ -1,3 +1,5 @@
+import { PlayerLibraryActions } from "./PlayerLibraryActions";
+import { DesktopLyricsToggle } from "./DesktopLyricsToggle";
 import React, { useState, useEffect, useRef } from "react";
 import { useShortcuts } from "../commands/ShortcutProvider";
 import { shortcutTitle } from "../../lib/shortcuts";
@@ -496,12 +498,15 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
         </button>
 
         <div className="player-track-info">
-          <div
-            className="player-track-title"
+          <button
+            type="button"
+            className="link-btn player-track-title"
+            disabled={!snapshot.currentWorkId || !onOpenWorkDetail}
+            onClick={() => snapshot.currentWorkId && onOpenWorkDetail?.(snapshot.currentWorkId)}
             title={snapshot.currentTrackTitle ?? "尚未加载音轨"}
           >
             {snapshot.currentTrackTitle ?? "尚未加载音轨"}
-          </div>
+          </button>
           <div className="player-work-row">
             {snapshot.currentWorkId && snapshot.currentWorkTitle ? (
               <button
@@ -527,6 +532,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
       {/* 中栏：对称纯净的传输图标行 + 带 64 点波形包络的时间轴进度条 */}
       <div className="player-center">
         <div className="player-controls-row">
+          <DesktopLyricsToggle onError={onError} />
           <button
             type="button"
             className={`btn-icon ${
@@ -677,6 +683,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
 
       {/* 右栏：收纳为单一触发按钮 + 右侧弹出式二级控制菜单（或点击关闭已打开的抽屉） */}
       <div className="player-right" ref={moreMenuRef}>
+        <PlayerLibraryActions versionId={snapshot.currentVersionId} onError={onError} />
         <button
           type="button"
           className={`btn-right-menu-trigger ${
