@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   AlertTriangle,
   Copy,
@@ -24,6 +24,12 @@ export const ErrorBanner: React.FC<ErrorBannerProps> = ({
 }) => {
   const [copied, setCopied] = useState(false);
 
+  const resetTimer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => {
+    setCopied(false);
+    return () => clearTimeout(resetTimer.current);
+  }, [error]);
+
   if (!error) return null;
 
   const handleCopy = () => {
@@ -32,7 +38,8 @@ export const ErrorBanner: React.FC<ErrorBannerProps> = ({
     }`;
     void navigator.clipboard?.writeText(text);
     setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
+    clearTimeout(resetTimer.current);
+    resetTimer.current = setTimeout(() => setCopied(false), 1800);
   };
 
   return (
