@@ -4484,13 +4484,13 @@ article:focus-visible {
 .island-error { position: absolute; inset: auto 8px 4px; padding: 2px 6px; background: var(--bg-elevated); color: var(--danger); font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; border-radius: 6px; }
 .island-display-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; max-width: 100%; }
 .island-display-actions .app-select { max-width: 100%; }
-.island-scale-stepper { display: inline-flex; align-items: center; flex-shrink: 0; border: 1px solid var(--border-subtle); border-radius: 12px; background: var(--bg-elevated); overflow: hidden; }
-.island-scale-stepper button { display: grid; place-items: center; width: 40px; height: 40px; color: var(--text-primary); background: transparent; border: 0; cursor: pointer; }
-.island-scale-stepper button:hover:not(:disabled) { background: var(--bg-hover); }
-.island-scale-stepper button:active:not(:disabled) { background: var(--accent-bg); }
-.island-scale-stepper button:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
-.island-scale-stepper button:disabled { opacity: .38; cursor: not-allowed; }
-.island-scale-stepper output { min-width: 70px; padding: 4px 10px; text-align: center; border-inline: 1px solid var(--border-subtle); font-size: 16px; }
+:is(.island-scale-stepper, .scale-stepper) { display: inline-flex; align-items: center; flex-shrink: 0; border: 1px solid var(--border-subtle); border-radius: 12px; background: var(--bg-elevated); overflow: hidden; }
+:is(.island-scale-stepper, .scale-stepper) button { display: grid; place-items: center; width: 40px; height: 40px; color: var(--text-primary); background: transparent; border: 0; cursor: pointer; }
+:is(.island-scale-stepper, .scale-stepper) button:hover:not(:disabled) { background: var(--bg-hover); }
+:is(.island-scale-stepper, .scale-stepper) button:active:not(:disabled) { background: var(--accent-bg); }
+:is(.island-scale-stepper, .scale-stepper) button:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+:is(.island-scale-stepper, .scale-stepper) button:disabled { opacity: .38; cursor: not-allowed; }
+:is(.island-scale-stepper, .scale-stepper) output { min-width: 70px; padding: 4px 10px; text-align: center; border-inline: 1px solid var(--border-subtle); font-size: 16px; }
 @keyframes island-content-enter { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
 .island-header, .island-timeline, .island-controls-row, .island-context-menu, .island-toast-content { animation: island-content-enter 220ms ease-out both; }
 .island-controls-row { animation-delay: 40ms; }
