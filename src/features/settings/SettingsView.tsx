@@ -1,7 +1,9 @@
+import { DesktopLyricsSettings } from "./DesktopLyricsSettings";
 import { Select } from "../../components/Select";
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  Search,
   FolderOpen,
   HardDrive,
   RefreshCw,
@@ -39,7 +41,23 @@ interface SettingsViewProps {
   onError: (err: AppError) => void;
 }
 
+const settingsSections = [
+  { id:"privacy-window", members:["privacy-window", "shortcuts"], title:"通用与快捷键", hint:"隐私、窗口与键位", icon:ShieldAlert, keywords:"全年龄 关闭 托盘 NSFW SMTC 键盘 热键 命令 搜索" },
+  { id:"desktop-island", members:["desktop-island", "desktop-lyrics"], title:"桌面显示", hint:"灵动岛与桌面歌词", icon:AppWindow, keywords:"大小 屏幕 比例 吸附 全屏 音量 提示 字幕 字号 双语 日文 中文 锁定 穿透 字体 颜色 透明度" },
+  { id:"audio-engine", members:["audio-engine"], title:"音频与播放", hint:"输出与硬件加速", icon:Volume2, keywords:"独占 引擎 GPU" },
+  { id:"network-online", members:["network-online"], title:"网络与在线", hint:"镜像、代理与账户", icon:Globe, keywords:"api token 令牌 预设" },
+  { id:"storage-library", members:["storage-library", "storage", "backup-sync"], title:"媒体库与数据", hint:"目录、清理与备份", icon:FolderOpen, keywords:"本地 下载 路径 实时 监控 扫描 存储 用量 空间 缓存 磁盘 恢复 同步 加密 WebDAV 导入 导出 保留" },
+  { id:"updates", members:["updates", "cache-diagnostics"], title:"更新与诊断", hint:"版本、日志与排查", icon:RefreshCw, keywords:"软件 历史 检查 升级 说明 系统 错误 脱敏 报告" },
+];
+
 export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
+  const [section, setSection] = useState("privacy-window");
+  const [search, setSearch] = useState("");
+  const query = search.trim().toLowerCase();
+  const visible = (id: string) => settingsSections.some(x => x.members.includes(id) && (query
+    ? `${x.title} ${x.hint} ${x.keywords}`.toLowerCase().includes(query)
+    : section === x.id));
+  const contentRef = useRef<HTMLDivElement>(null);
   const [settings, setSettings] = useState<AppSettingsDto | null>(null);
   const [roots, setRoots] = useState<LibraryRootDto[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
@@ -351,16 +369,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
   return (
     <div className="page-container settings-page-container">
       <header className="settings-page-header">
-        <div>
-          <h2>设置与系统诊断</h2>
-          <p className="settings-page-subtitle">
-            管理内容隐私、音频引擎、在线网络、本地存储与快捷键。常规配置自动保存，快捷键确认保存后生效。
-          </p>
-        </div>
+        <h2>设置</h2>
+        <label className="settings-search"><Search size={18} aria-hidden="true" /><input type="search" value={search} onChange={e => { setSearch(e.target.value); if (contentRef.current) contentRef.current.scrollTop = 0; }} placeholder="搜索设置…" aria-label="搜索设置" /></label>
       </header>
-
-      {savedNotice && <div className="info-banner">{savedNotice}</div>}
-      <UpdateSettings onError={onError} />
+      <div className="settings-workspace">
+        <nav className="settings-category-nav" aria-label="设置分类">
+          {settingsSections.map(({id,title,hint,icon:Icon}) => <button key={id} type="button" aria-current={!query && section === id ? "page" : undefined} onClick={() => { setSection(id); setSearch(""); if (contentRef.current) contentRef.current.scrollTop = 0; }}><Icon size={20} aria-hidden="true" /><span><strong>{title}</strong><small>{hint}</small></span></button>)}
+        </nav>
+        <div className="settings-content" ref={contentRef} role="region" aria-label="设置内容" tabIndex={0}>
+      {savedNotice && <div className="info-banner" role="status">{savedNotice}</div>}
+      {query && !settingsSections.some(x => visible(x.id)) && <p className="settings-field-hint" role="status">没有找到相关设置，试试“字幕”“音频”或“网络”。</p>}
+      <div hidden={!visible("updates")}><UpdateSettings onError={onError} /></div>
 
       {/* 模块化设置表单 — 功能相近聚合为同一分组卡片，功能相异拆分为独立分组卡片 */}
       <form
@@ -370,11 +389,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
           void persistSettings();
         }}
         className="settings-modular-stack"
+        hidden={!["privacy-window","desktop-island","audio-engine","network-online","storage-library","desktop-lyrics"].some(visible)}
       >
         {/* 分组 1：内容安全、隐私防护与窗口行为 */}
         <section
           className="settings-card settings-group-card"
-          data-settings-group="privacy-window"
+          data-settings-group="privacy-window" hidden={!visible("privacy-window")}
           aria-label="内容安全、隐私防护与窗口行为"
         >
           <div className="settings-group-header">
@@ -517,7 +537,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
         {/* 分组：桌面灵动岛偏好设置 (T1308) */}
         <section
           className="settings-card settings-group-card"
-          data-settings-group="desktop-island"
+          data-settings-group="desktop-island" hidden={!visible("desktop-island")}
           aria-label="桌面灵动岛偏好设置"
         >
           <div className="settings-group-header">
@@ -704,9 +724,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
         </section>
 
         {/* 分组 2：音频引擎、硬件直通与解码加速 */}
+        <div hidden={!visible("desktop-lyrics")}><DesktopLyricsSettings /></div>
         <section
           className="settings-card settings-group-card"
-          data-settings-group="audio-engine"
+          data-settings-group="audio-engine" hidden={!visible("audio-engine")}
           aria-label="音频引擎、硬件直通与解码加速"
         >
           <div className="settings-group-header">
@@ -811,7 +832,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
         {/* 分组 3：在线源站、网络代理与远程挂载 */}
         <section
           className="settings-card settings-group-card"
-          data-settings-group="network-online"
+          data-settings-group="network-online" hidden={!visible("network-online")}
           aria-label="在线源站、网络代理与远程挂载"
         >
           <div className="settings-group-header">
@@ -967,7 +988,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
         {/* 分组 4：本地存储、目录实时监听与音频库根目录 */}
         <section
           className="settings-card settings-group-card"
-          data-settings-group="storage-library"
+          data-settings-group="storage-library" hidden={!visible("storage-library")}
           aria-label="本地存储、目录实时监听与音频库根目录"
         >
           <div className="settings-group-header">
@@ -1163,15 +1184,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
         </section>
       </form>
 
-      <BackupSettings onRestored={loadAll} />
-
-      <StorageSettings />
-      <DiagnosticSettings />
+      <div hidden={!visible("storage")}><StorageSettings /></div>
+      <div hidden={!visible("backup-sync")}><BackupSettings onRestored={loadAll} /></div>
+      <div hidden={!visible("cache-diagnostics")}><DiagnosticSettings /></div>
 
       {/* 分组 6：脱敏诊断日志 */}
       <section
         className="settings-card settings-group-card"
-        data-settings-group="cache-diagnostics"
+        data-settings-group="cache-diagnostics" hidden={!visible("cache-diagnostics")}
         aria-label="脱敏诊断日志"
       >
         <div className="settings-group-header">
@@ -1208,7 +1228,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
         </div>
       </section>
 
-      <ShortcutSettings smtcMode={settings?.smtcMode} />
+      <div hidden={!visible("shortcuts")}><ShortcutSettings smtcMode={settings?.smtcMode} /></div>
+        </div>
+      </div>
     </div>
   );
 };
