@@ -1,6 +1,46 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuePlanDto {
+    pub id: String,
+    pub name: String,
+    pub item_count: usize,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuePlanEntryDto {
+    pub version_id: String,
+    pub preferred_source_id: Option<String>,
+    pub work_title: String,
+    pub track_title: String,
+    pub version_label: String,
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuePlanPreviewDto {
+    pub plan: QueuePlanDto,
+    pub items: Vec<QueuePlanEntryDto>,
+    pub preview_token: String,
+    pub queue_token: String,
+    pub current_queue_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyQueuePlanRequest {
+    pub plan_id: String,
+    pub mode: String,
+    pub skip_unavailable: bool,
+    pub preview_token: String,
+    pub queue_token: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
@@ -128,6 +168,8 @@ pub struct Page<T> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkSummary {
+    #[serde(default)]
+    pub is_listened: bool,
     pub id: String,
     pub title: String,
     pub rj_code: Option<String>,
@@ -136,6 +178,8 @@ pub struct WorkSummary {
     pub tags: Vec<String>,
     pub cover_ref: Option<String>,
     pub has_local: bool,
+    #[serde(default)]
+    pub has_local_imported: bool,
     pub has_online: bool,
     pub has_downloaded: bool,
     pub availability: String,
@@ -348,6 +392,33 @@ pub struct BookmarkDto {
     pub position_ms: i64,
     pub note: String,
     pub created_at: String,
+    pub tags: Vec<String>,
+    pub work_title: String,
+    pub version_label: String,
+    pub linked: bool,
+    pub playable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookmarkSearchPage {
+    pub items: Vec<BookmarkDto>,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookmarkBundle {
+    pub schema_version: u32,
+    pub bookmarks: Vec<BackupBookmarkRecordDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookmarkRestoreReport {
+    pub restored: usize,
+    pub unlinked: usize,
+    pub skipped: usize,
 }
 
 fn default_fade_out_seconds() -> i64 {
@@ -1203,6 +1274,8 @@ pub struct DownloadPreviewDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadTaskDto {
+    pub priority: i32,
+    pub next_retry_at: Option<String>,
     pub id: String,
     pub work_id: String,
     pub work_title: String,
@@ -1308,6 +1381,16 @@ pub struct BackupBookmarkRecordDto {
     pub position_ms: i64,
     pub note: String,
     pub created_at: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub work_id: String,
+    #[serde(default)]
+    pub work_title: String,
+    #[serde(default)]
+    pub version_label: String,
+    #[serde(default)]
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2014,3 +2097,17 @@ mod tests {
     }
 }
 
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioOutputDeviceDto {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioOutputStateDto {
+    pub devices: Vec<AudioOutputDeviceDto>,
+    pub selected_device: String,
+}
