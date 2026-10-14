@@ -1,6 +1,6 @@
 [package]
 name = "asmr-player"
-version = "1.1.1"
+version = "1.2.0"
 description = "Windows ASMR Desktop Player for local audio libraries and asmr.one works"
 authors = ["ASMR Player Contributors"]
 license = "MIT"
@@ -31,6 +31,7 @@ urlencoding = "2.1"
 futures-util = "0.3"
 parking_lot = "0.12"
 keyring = { version = "3.6", features = ["windows-native"] }
+tauri-plugin-single-instance = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-numerics = "0.3.1"
@@ -41,6 +42,8 @@ windows = { version = "0.62.2", features = [
     "Storage",
     "Storage_Streams",
     "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
     "Win32_System_WinRT",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
