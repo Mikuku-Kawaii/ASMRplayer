@@ -1,3 +1,8 @@
+import { AudioOutputPanel } from "./AudioOutputPanel";
+import { BookmarkNotes } from "./BookmarkNotes";
+import { QueuePlans } from "./QueuePlans";
+import { Select } from "../../components/Select";
+import { subtitleWindows } from "../../lib/subtitleWindow";
 import React, { useEffect, useState, useCallback, useMemo } from "react";
 import {
   Play,
@@ -5,7 +10,6 @@ import {
   ArrowUp,
   ArrowDown,
   Plus,
-  BookmarkCheck,
   Clock,
   X,
   SlidersHorizontal,
@@ -16,7 +20,6 @@ import {
 } from "lucide-react";
 import {
   PlaybackSnapshot,
-  BookmarkDto,
   AbLoopDto,
   SubtitleCueDto,
   AutoMatchedSubtitleDto,
@@ -36,11 +39,12 @@ import {
 } from "../../lib/api";
 
 interface RightDrawerProps {
-  activeTab: "none" | "queue" | "bookmarks" | "subtitles" | "dsp";
+  activeTab: "none" | "queue" | "bookmarks" | "subtitles" | "dsp" | "audio";
   onClose: () => void;
   snapshot: PlaybackSnapshot;
   onSnapshotChange: (snap: PlaybackSnapshot) => void;
   onSubtitlesChanged?: () => void;
+  onOpenWorkDetail?: (workId: string, versionId?: string) => void;
   onError: (err: AppError) => void;
 }
 
@@ -55,11 +59,10 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
   snapshot,
   onSnapshotChange,
   onSubtitlesChanged,
+  onOpenWorkDetail,
   onError,
 }) => {
-  const [bookmarks, setBookmarks] = useState<BookmarkDto[]>([]);
   const [savedLoops, setSavedLoops] = useState<AbLoopDto[]>([]);
-  const [newBookmarkNote, setNewBookmarkNote] = useState("");
   const [sleepMinutesInput, setSleepMinutesInput] = useState(30);
   const [sleepFadeOutSec, setSleepFadeOutSec] = useState<number>(
     snapshot.sleepTimer?.fadeOutSeconds ?? 30
@@ -119,26 +122,16 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
 
   const loadBookmarksAndLoops = useCallback(async () => {
     if (!snapshot.currentVersionId) {
-      setBookmarks([]);
       setSavedLoops([]);
       return;
     }
     try {
-      const [bms, loops] = await Promise.all([
-        callCommand<BookmarkDto[]>("list_bookmarks", {
-          workId: snapshot.currentWorkId ?? null,
-          versionId: snapshot.currentVersionId,
-        }),
-        callCommand<AbLoopDto[]>("list_ab_loops", {
-          versionId: snapshot.currentVersionId,
-        }),
-      ]);
-      setBookmarks(bms);
+      const loops = await callCommand<AbLoopDto[]>("list_ab_loops", { versionId: snapshot.currentVersionId });
       setSavedLoops(loops);
     } catch (e) {
       onError(normalizeAppError(e));
     }
-  }, [snapshot.currentVersionId, snapshot.currentWorkId, onError]);
+  }, [snapshot.currentVersionId, onError]);
 
   const loadWorkSubtitles = useCallback(async () => {
     if (!snapshot.currentWorkId) {
@@ -260,48 +253,6 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
     }
   };
 
-  const handleAddBookmark = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!snapshot.currentVersionId) return;
-    try {
-      await callCommand<BookmarkDto>("add_bookmark", {
-        versionId: snapshot.currentVersionId,
-        positionMs: snapshot.positionMs,
-        note: newBookmarkNote.trim() || `书签 @ ${formatDurationMs(snapshot.positionMs)}`,
-      });
-      setNewBookmarkNote("");
-      await loadBookmarksAndLoops();
-    } catch (err) {
-      onError(normalizeAppError(err));
-    }
-  };
-
-  const handleJumpBookmark = async (bm: BookmarkDto) => {
-    try {
-      if (snapshot.currentVersionId !== bm.versionId) {
-        await callCommand<PlaybackSnapshot>("play_version", {
-          versionId: bm.versionId,
-          preferredSourceId: null,
-        });
-      }
-      const next = await callCommand<PlaybackSnapshot>("seek_ms", {
-        positionMs: bm.positionMs,
-      });
-      onSnapshotChange(next);
-    } catch (err) {
-      onError(normalizeAppError(err));
-    }
-  };
-
-  const handleDeleteBookmark = async (bookmarkId: string) => {
-    try {
-      await callCommand("delete_bookmark", { bookmarkId });
-      await loadBookmarksAndLoops();
-    } catch (err) {
-      onError(normalizeAppError(err));
-    }
-  };
-
   const handleActivateSavedLoop = async (loop: AbLoopDto) => {
     try {
       const next = await callCommand<PlaybackSnapshot>("set_ab_loop", {
@@ -381,6 +332,8 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
         c.text.toLowerCase().includes(subtitleKeyword.trim().toLowerCase())
       )
     : cues;
+  const cueWindows = subtitleWindows(filteredCues.length, visibleCueLimit, subtitleKeyword.trim() ? -1 : activeCueIndex);
+  const visibleCues = cueWindows.flatMap(range => filteredCues.slice(range.start, range.end));
 
   const syncLocalDspToSnapshot = (
     nextCfg: DspConfigDto,
@@ -676,7 +629,7 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
   };
 
   return (
-    <aside className="right-drawer" aria-label="右侧辅助抽屉">
+    <aside className="right-drawer player-glass-panel" aria-label="右侧辅助抽屉">
       <div className="drawer-header">
         <h3 className="drawer-header-title">
           {activeTab === "queue"
@@ -685,7 +638,9 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
             ? "书签 · 循环 · 睡眠定时"
             : activeTab === "dsp"
             ? "专业音效与防炸耳 (DSP / EQ)"
-            : "LRC / SRT / VTT 字幕台本"}
+            : activeTab === "audio"
+            ? "WASAPI 独占"
+            : "字幕台本"}
         </h3>
         <div className="drawer-header-actions">
           {activeTab === "dsp" && (
@@ -725,8 +680,13 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
         </div>
       </div>
 
+      {activeTab === "audio" && (
+        <AudioOutputPanel snapshot={snapshot} onSnapshotChange={onSnapshotChange} onError={onError} />
+      )}
+
       {activeTab === "queue" && (
         <div className="drawer-body">
+          <QueuePlans snapshot={snapshot} onSnapshotChange={onSnapshotChange} />
           {snapshot.queue.length === 0 ? (
             <div className="empty-box">
               当前播放队列为空。可在作品详情页点击「全部加入队列」或选择单条音轨入队。
@@ -889,59 +849,7 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
             </div>
           </div>
 
-          <div className="drawer-section">
-            <h4>
-              <BookmarkCheck size={14} />
-              <span>当前音轨版本书签 (绑定 version_id)</span>
-            </h4>
-            <form onSubmit={(e) => void handleAddBookmark(e)} className="bookmark-form">
-              <input
-                type="text"
-                className="input-text"
-                placeholder={`在 ${formatDurationMs(snapshot.positionMs)} 处添加备注...`}
-                value={newBookmarkNote}
-                onChange={(e) => setNewBookmarkNote(e.target.value)}
-                disabled={!snapshot.currentVersionId}
-              />
-              <button
-                type="submit"
-                className="btn btn-primary btn-sm"
-                disabled={!snapshot.currentVersionId}
-              >
-                <Plus size={14} />
-                <span>保存</span>
-              </button>
-            </form>
-
-            {bookmarks.length === 0 ? (
-              <div className="empty-box">当前音轨版本暂无书签</div>
-            ) : (
-              <ul className="bookmark-list">
-                {bookmarks.map((bm) => (
-                  <li key={bm.id} className="bookmark-item">
-                    <button
-                      type="button"
-                      className="bookmark-jump-btn"
-                      onClick={() => void handleJumpBookmark(bm)}
-                    >
-                      <span className="bookmark-time">
-                        {formatDurationMs(bm.positionMs)}
-                      </span>
-                      <span className="bookmark-note">{bm.note}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-icon-sm"
-                      onClick={() => void handleDeleteBookmark(bm.id)}
-                      title="删除书签"
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          <BookmarkNotes snapshot={snapshot} onSnapshotChange={onSnapshotChange} onOpenWorkDetail={onOpenWorkDetail} />
 
           <div className="drawer-section">
             <h4>已保存的 A-B 循环区间</h4>
@@ -986,18 +894,12 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
         <div className="drawer-body">
           <div className="subtitle-toolbar">
             <div className="subtitle-select-row">
-              <select
-                className="input-select"
+              <Select
+                aria-label="字幕附件"
                 value={selectedSubId}
-                onChange={(e) => void handleSelectSubtitle(e.target.value, subtitleOffsetMs)}
-              >
-                <option value="">选择 LRC / SRT / VTT 字幕附件...</option>
-                {subtitles.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.title}
-                  </option>
-                ))}
-              </select>
+                onValueChange={value => void handleSelectSubtitle(value, subtitleOffsetMs)}
+                options={[{ value: "", label: "选择 LRC / SRT / VTT 字幕附件..." }, ...subtitles.map(s => ({ value: s.id, label: s.title }))]}
+              />
               {snapshot.currentWorkId && (
                 <button
                   type="button"
@@ -1063,15 +965,14 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
           ) : (
             <>
               <ul className="cue-list">
-                {filteredCues
-                  .slice(0, Math.max(visibleCueLimit, activeCueIndex + 50))
-                  .map((cue) => {
+                {visibleCues.map((cue, visibleIndex) => {
                     const isActive =
                       snapshot.positionMs >= cue.startMs &&
                       snapshot.positionMs <= cue.endMs;
                     return (
-                      <li
-                        key={cue.index}
+                      <React.Fragment key={cue.index}>
+                        {cueWindows.length > 1 && visibleIndex === cueWindows[0]!.end && <li className="cue-gap">已折叠 {cueWindows[1]!.start - cueWindows[0]!.end} 行，可搜索定位或继续展开</li>}
+                        <li
                         className={`cue-item ${isActive ? "active" : ""}`}
                       >
                         <button
@@ -1086,11 +987,12 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
                           <span className="cue-time">{formatDurationMs(cue.startMs)}</span>
                           <span className="cue-text">{cue.text}</span>
                         </button>
-                      </li>
+                        </li>
+                      </React.Fragment>
                     );
                   })}
               </ul>
-              {filteredCues.length > Math.max(visibleCueLimit, activeCueIndex + 50) && (
+              {filteredCues.length > visibleCues.length && (
                 <div className="pagination-row">
                   <button
                     type="button"
@@ -1098,7 +1000,7 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
                     onClick={() => setVisibleCueLimit((n) => n + 200)}
                   >
                     展开更多字幕行 (
-                    {Math.max(visibleCueLimit, activeCueIndex + 50)} / {filteredCues.length})
+                    {visibleCues.length} / {filteredCues.length})
                   </button>
                 </div>
               )}

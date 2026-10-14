@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
+import { useShortcuts } from "../commands/ShortcutProvider";
+import { shortcutTitle } from "../../lib/shortcuts";
 import {
   Play,
   Pause,
@@ -40,8 +42,8 @@ const DEFAULT_WAVEFORM_PEAKS: number[] = Array.from({ length: 64 }, (_, i) => {
 interface PlayerBarProps {
   snapshot: PlaybackSnapshot;
   onSnapshotChange: (snap: PlaybackSnapshot) => void;
-  activeDrawerTab: "none" | "queue" | "bookmarks" | "subtitles" | "dsp";
-  onToggleDrawer: (tab: "queue" | "bookmarks" | "subtitles" | "dsp") => void;
+  activeDrawerTab: "none" | "queue" | "bookmarks" | "subtitles" | "dsp" | "audio";
+  onToggleDrawer: (tab: "queue" | "bookmarks" | "subtitles" | "dsp" | "audio") => void;
   onOpenWorkDetail?: (workId: string) => void;
   isImmersiveOpen?: boolean;
   onToggleImmersive?: () => void;
@@ -64,6 +66,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
   onToggleIsland,
   onError,
 }) => {
+  const { bindings } = useShortcuts();
   // Optimistic seek slider position while dragging
   const [draggingPosMs, setDraggingPosMs] = useState<number | null>(null);
   const [abPointA, setAbPointA] = useState<number | null>(null);
@@ -424,25 +427,6 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
     setMoreMenuOpen((v) => !v);
   };
 
-  const handleToggleWasapiExclusive = async () => {
-    const nextEx = !snapshot.audioExclusive;
-    onSnapshotChange({
-      ...snapshot,
-      eventSeq: snapshot.eventSeq + 1,
-      audioExclusive: nextEx,
-    });
-    try {
-      const next = await callCommand<PlaybackSnapshot>("set_audio_exclusive", {
-        exclusive: nextEx,
-      });
-      if (next) {
-        onSnapshotChange(next);
-      }
-    } catch (e) {
-      const err = normalizeAppError(e);
-      if (err.code !== "IPC_UNAVAILABLE") onError(err);
-    }
-  };
 
   return (
     <footer
@@ -565,7 +549,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
             onClick={() => void handleStep(-1)}
             disabled={snapshot.queue.length === 0}
             aria-label="上一首"
-            title="上一首"
+            title={shortcutTitle("上一首", bindings.previous)}
           >
             <SkipBack size={17} />
           </button>
@@ -576,7 +560,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
             onClick={() => void handleSeekRelative(-5000)}
             disabled={!snapshot.currentVersionId}
             aria-label="快退 5 秒"
-            title="快退 5 秒 (←)"
+            title={shortcutTitle("快退 5 秒", bindings.seek_back)}
           >
             <Rewind size={16} />
           </button>
@@ -587,7 +571,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
             onClick={() => void handleTogglePause()}
             disabled={!snapshot.currentVersionId && snapshot.queue.length === 0}
             aria-label={isPlaying ? "暂停" : "播放"}
-            title={isPlaying ? "暂停 (Space)" : "播放 (Space)"}
+            title={shortcutTitle(isPlaying ? "暂停" : "播放", bindings.play_pause)}
           >
             {isPlaying ? <Pause size={20} /> : <Play size={20} />}
           </button>
@@ -598,7 +582,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
             onClick={() => void handleSeekRelative(5000)}
             disabled={!snapshot.currentVersionId}
             aria-label="快进 5 秒"
-            title="快进 5 秒 (→)"
+            title={shortcutTitle("快进 5 秒", bindings.seek_forward)}
           >
             <FastForward size={16} />
           </button>
@@ -609,9 +593,19 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
             onClick={() => void handleStep(1)}
             disabled={snapshot.queue.length === 0}
             aria-label="下一首"
-            title="下一首"
+            title={shortcutTitle("下一首", bindings.next)}
           >
             <SkipForward size={17} />
+          </button>
+          <button
+            type="button"
+            className={`btn-icon ${activeDrawerTab === "queue" ? "active-icon-btn" : ""}`}
+            onClick={() => onToggleDrawer("queue")}
+            aria-label="播放队列"
+            aria-expanded={activeDrawerTab === "queue"}
+            title={shortcutTitle(`播放队列 (${snapshot.queue.length})`, bindings.queue)}
+          >
+            <ListMusic size={17} />
           </button>
         </div>
 
@@ -704,9 +698,6 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
           <span className="trigger-vol-badge">
             {snapshot.volume === 0 ? "静音" : `${Math.round(snapshot.volume)}%`}
           </span>
-          {(dspActive || hasActiveSecondaryTool || activeDrawerTab !== "none") && (
-            <span className="btn-status-dot" />
-          )}
           {moreMenuOpen || activeDrawerTab !== "none" ? (
             <ChevronUp size={14} />
           ) : (
@@ -716,7 +707,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
 
         {/* 右侧弹出的二级菜单面板 */}
         <div
-          className={`player-right-popover ${moreMenuOpen ? "is-open" : ""}`}
+          className={`player-right-popover player-glass-panel ${moreMenuOpen ? "is-open" : ""}`}
           role="menu"
           aria-label="播放辅助工具二级菜单"
         >
@@ -784,25 +775,24 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
               })`}
             >
               <SlidersHorizontal size={14} />
-              <span>音效 (DSP)</span>
-              {dspActive && <span className="btn-status-dot" />}
+              <span>音效</span>
             </button>
 
             <button
               type="button"
               role="menuitem"
               className={`popover-drawer-btn ${
-                activeDrawerTab === "queue" ? "active" : ""
+                activeDrawerTab === "audio" ? "active" : ""
               }`}
               onClick={() => {
-                onToggleDrawer("queue");
+                onToggleDrawer("audio");
                 setMoreMenuOpen(false);
               }}
-              aria-label="播放队列"
-              title="播放队列"
+              aria-label="WASAPI 独占"
+              title="打开 WASAPI 独占与输出设备设置"
             >
-              <ListMusic size={14} />
-              <span>队列 ({snapshot.queue.length})</span>
+              <Headphones size={14} />
+              <span>WASAPI 独占</span>
             </button>
 
             <button
@@ -831,10 +821,10 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
                 onToggleDrawer("subtitles");
                 setMoreMenuOpen(false);
               }}
-              aria-label="SRT/VTT 同步字幕"
+              aria-label="字幕台本"
             >
               <Subtitles size={14} />
-              <span>SRT / VTT 字幕台本</span>
+              <span>字幕台本</span>
             </button>
           </div>
 
@@ -891,25 +881,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
             <span className="player-more-item-meta">{loopLabel}</span>
           </button>
 
-          <button
-            type="button"
-            role="menuitem"
-            className={`player-more-item dsp-scope-toggle-btn ${
-              snapshot.audioExclusive ? "active is-lit" : "is-dim"
-            }`}
-            aria-pressed={Boolean(snapshot.audioExclusive)}
-            aria-label="切换 WASAPI 独占输出模式"
-            title="切换 Windows WASAPI 硬件独占输出模式（绕过系统混音器重采样，支持 96kHz/24bit 原生直通）"
-            onClick={() => void handleToggleWasapiExclusive()}
-          >
-            <span className="player-more-item-left">
-              <Headphones size={14} />
-              <span>WASAPI 独占输出模式</span>
-            </span>
-            <span className="player-more-item-meta">
-              {snapshot.audioExclusive ? "已开启独占直通" : "共享模式 (点击独占)"}
-            </span>
-          </button>
+
 
           {(onToggleIsland || onToggleMiniMode) && (
             <button
