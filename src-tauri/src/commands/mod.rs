@@ -821,6 +821,35 @@ pub fn get_app_settings(state: State<'_, AppState>) -> AppResult<AppSettingsDto>
     state.session.get_settings()
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InterfaceScaleDto { scale: f64, system_scale: f64 }
+
+#[tauri::command]
+pub fn get_interface_scale(app: AppHandle, state: State<'_, AppState>) -> AppResult<InterfaceScaleDto> {
+    let window = app.get_webview_window("main")
+        .ok_or_else(|| AppError::new(ErrorCode::InternalError, "主窗口尚未创建"))?;
+    Ok(InterfaceScaleDto {
+        scale: crate::services::interface_scale::read(&state.db)?,
+        system_scale: window.scale_factor().map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?,
+    })
+}
+
+#[tauri::command]
+pub fn set_interface_scale(app: AppHandle, state: State<'_, AppState>, scale: f64) -> AppResult<InterfaceScaleDto> {
+    let window = app.get_webview_window("main")
+        .ok_or_else(|| AppError::new(ErrorCode::InternalError, "主窗口尚未创建"))?;
+    crate::services::interface_scale::save(&state.db, scale, |value| {
+        window.set_zoom(value).map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))
+    })?;
+    get_interface_scale(app, state)
+}
+
+#[tauri::command]
+pub fn get_window_maximized(window: tauri::WebviewWindow) -> AppResult<bool> {
+    window.is_maximized().map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))
+}
+
 #[tauri::command]
 pub fn get_shortcut_bindings(state: State<'_, AppState>) -> AppResult<crate::db::shortcuts::ShortcutBindings> {
     state.db.get_shortcut_bindings()
