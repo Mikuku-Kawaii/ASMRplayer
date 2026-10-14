@@ -91,6 +91,7 @@ pub fn run() {
                 db: db.clone(), library: library.clone(), provider: provider.clone(),
                 playback: playback.clone(), downloads: downloads.clone(), session,
                 updater, island: island.clone(),
+                desktop_lyrics: services::desktop_lyrics::DesktopLyricsService::new(db.clone(), app.handle().clone()),
             });
             for config in &app.config().app.windows {
                 if app.get_webview_window(&config.label).is_none() {
@@ -251,6 +252,18 @@ pub fn run() {
                     }
                 }
             }
+            WindowEvent::Focused(false) if window.label() == "desktop-lyrics-menu" => {
+                let _ = window.hide();
+            }
+            WindowEvent::CloseRequested { api, .. } if window.label() == "desktop-lyrics-menu" => {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+            WindowEvent::CloseRequested { api, .. } if window.label() == "desktop-lyrics" => {
+                api.prevent_close();
+                let svc=window.app_handle().state::<AppState>().desktop_lyrics.clone();
+                tauri::async_runtime::spawn_blocking(move || { let _=svc.update(services::desktop_lyrics::LyricsPatch { enabled:Some(false), ..Default::default() }); });
+            }
             WindowEvent::CloseRequested { api, .. } => {
                 let app_handle = window.app_handle();
                 let state = app_handle.state::<AppState>();
@@ -280,12 +293,21 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            commands::get_desktop_lyrics_settings,
+            commands::update_desktop_lyrics_settings,
+            commands::desktop_lyrics_ready,
+            commands::desktop_lyrics_reset_position,
+            commands::desktop_lyrics_save_position,
+            commands::desktop_lyrics_open_menu,
+            commands::desktop_lyrics_close_menu,
+            commands::get_active_subtitles,
             commands::get_island_preferences,
             commands::set_island_preferences,
             commands::island_set_form,
             commands::island_settle_layout,
             commands::island_layout_ready,
             commands::island_save_current_position,
+            commands::island_reset_position,
             commands::get_release_history,
             commands::refresh_release_history,
             commands::claim_upgrade_notice,
@@ -309,6 +331,8 @@ pub fn run() {
             commands::query_smart_collection,
             commands::get_work_detail,
             commands::toggle_favorite,
+            commands::get_media_affinity,
+            commands::toggle_version_favorite,
             commands::toggle_collected,
             commands::set_work_override,
             commands::reset_work_override,
@@ -327,6 +351,7 @@ pub fn run() {
             commands::get_playback_snapshot,
             commands::play_version,
             commands::play_directory_group,
+            commands::play_work,
             commands::play_favorites_queue,
             commands::toggle_pause,
             commands::seek_ms,
