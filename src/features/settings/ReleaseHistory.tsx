@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { History, RefreshCw, X } from "lucide-react";
+import { RefreshCw, X } from "lucide-react";
 import { Select } from "../../components/Select";
-import { callCommand, isTauriRuntime, normalizeAppError, type AppError } from "../../lib/api";
+import { callCommand, normalizeAppError, type AppError } from "../../lib/api";
 import { ReleaseNotes } from "./ReleaseNotes";
 
 export interface ReleaseEntry { version: string; title: string; notes: string | null; publishedAt: string | null; url: string }
@@ -15,52 +14,14 @@ const date = (value: string) => { const parsed = new Date(value); return Number.
 /** Mounted once in the main navigation; no network requests or modal on startup. */
 export function ReleaseHistoryHost({ enabled = true, onOpenChange }: { enabled?: boolean; onOpenChange?: (open: boolean) => void }) {
   const [view, setView] = useState<View | null>(null);
-  const [pendingVersion, setPendingVersion] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [visible, setVisible] = useState(false);
-  const claiming = useRef(false), alive = useRef(true);
   useEffect(() => {
-    alive.current = true;
-    let disposed = false;
-    let stop: (() => void) | undefined;
-    const refreshVisibility = async () => {
-      const shown = document.visibilityState !== "hidden" && (!isTauriRuntime() ||
-        (await getCurrentWindow().isVisible() && !await getCurrentWindow().isMinimized()));
-      if (!disposed) setVisible(shown);
-    };
-    const refresh = () => { void refreshVisibility().catch(() => {}); };
     const open = (event: Event) => { setView((event as CustomEvent<View>).detail === "current" ? "current" : "history"); };
-    void callCommand<ReleaseHistorySnapshot>("get_release_history").then(next => { if (!disposed) setPendingVersion(next?.pendingVersion ?? null); }).catch(() => {});
     window.addEventListener("updater:history", open);
-    window.addEventListener("focus", refresh);
-    document.addEventListener("visibilitychange", refresh);
-    if (isTauriRuntime()) void getCurrentWindow().onFocusChanged(refresh).then(fn => { if (disposed) fn(); else stop = fn; }).catch(() => {});
-    refresh();
-    return () => {
-      disposed = true; alive.current = false; stop?.();
-      window.removeEventListener("updater:history", open);
-      window.removeEventListener("focus", refresh);
-      document.removeEventListener("visibilitychange", refresh);
-    };
+    return () => window.removeEventListener("updater:history", open);
   }, []);
-  useEffect(() => {
-    if (!enabled || !visible || !pendingVersion || claiming.current) return;
-    claiming.current = true;
-    void callCommand<boolean>("claim_upgrade_notice", { version: pendingVersion }).then(claimed => {
-      if (alive.current) { if (claimed) setNotice(pendingVersion); setPendingVersion(null); }
-    }).catch(() => { /* A later visibility change retries; manual history remains available. */ })
-      .finally(() => { claiming.current = false; });
-  }, [enabled, visible, pendingVersion]);
   const open = !!view && enabled;
   useEffect(() => { onOpenChange?.(open); return () => onOpenChange?.(false); }, [open, onOpenChange]);
-  return <>
-    {enabled && notice && <aside className="upgrade-notice" aria-label="升级完成说明">
-      <div><History size={16} /><span role="status">已升级至 v{notice}</span><button type="button" className="btn-icon" aria-label="关闭升级提示" title="关闭升级提示" onClick={() => setNotice(null)}><X size={14} /></button></div>
-      <p>查看新增功能与设置变化</p>
-      <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setView("current"); setNotice(null); }}>查看升级说明</button>
-    </aside>}
-    {open && <ReleaseHistoryDialog initialView={view!} onClose={() => setView(null)} />}
-  </>;
+  return open ? <ReleaseHistoryDialog initialView={view!} onClose={() => setView(null)} /> : null;
 }
 
 export function ReleaseHistoryDialog({ initialView, onClose }: { initialView: View; onClose: () => void }) {
