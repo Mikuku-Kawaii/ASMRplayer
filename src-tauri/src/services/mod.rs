@@ -16,3 +16,4 @@ mod island_glass;
 pub mod release_history;
 
 pub mod desktop_lyrics;
+pub mod interface_scale;
