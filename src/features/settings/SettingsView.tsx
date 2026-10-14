@@ -1,17 +1,14 @@
+import { Select } from "../../components/Select";
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   FolderOpen,
   HardDrive,
   RefreshCw,
-  Trash2,
   Terminal,
   CheckCircle2,
   AlertTriangle,
   Cpu,
-  Download,
-  Upload,
-  ArchiveRestore,
   ShieldAlert,
   Globe,
   EyeOff,
@@ -23,13 +20,9 @@ import {
 } from "lucide-react";
 import {
   AppSettingsDto,
-  BackupRestoreReportDto,
-  EncryptedSyncEnvelopeDto,
   LibraryRootDto,
   ScanReportDto,
-  UserBackupBundleDto,
   callCommand,
-  formatBytes,
   normalizeAppError,
   AppError,
   subscribeSettingsUpdated,
@@ -37,6 +30,10 @@ import {
 import { UpdateSettings } from "./UpdateSettings";
 import { IslandToastSettings } from "./IslandToastSettings";
 import { IslandDisplaySettings } from "./IslandDisplaySettings";
+import { ShortcutSettings } from "./ShortcutSettings";
+import { StorageSettings } from "./StorageSettings";
+import { BackupSettings } from "./BackupSettings";
+import { DiagnosticSettings } from "./DiagnosticSettings";
 
 interface SettingsViewProps {
   onError: (err: AppError) => void;
@@ -70,13 +67,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
   const [islandToastEnabled, setIslandToastEnabled] = useState(true);
   const [islandToastDurationSec, setIslandToastDurationSec] = useState(3.0);
   const [islandPrivacyMode, setIslandPrivacyMode] = useState(false);
-  const [syncPassphrase, setSyncPassphrase] = useState("");
   const [authTokenInput, setAuthTokenInput] = useState("");
   const [savedNotice, setSavedNotice] = useState("");
-  const [lastBackupReport, setLastBackupReport] =
-    useState<BackupRestoreReportDto | null>(null);
-  const backupFileInputRef = useRef<HTMLInputElement | null>(null);
-  const encryptedSyncFileInputRef = useRef<HTMLInputElement | null>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textAutoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingTextRef = useRef<Record<string, string | null>>({});
@@ -307,112 +299,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
     }
   };
 
-  const handleExportEncryptedSync = async () => {
-    try {
-      const env = await callCommand<EncryptedSyncEnvelopeDto>(
-        "export_encrypted_sync_bundle",
-        {
-          passphrase: syncPassphrase,
-          targetPath: null,
-        }
-      );
-      const jsonText = JSON.stringify(env, null, 2);
-      if (typeof window !== "undefined" && typeof Blob !== "undefined") {
-        const blob = new Blob([jsonText], { type: "application/json;charset=utf-8" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        const dateTag = new Date().toISOString().slice(0, 10);
-        a.href = url;
-        a.download = `asmr-player-encrypted-sync-${dateTag}.json`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      }
-      setSavedNotice("已导出加密同步包（含 SHA-256 CTR 加密与 MAC 防篡改校验）");
-      setTimeout(() => setSavedNotice(""), 3500);
-    } catch (err) {
-      onError(normalizeAppError(err));
-    }
-  };
-
-  const handleImportEncryptedSyncFileChange = async (
-    e: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const report = await callCommand<BackupRestoreReportDto>(
-        "import_encrypted_sync_bundle",
-        {
-          passphrase: syncPassphrase,
-          sourcePath: null,
-          envelopeJson: text,
-        }
-      );
-      setLastBackupReport(report);
-      setSavedNotice(
-        `加密同步包解密并恢复成功：收藏 ${report.favoritesRestored} 项 · 进度 ${report.positionsRestored} 项`
-      );
-      setTimeout(() => setSavedNotice(""), 4000);
-      await loadAll();
-    } catch (err) {
-      onError(normalizeAppError(err));
-    }
-  };
-
   const handleClearAuthToken = () => persistSettings({ authToken: "__CLEAR__" });
-
-  const handleExportBackup = async () => {
-    try {
-      const bundle = await callCommand<UserBackupBundleDto>("export_user_backup");
-      const jsonText = JSON.stringify(bundle, null, 2);
-      if (typeof window !== "undefined" && typeof Blob !== "undefined") {
-        const blob = new Blob([jsonText], { type: "application/json;charset=utf-8" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        const dateTag = (bundle.exportedAt || new Date().toISOString()).slice(0, 10);
-        a.href = url;
-        a.download = `asmr-player-backup-${dateTag}.json`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      }
-      setSavedNotice(
-        `已导出全量用户资产备份（收藏 ${bundle.favorites.length} · 进度 ${bundle.positions.length} · 书签 ${bundle.bookmarks.length} · 音效预设 ${bundle.customDspPresets.length}）`
-      );
-      setTimeout(() => setSavedNotice(""), 3500);
-    } catch (err) {
-      onError(normalizeAppError(err));
-    }
-  };
-
-  const handleImportBackupFileChange = async (
-    e: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const bundle = JSON.parse(text) as UserBackupBundleDto;
-      const report = await callCommand<BackupRestoreReportDto>("import_user_backup", {
-        sourcePath: null,
-        bundleJson: JSON.stringify(bundle),
-      });
-      setLastBackupReport(report);
-      setSavedNotice(
-        `已完成备份幂等恢复：收藏 ${report.favoritesRestored} 项、播放进度 ${report.positionsRestored} 项、书签 ${report.bookmarksRestored} 项、A-B 循环 ${report.abLoopsRestored} 项、自定义音效预设 ${report.customDspPresetsRestored} 项`
-      );
-      setTimeout(() => setSavedNotice(""), 4000);
-      await loadAll();
-    } catch (err) {
-      onError(normalizeAppError(err));
-    }
-  };
 
   const handlePickDownloadDir = async () => {
     try {
@@ -460,18 +347,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
     }
   };
 
-  const handleClearPlaybackCache = async () => {
-    try {
-      const freed = await callCommand<number>("clear_playback_cache");
-      setSavedNotice(
-        `已清理播放缓存 (${formatBytes(freed)})；离线下载文件与本地原文件完好保留`
-      );
-      setTimeout(() => setSavedNotice(""), 3000);
-      await loadAll();
-    } catch (err) {
-      onError(normalizeAppError(err));
-    }
-  };
 
   return (
     <div className="page-container settings-page-container">
@@ -479,7 +354,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
         <div>
           <h2>设置与系统诊断</h2>
           <p className="settings-page-subtitle">
-            功能模块化分组管理：将内容隐私、发烧音频引擎、在线网络、本地目录存储、跨端备份及运行诊断清晰隔离（修改任意配置即刻自动保存生效）
+            管理内容隐私、音频引擎、在线网络、本地存储与快捷键。常规配置自动保存，快捷键确认保存后生效。
           </p>
         </div>
       </header>
@@ -621,19 +496,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                   选择点击右上角关闭按钮时最小化到托盘继续助眠播放，或彻底退出进程
                 </span>
               </div>
-              <select
+              <Select
                 id="setting-close"
-                className="input-select settings-control-wide"
+                className="settings-control-wide"
                 value={closeBehavior}
-                onChange={(e) => {
-                  const nextVal = e.target.value as "minimize_to_tray" | "quit";
+                onValueChange={(value) => {
+                  const nextVal = value as "minimize_to_tray" | "quit";
                   setCloseBehavior(nextVal);
                   void persistSettings({ closeBehavior: nextVal });
                 }}
-              >
-                <option value="minimize_to_tray">隐藏到系统托盘并保持后台播放</option>
-                <option value="quit">保存播放状态、回收 mpv 进程并退出应用</option>
-              </select>
+                options={[
+                  { value: "minimize_to_tray", label: "隐藏到系统托盘并保持后台播放" },
+                  { value: "quit", label: "保存播放状态、回收 mpv 进程并退出应用" },
+                ]}
+              />
             </div>
           </div>
         </section>
@@ -974,23 +850,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                   }}
                   onBlur={() => void persistSettings({ apiBaseUrl })}
                 />
-                <select
-                  className="input-select input-sm"
+                <Select
+                  size="compact"
+                  aria-label="镜像预设"
                   value=""
-                  onChange={(e) => {
-                    if (e.target.value) {
-                      const nextVal = e.target.value;
+                  onValueChange={(value) => {
+                    if (value) {
+                      const nextVal = value;
                       setApiBaseUrl(nextVal);
                       void persistSettings({ apiBaseUrl: nextVal });
                     }
                   }}
-                >
-                  <option value="">镜像预设...</option>
-                  <option value="https://api.asmr-200.com">api.asmr-200.com</option>
-                  <option value="https://api.asmr.one">api.asmr.one</option>
-                  <option value="https://api.asmr-100.com">api.asmr-100.com</option>
-                  <option value="https://api.asmr-300.com">api.asmr-300.com</option>
-                </select>
+                  options={[
+                    { value: "", label: "镜像预设..." },
+                    ...["api.asmr-200.com", "api.asmr.one", "api.asmr-100.com", "api.asmr-300.com"].map(host => ({ value: `https://${host}`, label: host })),
+                  ]}
+                />
               </div>
             </div>
 
@@ -1288,118 +1163,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
         </section>
       </form>
 
-      {/* 分组 5：用户资产备份与多端加密同步（独立于常规配置表单的导入/导出工具区） */}
-      <section
-        className="settings-card settings-group-card"
-        data-settings-group="backup-sync"
-        aria-label="用户资产备份与多端加密同步"
-      >
-        <div className="settings-group-header">
-          <div className="settings-group-title-wrap">
-            <span className="settings-group-icon">
-              <ArchiveRestore size={16} />
-            </span>
-            <div>
-              <h3>用户资产全量备份、多端加密同步与跨机恢复</h3>
-              <p className="settings-group-desc">
-                一键将收藏作品、收听毫秒进度、时间轴书签、A–B 循环、元数据覆盖及自定义 DSP 预设打包迁移
-              </p>
-            </div>
-          </div>
-          <div className="track-actions">
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={() => void handleExportBackup()}
-            >
-              <Download size={14} />
-              <span>导出全量备份 JSON</span>
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={() => backupFileInputRef.current?.click()}
-            >
-              <Upload size={14} />
-              <span>从备份文件恢复</span>
-            </button>
-            <input
-              ref={backupFileInputRef}
-              type="file"
-              accept=".json,application/json"
-              style={{ display: "none" }}
-              data-testid="backup-restore-input"
-              onChange={(e) => void handleImportBackupFileChange(e)}
-            />
-          </div>
-        </div>
+      <BackupSettings onRestored={loadAll} />
 
-        <div className="settings-group-body">
-          <div className="settings-row">
-            <div className="settings-label-block">
-              <label htmlFor="setting-sync-pass">多端加密同步口令</label>
-              <span className="settings-field-hint">
-                使用 SHA-256 CTR 流加密与双重 MAC 校验保护听音隐私，支持跨设备安全导入/导出
-              </span>
-            </div>
-            <div className="input-with-btn">
-              <input
-                id="setting-sync-pass"
-                type="password"
-                className="input-text"
-                placeholder="输入至少 4 位加密口令用于导出/导入加密同步包..."
-                value={syncPassphrase}
-                onChange={(e) => setSyncPassphrase(e.target.value)}
-              />
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={() => void handleExportEncryptedSync()}
-              >
-                <Download size={14} />
-                <span>导出加密同步包</span>
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={() => encryptedSyncFileInputRef.current?.click()}
-              >
-                <Upload size={14} />
-                <span>导入加密同步包</span>
-              </button>
-              <input
-                ref={encryptedSyncFileInputRef}
-                type="file"
-                accept=".json,application/json"
-                style={{ display: "none" }}
-                data-testid="encrypted-sync-input"
-                onChange={(e) => void handleImportEncryptedSyncFileChange(e)}
-              />
-            </div>
-          </div>
+      <StorageSettings />
+      <DiagnosticSettings />
 
-          {lastBackupReport && (
-            <div
-              className="info-banner"
-              style={{ marginTop: "4px", fontVariantNumeric: "tabular-nums" }}
-            >
-              最近恢复统计：收藏 {lastBackupReport.favoritesRestored} 项 · 进度{" "}
-              {lastBackupReport.positionsRestored} 项 · 书签{" "}
-              {lastBackupReport.bookmarksRestored} 项 · A–B 循环{" "}
-              {lastBackupReport.abLoopsRestored} 项 · 元数据覆盖{" "}
-              {lastBackupReport.workOverridesRestored} 项 · 作品专属音效{" "}
-              {lastBackupReport.workDspOverridesRestored} 项 · 自定义预设{" "}
-              {lastBackupReport.customDspPresetsRestored} 项
-            </div>
-          )}
-        </div>
-      </section>
-
-      {/* 分组 6：缓存清理与脱敏诊断日志 */}
+      {/* 分组 6：脱敏诊断日志 */}
       <section
         className="settings-card settings-group-card"
         data-settings-group="cache-diagnostics"
-        aria-label="缓存清理与脱敏诊断日志"
+        aria-label="脱敏诊断日志"
       >
         <div className="settings-group-header">
           <div className="settings-group-title-wrap">
@@ -1407,21 +1180,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
               <Terminal size={16} />
             </span>
             <div>
-              <h3>缓存清理与脱敏诊断日志</h3>
+              <h3>脱敏诊断日志</h3>
               <p className="settings-group-desc">
-                安全回收播放临时缓冲与 SQLite WAL 日志，并查看已自动脱敏令牌的宿主运行日志
+                查看已自动脱敏令牌的宿主运行日志
               </p>
             </div>
           </div>
           <div className="track-actions">
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={() => void handleClearPlaybackCache()}
-            >
-              <Trash2 size={14} />
-              <span>仅清理播放临时缓存 (保留所有离线下载与本地原件)</span>
-            </button>
             <button
               type="button"
               className="btn btn-ghost btn-sm"
@@ -1442,6 +1207,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
           </pre>
         </div>
       </section>
+
+      <ShortcutSettings smtcMode={settings?.smtcMode} />
     </div>
   );
 };

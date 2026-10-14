@@ -27,6 +27,7 @@ export function useUpdater() {
   const run = useCallback(async (command: string, args?: Record<string, unknown>) => {
     const next = await callCommand<UpdateSnapshot>(command, args);
     apply(next);
+    return next;
   }, [apply]);
   return { snapshot, run };
 }
