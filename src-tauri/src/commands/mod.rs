@@ -18,6 +18,7 @@ pub struct AppState {
     pub downloads: DownloadService,
     pub session: SessionService,
     pub updater: UpdateService,
+    pub desktop_lyrics: crate::services::desktop_lyrics::DesktopLyricsService,
     pub island: crate::services::island::IslandService,
 }
 
@@ -42,6 +43,13 @@ pub async fn island_layout_ready(state: State<'_, AppState>, revision: u64) -> A
 
 #[tauri::command]
 pub async fn island_save_current_position(state: State<'_, AppState>) -> AppResult<()> { state.island.save_position() }
+
+#[tauri::command]
+pub async fn island_reset_position(state: State<'_, AppState>) -> AppResult<crate::services::island::IslandLayout> {
+    let island = state.island.clone();
+    tokio::task::spawn_blocking(move || island.reset_position()).await
+        .map_err(|e| AppError::new(ErrorCode::InternalError, format!("恢复灵动岛位置失败：{e}")))?
+}
 
 #[tauri::command]
 pub fn get_release_history(state: State<'_, AppState>) -> AppResult<crate::services::release_history::ReleaseHistory> { state.updater.history.snapshot() }
@@ -146,12 +154,26 @@ pub async fn query_smart_collection(state: State<'_, AppState>, filters: Collect
 
 #[tauri::command]
 pub fn toggle_favorite(state: State<'_, AppState>, work_id: String) -> AppResult<bool> {
-    state.db.toggle_favorite(&work_id)
+    let result = state.db.toggle_favorite(&work_id)?;
+    state.playback.notify_affinity(&work_id);
+    Ok(result)
 }
 
 #[tauri::command]
 pub fn toggle_collected(state: State<'_, AppState>, work_id: String) -> AppResult<bool> {
-    state.db.toggle_collected(&work_id)
+    let result = state.db.toggle_collected(&work_id)?;
+    state.playback.notify_affinity(&work_id);
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn get_media_affinity(state: State<'_, AppState>, version_id: String) -> AppResult<crate::db::affinity::MediaAffinity> { state.db.media_affinity(&version_id) }
+
+#[tauri::command]
+pub fn toggle_version_favorite(state: State<'_, AppState>, version_id: String) -> AppResult<crate::db::affinity::MediaAffinity> {
+    let result = state.db.toggle_version_favorite(&version_id)?;
+    state.playback.notify_affinity(&result.work_id);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -311,6 +333,16 @@ pub async fn play_version(
     preferred_source_id: Option<String>,
 ) -> AppResult<PlaybackSnapshot> {
     state.playback.play(&version_id, preferred_source_id).await
+}
+
+#[tauri::command]
+pub async fn play_work(
+    state: State<'_, AppState>,
+    work_id: String,
+    group_path: Option<String>,
+    from_start: Option<bool>,
+) -> AppResult<PlaybackSnapshot> {
+    state.playback.play_work(&work_id, group_path, from_start.unwrap_or(false)).await
 }
 
 #[tauri::command]
@@ -1513,3 +1545,32 @@ pub async fn get_audio_output(state: State<'_, AppState>) -> AppResult<AudioOutp
 pub async fn set_audio_device(state: State<'_, AppState>, device_id: String) -> AppResult<AudioOutputStateDto> {
     state.playback.set_audio_device(&device_id).await
 }
+
+#[tauri::command]
+pub fn get_desktop_lyrics_settings(state: State<'_, AppState>) -> AppResult<crate::services::desktop_lyrics::LyricsSettings> { state.desktop_lyrics.settings() }
+#[tauri::command]
+pub async fn update_desktop_lyrics_settings(state: State<'_, AppState>, patch: crate::services::desktop_lyrics::LyricsPatch) -> AppResult<crate::services::desktop_lyrics::LyricsSettings> {
+    let svc=state.desktop_lyrics.clone();
+    tokio::task::spawn_blocking(move || svc.update(patch)).await.map_err(|e| AppError::new(ErrorCode::InternalError,e.to_string()))?
+}
+#[tauri::command]
+pub async fn desktop_lyrics_ready(state: State<'_, AppState>) -> AppResult<()> {
+    let svc=state.desktop_lyrics.clone();
+    tokio::task::spawn_blocking(move || svc.ready()).await.map_err(|e| AppError::new(ErrorCode::InternalError,e.to_string()))?
+}
+#[tauri::command]
+pub async fn desktop_lyrics_reset_position(state: State<'_, AppState>) -> AppResult<()> {
+    let svc=state.desktop_lyrics.clone();
+    tokio::task::spawn_blocking(move || svc.reset_position()).await.map_err(|e| AppError::new(ErrorCode::InternalError,e.to_string()))?
+}
+#[tauri::command]
+pub async fn desktop_lyrics_save_position(state: State<'_, AppState>) -> AppResult<()> { state.desktop_lyrics.save_position() }
+#[tauri::command]
+pub async fn desktop_lyrics_open_menu(state: State<'_, AppState>, x: f64, y: f64) -> AppResult<()> {
+    let svc=state.desktop_lyrics.clone();
+    tokio::task::spawn_blocking(move || svc.open_menu(x,y)).await.map_err(|e| AppError::new(ErrorCode::InternalError,e.to_string()))?
+}
+#[tauri::command]
+pub fn desktop_lyrics_close_menu(state: State<'_, AppState>) -> AppResult<()> { state.desktop_lyrics.close_menu() }
+#[tauri::command]
+pub fn get_active_subtitles(state: State<'_, AppState>) -> serde_json::Value { state.playback.active_subtitles() }
