@@ -7,6 +7,9 @@ pub mod player;
 pub mod providers;
 pub mod services;
 
+#[cfg(test)]
+mod regression_baseline;
+
 use commands::AppState;
 use db::Database;
 use providers::AsmrOneProvider;
@@ -28,18 +31,39 @@ pub fn run() {
         );
     }
 
+    // T1417: the identifier also namespaces WebView data, SQLite and cache paths.
+    // Keep the release identifier stable; debug builds never open release data.
+    let mut context = tauri::generate_context!();
+    if cfg!(debug_assertions) {
+        context.config_mut().identifier.push_str(".debug");
+    }
+    #[cfg(windows)]
+    let startup_gate = match services::instance::StartupGate::acquire(&context.config().identifier) {
+        Ok(gate) => gate,
+        Err(error) => { eprintln!("{error}"); return; }
+    };
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .setup(|app| {
+        .setup(move |app| {
+            // Keep the gate alive through window setup, then release it even on error.
+            #[cfg(windows)]
+            let _startup_gate = startup_gate;
             let data_dir = app
                 .path()
                 .app_data_dir()
-                .unwrap_or_else(|_| std::env::temp_dir().join("asmr-player-data"));
+                .unwrap_or_else(|_| std::env::temp_dir().join(&app.config().identifier).join("data"));
             let cache_dir = app
                 .path()
                 .app_cache_dir()
-                .unwrap_or_else(|_| std::env::temp_dir().join("asmr-player-cache"));
+                .unwrap_or_else(|_| std::env::temp_dir().join(&app.config().identifier).join("cache"));
 
             let db = Database::open_and_migrate(&data_dir, &cache_dir)
                 .expect("Failed to initialize SQLite database and migrations");
@@ -59,6 +83,7 @@ pub fn run() {
             downloads.attach_app_handle(app.handle().clone());
             let updater = UpdateService::new(db.clone(), app.handle().clone())?;
             let bg_updater = updater.clone();
+            let bg_backups = session.backups.clone();
             let island = services::island::IslandService::new(db.clone(), app.handle().clone());
             // WebViews can invoke commands as soon as they load. Register every
             // service before creating either window or doing any window initialization.
@@ -79,6 +104,15 @@ pub fn run() {
                 }
             }
             island.initialize();
+            // Host-owned scheduling remains active in the tray. A wake-up creates
+            // at most one overdue backup; failures wait five minutes before retry.
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let service = bg_backups.clone();
+                    let _ = tokio::task::spawn_blocking(move || service.tick(chrono::Utc::now())).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                }
+            });
             let bg_island = island.clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -92,7 +126,7 @@ pub fn run() {
             let bg_library = library.clone();
             let bg_db = db.clone();
             tauri::async_runtime::spawn(async move {
-                let _ = bg_downloads.reconcile_on_startup();
+                if bg_downloads.reconcile_on_startup().is_ok() { bg_downloads.start_scheduler(); }
                 let _ = bg_playback.prewarm_engine().await;
                 // T1201: Background debounced directory watcher incremental sync loop
                 loop {
@@ -250,7 +284,11 @@ pub fn run() {
             commands::set_island_preferences,
             commands::island_set_form,
             commands::island_settle_layout,
+            commands::island_layout_ready,
             commands::island_save_current_position,
+            commands::get_release_history,
+            commands::refresh_release_history,
+            commands::claim_upgrade_notice,
             commands::get_update_snapshot,
             commands::check_for_updates,
             commands::set_update_auto_check,
@@ -259,7 +297,16 @@ pub fn run() {
             commands::dismiss_update,
             commands::install_update,
             commands::open_release_page,
+            commands::open_update_link,
             commands::list_works,
+            commands::preview_library_batch,
+            commands::execute_library_batch,
+            commands::undo_library_batch,
+            commands::latest_library_batch,
+            commands::list_smart_collections,
+            commands::save_smart_collection,
+            commands::remove_smart_collection,
+            commands::query_smart_collection,
             commands::get_work_detail,
             commands::toggle_favorite,
             commands::toggle_collected,
@@ -276,6 +323,7 @@ pub fn run() {
             commands::sync_work_from_asmr_one,
             commands::browse_online_works,
             commands::search_online_works,
+            commands::list_online_tags,
             commands::get_playback_snapshot,
             commands::play_version,
             commands::play_directory_group,
@@ -289,6 +337,11 @@ pub fn run() {
             commands::remove_from_queue,
             commands::move_in_queue,
             commands::clear_queue,
+            commands::list_queue_plans,
+            commands::save_queue_plan,
+            commands::rename_queue_plan,
+            commands::preview_queue_plan,
+            commands::apply_queue_plan,
             commands::restart_player_engine,
             commands::set_sleep_timer,
             commands::set_ab_loop,
@@ -296,6 +349,10 @@ pub fn run() {
             commands::list_ab_loops,
             commands::delete_ab_loop,
             commands::list_bookmarks,
+            commands::search_bookmarks,
+            commands::play_bookmark,
+            commands::export_bookmark_notes,
+            commands::restore_bookmark_notes,
             commands::add_bookmark,
             commands::update_bookmark,
             commands::delete_bookmark,
@@ -310,6 +367,9 @@ pub fn run() {
             commands::delete_work_downloaded_files,
             commands::enqueue_downloads,
             commands::list_download_tasks,
+            commands::get_download_policy,
+            commands::set_download_policy,
+            commands::set_download_priority,
             commands::pause_download_task,
             commands::resume_download_task,
             commands::cancel_download_task,
@@ -318,14 +378,23 @@ pub fn run() {
             commands::undo_association,
             commands::list_association_history,
             commands::get_app_settings,
+            commands::get_shortcut_bindings,
+            commands::save_shortcut_bindings,
             commands::update_app_settings,
             commands::set_nsfw_enabled,
-            commands::clear_playback_cache,
+            commands::get_storage_overview,
+            commands::preview_storage_cleanup,
+            commands::execute_storage_cleanup,
             commands::get_diagnostic_logs,
+            commands::preview_diagnostic_bundle,
+            commands::export_diagnostic_bundle,
             commands::export_user_backup,
-            commands::import_user_backup,
+            commands::get_backup_status,
+            commands::set_backup_policy,
+            commands::create_user_backup,
+            commands::preview_user_backup,
+            commands::apply_user_backup,
             commands::export_encrypted_sync_bundle,
-            commands::import_encrypted_sync_bundle,
             commands::get_dsp_state,
             commands::update_dsp_config,
             commands::apply_dsp_preset,
@@ -335,6 +404,8 @@ pub fn run() {
             commands::delete_custom_dsp_preset,
             commands::set_work_dsp_override_enabled,
             commands::set_audio_exclusive,
+            commands::get_audio_output,
+            commands::set_audio_device,
             commands::set_smtc_mode,
             commands::get_smtc_display_state,
             commands::handle_smtc_action,
@@ -353,7 +424,7 @@ pub fn run() {
             commands::island_set_privacy_mode,
             commands::check_fullscreen_avoidance,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running ASMR Player tauri application");
 }
 
