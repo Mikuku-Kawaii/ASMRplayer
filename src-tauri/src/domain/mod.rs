@@ -165,9 +165,20 @@ pub struct Page<T> {
     pub total_count: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ListeningStatus {
+    #[default]
+    Unplayed,
+    InProgress,
+    Played,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkSummary {
+    #[serde(default)]
+    pub listening_status: ListeningStatus,
     #[serde(default)]
     pub is_listened: bool,
     pub id: String,
@@ -223,6 +234,8 @@ pub struct MediaSourceDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackVersionDto {
+    #[serde(default)]
+    pub is_favorite: bool,
     pub id: String,
     pub track_id: String,
     pub version_label: String,
@@ -1368,6 +1381,8 @@ pub struct BackupPositionRecordDto {
     pub version_label: String,
     pub position_ms: i64,
     pub completed: bool,
+    #[serde(default)]
+    pub ever_completed: bool,
     pub updated_at: String,
 }
 
@@ -1430,7 +1445,16 @@ pub struct BackupWorkDspOverrideRecordDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BackupVersionFavorite {
+    pub version_id: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UserBackupBundleDto {
+    #[serde(default)]
+    pub favorite_versions: Vec<BackupVersionFavorite>,
     pub schema_version: u32,
     pub exported_at: String,
     pub favorites: Vec<BackupFavoriteRecordDto>,
@@ -1919,6 +1943,7 @@ mod tests {
     #[test]
     fn test_encrypted_sync_bundle_roundtrip_and_tamper_rejection_t1203() {
         let bundle = UserBackupBundleDto {
+            favorite_versions: vec![],
             schema_version: 1,
             exported_at: "2026-10-12T12:00:00Z".into(),
             favorites: vec![BackupFavoriteRecordDto {
