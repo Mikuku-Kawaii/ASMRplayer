@@ -326,67 +326,27 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
     }
   };
 
-  const sourceBadge = () => {
-    const src = snapshot.activeSource;
-    if (!src) return null;
-    if (src.sourceKind === "local_imported") {
-      return (
-        <span className="badge badge-local" title={src.relativePath ?? ""}>
-          <HardDrive size={11} />
-          <span>本地原件 ({src.format.toUpperCase()})</span>
-        </span>
-      );
-    }
-    if (src.sourceKind === "local_downloaded") {
-      return (
-        <span className="badge badge-downloaded" title={src.relativePath ?? ""}>
-          <CheckCircle2 size={11} />
-          <span>已下载离线 ({src.format.toUpperCase()})</span>
-        </span>
-      );
-    }
-    return (
-      <span className="badge badge-online">
-        <Radio size={11} />
-        <span>在线流 ({src.format.toUpperCase()})</span>
-      </span>
-    );
-  };
-
-  const telemetryBadge = () => {
+  const audioInfo = () => {
     const tel = snapshot.audioTelemetry;
     const parts: string[] = [];
-    if (tel?.codec) {
-      parts.push(tel.codec.toUpperCase());
+    if (tel?.sampleRateHz && Number.isFinite(tel.sampleRateHz) && tel.sampleRateHz > 0) {
+      parts.push(`${(tel.sampleRateHz / 1000).toLocaleString("en-US", { maximumFractionDigits: 3 })} kHz`);
     }
-    if (tel?.sampleRateHz && tel.sampleRateHz > 0) {
-      parts.push(`${(tel.sampleRateHz / 1000).toFixed(1)} kHz`);
+    const codec = tel?.codec || snapshot.activeSource?.format;
+    if (codec) parts.push(codec.toUpperCase());
+    if (tel?.channels) parts.push(tel.channels);
+    if (tel?.bitrateKbps && Number.isFinite(tel.bitrateKbps) && tel.bitrateKbps > 0) {
+      parts.push(`${Math.round(tel.bitrateKbps)} kbps`);
     }
-    if (tel?.bitrateKbps && tel.bitrateKbps > 0) {
-      parts.push(`${tel.bitrateKbps} kbps`);
+    if (trackMetrics) parts.push(`${trackMetrics.integratedLufs.toFixed(1)} LUFS`);
+    const summary = parts.join(" · ") || (snapshot.currentVersionId ? "音频信息待读取" : "选择作品开始收听");
+    const details = [summary];
+    if (tel?.sampleFormat) details.push(`解码采样格式：${tel.sampleFormat}`);
+    if (snapshot.activeSource) {
+      details.push(snapshot.activeSource.sourceKind === "local_imported" ? "本地原件" : snapshot.activeSource.sourceKind === "local_downloaded" ? "已下载离线" : "在线流");
     }
-    if (trackMetrics) {
-      parts.push(`${trackMetrics.integratedLufs.toFixed(1)} LUFS`);
-    }
-    if (parts.length === 0) return null;
-    return (
-      <span
-        className="badge badge-tech tabular-nums"
-        title={`解码器: ${tel?.codec ?? "默认"} · 采样率: ${
-          tel?.sampleRateHz ?? "未知"
-        } Hz · 格式: ${tel?.sampleFormat ?? "float"} · 声道: ${
-          tel?.channels ?? "stereo"
-        }${
-          trackMetrics
-            ? ` · EBU R128: ${trackMetrics.integratedLufs.toFixed(
-                1
-              )} LUFS / ${trackMetrics.truePeakDbtp.toFixed(1)} dBTP`
-            : ""
-        }`}
-      >
-        {parts.join(" · ")}
-      </span>
-    );
+    if (trackMetrics) details.push(`真峰值：${trackMetrics.truePeakDbtp.toFixed(1)} dBTP`);
+    return <div className="player-audio-info tabular-nums" aria-label={`音频信息：${summary}`} title={details.join(" · ")}>{summary}</div>;
   };
 
   const loopLabel =
@@ -460,7 +420,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
         )}
       </button>
 
-      {/* 左栏：当前作品封面 + 音轨信息与所属作品 */}
+      {/* 左栏：当前作品封面 + 音轨详情入口与音频参数 */}
       <div className="player-left">
         <button
           type="button"
@@ -498,34 +458,25 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
         </button>
 
         <div className="player-track-info">
+          <div className="player-title-row">
           <button
             type="button"
-            className="link-btn player-track-title"
+            className="player-track-title"
             disabled={!snapshot.currentWorkId || !onOpenWorkDetail}
             onClick={() => snapshot.currentWorkId && onOpenWorkDetail?.(snapshot.currentWorkId)}
             title={snapshot.currentTrackTitle ?? "尚未加载音轨"}
           >
             {snapshot.currentTrackTitle ?? "尚未加载音轨"}
           </button>
-          <div className="player-work-row">
-            {snapshot.currentWorkId && snapshot.currentWorkTitle ? (
-              <button
-                type="button"
-                className="link-btn player-work-title"
-                onClick={() =>
-                  snapshot.currentWorkId &&
-                  onOpenWorkDetail?.(snapshot.currentWorkId)
-                }
-                title={snapshot.currentWorkTitle}
-              >
-                {snapshot.currentWorkTitle}
-              </button>
-            ) : (
-              <span className="text-muted">选择作品开始收听</span>
-            )}
-            {sourceBadge()}
-            {telemetryBadge()}
+          {snapshot.activeSource && <span
+            className={`badge player-source-tag ${snapshot.activeSource.sourceKind === "online_provider" ? "badge-online" : "badge-local"}`}
+            title={snapshot.activeSource.sourceKind === "online_provider" ? "在线流" : snapshot.activeSource.sourceKind === "local_downloaded" ? "本地流 · 已下载离线" : "本地流 · 本地导入"}
+          >
+            {snapshot.activeSource.sourceKind === "online_provider" ? <Radio size={11} aria-hidden="true" /> : <HardDrive size={11} aria-hidden="true" />}
+            {snapshot.activeSource.sourceKind === "online_provider" ? "在线流" : "本地流"}
+          </span>}
           </div>
+          {audioInfo()}
         </div>
       </div>
 
