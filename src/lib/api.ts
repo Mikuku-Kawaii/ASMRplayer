@@ -1,6 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 
+export async function subscribeWindowMaximized(handler: (maximized: boolean) => void): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) return () => {};
+  return listen<boolean>("window:maximized", event => handler(event.payload));
+}
+
 export interface AppError {
   code: string;
   message: string;
