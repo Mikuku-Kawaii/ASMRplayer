@@ -130,6 +130,28 @@ import { Select } from "../../components/Select";
 
 **回归**：公共交互测试在 `src/components/Select.test.tsx`。替换业务控件时验证原值、默认值、禁用、保存/错误逻辑与动作型占位复位；实际检查短菜单、长文案、长列表、边缘、缩放、滚动和弹窗，不能仅根据 jsdom 宣称视觉验收。
 
+### 1.4b 二级弹窗与筛选浮层
+
+- **主内容区二级弹窗**：导入目录、编辑元数据、关联与撤销，以及后续同类表单复用 `src/components/ContentDialog.tsx`。通过 Portal 与原生 `dialog.showModal()` 脱离文档流，不撑开页面或改变底层布局；以 `.main-content` 可见区域为中心，排除左侧导航、标题栏与底部播放栏。没有主内容容器时才回退到视口中心。
+- **尺寸与滚动**：复用 `.import-dialog` 公共样式，最大宽度 `760px`、内容区四周至少 `16px` 安全留白；高度受主内容区约束，长表单和预览只在弹窗内部滚动。监听主内容区尺寸及窗口变化重新定位，禁止为不同页面写固定坐标。
+- **关闭与焦点**：标题栏右侧只显示 lucide `X`，不显示“关闭”或“收起”文字；提供准确的中文 `aria-label` 与 `title`。使用原生模态焦点约束，关闭后恢复触发控件焦点。Escape 关闭当前层，已展开的下拉先消费 Escape；弹窗内键盘操作不得触发全局播放快捷键。提交或扫描期间按业务 `busy` 状态统一禁用关闭入口。
+- **按钮锚定浮层**：筛选复用 `TagFilterPopover`，不改为居中弹窗。我的音频库、喜欢及最近收听使用 `placement="below-start"`，在按钮下方与按钮左边缘对齐；在线筛选保留 `below-end` 右边缘对齐。正常间距 `8px`，下方不足时翻转到上方，视口左右保留 `16px`；滚动、缩放及尺寸变化后重新定位。
+- **视觉与动效**：沿用公共暗色表面、弱描边、圆角与短淡入动效，并尊重 reduced-motion；无需为每个弹窗复制配色和动画。独立桌面窗口和已有专用下载预览保持各自宿主定位语义，不套用主内容区坐标。
+
+### 1.4c 全局右键菜单与输入编辑
+
+- **范围**：保留已有业务右键菜单；文字输入区域提供统一的剪切、复制、粘贴菜单；其余位置右键无反应，不出现 WebView 默认导航或开发菜单。复用 `src/main.tsx` 挂载的 `TextContextMenu`，不得用捕获阶段全局拦截把业务菜单一起禁掉。
+- **唯一菜单样式**：业务菜单与输入编辑菜单复用 `src/components/ContextMenu.tsx`、`.app-context-menu` / `.m3-menu-item`，图文遵循 1.5a。使用 Popover 顶层避免被父容器裁切；弹窗内菜单 Portal 留在所属 dialog 内，避免被原生模态的 inert 隔离。普通页面菜单以视口为边界保留 `8px` 安全留白；桌面歌词独立窗口仍由宿主处理屏幕边缘定位。
+- **交互**：点击外部、Escape 或 Tab 关闭；方向键、Home/End 导航可用项。保留输入选区与焦点，执行剪切或粘贴前恢复选区并确认目标内容未变化；更新受控输入值并保留原生撤销能力。只读输入只允许复制，禁用输入不弹编辑菜单，无选区时禁用剪切和复制。剪贴板失败时显示反馈，不能先删除文字。
+- **输入约束**：继续允许输入框、textarea、contenteditable 的文字选择、输入法及 Ctrl+C/X/V/Z；禁止通过全局 `mousedown`、`keydown` 或 `copy` 拦截实现右键约束。
+
+### 1.4d 表单输入框等高与列对齐
+
+- **统一列边界**：同组设置的文本字段共享标签列和控件列，所有控件区左右边缘对齐。输入框加镜像预设、清除按钮等组合以整个容器占满控件列，内部输入 `flex: 1; min-width: 0`；不能混用逐行固定最小宽度、百分比或偏移补丁。
+- **设置页参考**：复用 `.settings-content [data-settings-group="network-online"]` 的双列 grid：`minmax(0, 1fr) minmax(0, 1fr)`，控件及组合容器 `width: 100%; min-width: 0; max-width: none`。窗口宽度不超过 `1000px` 时统一变为单列。此规则用于同组文本表单，不强制改变开关、滑块等不同类型控件的布局。
+- **元数据紧凑表单**：复用 `.import-dialog .override-row`；文本框与 R18 的公共 `Select` 触发器均为 `30px` 高、`13px / 18px` 字号行高、`7px` 圆角、对称内边距。这是紧凑元数据表单对 1.4a 默认尺寸的公共例外，不修改其他下拉的默认高度。标签、输入及动作列保持一致；标题、社团名、简介、声优、标签五行统一按“保存 / 清空 / 重置”排列，保留各动作保存语义。
+- **验证**：检查窄窗口和不同显示缩放下的列边界、控件等高、长路径截断、弹窗内部滚动及焦点恢复；菜单需覆盖弹窗内编辑、选区剪切粘贴、撤销及原有业务右键入口。DOM 测试不能替代实际渲染对齐检查。
+
 ### 1.5 M3 Five-Tier Button System (五级按钮规范)
 
 在任何界面设计或重构中，必须按以下 5 级语义选用按钮类型：
@@ -141,6 +163,42 @@ import { Select } from "../../components/Select";
 | **3. Outlined / Elevated Button（描边/抬升次按钮）** | `.btn.btn-secondary` / `.source-pill` | `--bg-elevated` 底色 + `1px solid --border-subtle` | **中等强调**。用于常规并列操作（如：`导入作品库根目录`、`刷新元数据`、`编辑信息`、`关联与撤销`、`加入队列`）。 |
 | **4. Text Button（文本/幽灵按钮）** | `.btn.btn-ghost` | 透明背景，Hover 时浮现 `--bg-hover` | **低强调**。用于返回导航（`返回列表`）、弹窗取消（`取消`）、表单重置（`恢复原值`）、表格内次要操作。 |
 | **5. Icon Button（纯图标按钮）** | `.btn-icon` / `.btn-fav` | 无边框圆形/圆角矩形，仅含 `lucide-react` 图标 | **紧凑工具操作**。用于播放控制栏（上一首/下一首）、收藏红心、关闭弹窗/抽屉。最小点击热区不得小于 `32x32px`（主控区推荐 `36x36px–42x42px`）。 |
+
+### 1.5a 统一图标与文字对齐规范
+
+- **唯一样式来源**：复用 `src/styles.css` 中的公共图文对齐规则与 `.ui-icon-label`。适用于按钮、筛选、导航、菜单、徽章及带图标的标题；后续新增控件必须遵循，不得另写页面级文字偏移补丁。
+- **结构**：lucide 图标与文字标签作为同一 flex 行的直接子项；文字放入 `<span className="ui-icon-label">`，动态文案与计数也放在同一标签内。保留控件原有左右对齐、宽度、间距和业务行为，多行说明与复合控件保留独立布局。
+- **对齐**：控件继承项目字体；容器使用 `align-items: center`，图标使用 `display: block; flex-shrink: 0; align-self: center`。文字使用块级标签和 `line-height: 1.4`。支持时由公共 `@supports` 规则启用 `text-box: trim-both cap alphabetic`，并以 `.25em` 对称上下内边距容纳中日文和字母下伸部分，避免省略标签裁字；不支持时保留普通行盒居中。禁止用 `top: 1px`、`translateY` 或不对称 padding 修补文字基线；按钮整体按压、悬停等动效不受此限制。
+- **详情页等高**：主操作区五个按钮、目录展开/折叠按钮、目录选项以及“播放当前目录”统一使用 `--detail-action-height: 30px`。公共规则同时设置 `height`、`min-height`、`box-sizing: border-box`、`padding-block: 0` 与 `flex-shrink: 0`，不得由 `.btn-sm`、字体行高或父级 flex 压缩造成高度差；颜色与圆角仍按原按钮层级。
+
+```tsx
+<button type="button" className="btn btn-secondary" onClick={onDownload}>
+  <Download size={16} aria-hidden="true" />
+  <span className="ui-icon-label">下载 ({count})</span>
+</button>
+```
+
+**验证**：在实际渲染中检查中文、日文、英文和时间/数字混排，至少覆盖 100%、175%、225% 显示缩放；比较图标和文字的视觉中心，确认截断标签不裁字。详情页额外测量上述按钮的 `getBoundingClientRect().height`，确认同一缩放下等高；不能仅凭 TypeScript 或 DOM 测试宣称视觉对齐。
+
+### 1.5b 沉浸页字幕居中与弹性跟随规范
+
+**复用入口**：`src/features/lyrics/useSubtitleFollow.ts` 的 `useSubtitleFollow(activeIndex, versionId, open)`；布局使用 `src/styles.css` 的 `.immersive-lyrics-stage` / `.immersive-lyrics-list`。后续新增或修改沉浸式滚动字幕必须复用此 Hook，不得逐页另写计时器、原生平滑滚动或弹簧曲线。本规范针对滚动字幕舞台，不改变桌面歌词与灵动岛的独立动效。
+
+```tsx
+const follow = useSubtitleFollow(activeIndex, currentVersionId, open);
+<div className="immersive-lyrics-stage" {...follow} tabIndex={0} aria-label="同步字幕">
+  <ul className="immersive-lyrics-list">
+    {cues.map((cue, index) => <li key={cue.index} data-cue-index={index}>{cue.text}</li>)}
+  </ul>
+</div>
+```
+
+- **定位与中心**：当前字幕行整体（包括双语、多行内容）的垂直中心对齐字幕滚动容器的可视中心。首次打开、重新打开、切换音轨，以及字幕异步加载后的首次有效定位，均在 `useLayoutEffect` 中直接定位，禁止先显示顶部再滚到当前句。当前索引无效时等待有效字幕，不提前消耗首次定位状态。
+- **布局契约**：舞台保持 `position: relative`、`overflow-anchor: none`；字幕行的定位祖先为舞台，避免在中间列表新增改变 `offsetParent` 的定位样式。使用布局坐标 `line.offsetTop - (view.clientHeight - line.offsetHeight) / 2`，避免页面入场缩放影响测量。列表上下留白通过 `--subtitle-follow-padding` 设置为容器可视高度的一半，保证首句、末句也能居中，不能恢复固定 `14vh` 等不足的留白。
+- **跟随与回弹**：正常换句与手动浏览结束后的回弹使用同一套 **640ms** 柔和阻尼弹性滚动。由 `requestAnimationFrame` 驱动，归一化进度 `t` 的曲线为 `1 - exp(-9t) × (cos(8t) + 9/8 × sin(8t))`；越过目标的幅度限制为 **6px**，长距离回弹也不得放大。逐帧重新测量当前句的目标位置，吸收字号、换行与行高过渡；末帧精确落到中心。每帧写入使用 `behavior: "instant"`，不要叠加浏览器原生 `smooth` 动画。
+- **用户操作优先**：滚轮、触摸移动、拖动及方向键 / PageUp / PageDown / Home / End / Space 等浏览输入立即中止跟随。最后一次真实输入结束 **3000ms** 后回到当前句中心，播放暂停时也适用。程序触发的 `scroll` 事件不能重置计时器；键盘浏览事件阻止冒泡，避免误触播放快捷键。换句、关闭页面、切换音轨和卸载时取消旧动画或计时器，不能有多个滚动动画争抢位置。
+- **减少动态效果**：遵守 `prefers-reduced-motion: reduce`，跟随与回弹直接居中，不运行弹性滚动；保留手动浏览后的 3 秒等待。
+- **验证**：维护 `src/features/lyrics/useSubtitleFollow.test.tsx`，覆盖首次 / 重新打开 / 异步字幕定位、3 秒计时与输入重置、手动中断、动态行高后的最终位置、6px 回弹上限及减少动态效果。实际浏览器检查首句、中间句、末句、双语长句和页面入场缩放；自动跟随与回弹结束后的中心误差应小于 1 CSS px。仅通过 DOM 测试不能宣称视觉居中。
 
 ### 1.6 Core Layout & Component Guardrails (核心布局与组件守则)
 
@@ -170,7 +228,7 @@ import { Select } from "../../components/Select";
   - **全屏覆盖整个软件窗口（Full-Window Immersive Screen）**：展开沉浸式播放页时，不再局限于右侧 `.main-content` 子区域，而是作为覆盖整个软件窗口（盖住左侧导航栏与主内容区，铺满窗口顶栏下方全窗口空间）的全屏级视图层。
   - **中央巨幕同步字幕舞台（Center Multi-Line Synchronized Subtitle Stage）**：
     - **深邃氛围背景**：取当前作品封面做大半径高斯模糊（`blur(72px)`）加极光缓慢漂移动画（`m3AuroraDrift`）与暗色护眼遮罩。
-    - **居中双层/多行滚动字幕**：纵向居中排布多行台词，当前句高亮提亮放大，点击任意一行台词直接 `seek` 跳转至该句对应毫秒时间戳。
+    - **居中双层/多行滚动字幕**：当前句高亮提亮放大并保持在字幕舞台可视区域的垂直中心；进入页面直接定位，后续跟随和手动浏览后的回弹统一遵循“1.5b 沉浸页字幕居中与弹性跟随规范”。点击任意一行台词直接 `seek` 跳转至该句对应毫秒时间戳。
   - **底部播放栏（`PlayerBar`）沉浸态专属形态变化与过渡动效（Immersive Bottom PlayerBar Morphing & Motion）**：
     - 当点开全屏沉浸式播放页时，下方播放栏同步发生**专属形态变化与动效**：
       1. **半透明毛玻璃流光融合**：底栏从常规实心深色容器平滑过渡为融入全屏封面模糊背景的半透明悬浮晶莹控制舱；
@@ -191,7 +249,7 @@ import { Select } from "../../components/Select";
 - **双维度「收藏（进我的音频库）」与「喜欢（进喜欢）」分离铁律 (Collected vs. Favorite Separation)**：
   - **收藏 (`Bookmark` 图标，`isCollected` / `toggle_collected`)**：控制作品是否收入第一页 **「我的音频库」** (`filter === "all"`)。本地扫描导入的作品自动标记为已收藏；在线浏览点开查看详情的作品不会自动混入「我的音频库」，只有用户显式点击 **「收藏」** 后才进入「我的音频库」。
   - **喜欢 (`Heart` 图标，`isFavorite` / `toggle_favorite`)**：控制作品是否进入 **「喜欢」** 页面 (`filter === "favorites"`)。
-  - **规范化详情页 (`WorkDetailView`) 主操作栏**：主操作区统一并列提供 `播放` / `继续收听`、`收藏 / 已收藏` (`Bookmark`)、`喜欢 / 已喜欢` (`Heart`)、`下载` 四个核心按钮；次要工具（`同步元数据`、`抓取字幕`、`编辑元数据`、`关联与撤销`）收纳于详情页顶栏右侧。
+  - **规范化详情页 (`WorkDetailView`) 主操作栏**：按原有可用条件并列提供 `播放` / `继续收听`、`从头播放`、`移到我的音频库 / 已在我的音频库` (`Bookmark`)、`喜欢 / 已喜欢` (`Heart`)、`下载` 五类操作；本地导入作品保留隐藏移入音频库等原有条件。按钮高度及图文对齐遵循“统一图标与文字对齐规范”；次要工具（`同步元数据`、`抓取字幕`、`编辑元数据`、`关联与撤销`）收纳于详情页顶栏右侧。
 - **零冗余提示铁律 (Zero Noisy Prompts / Hints Rule)**：
   - 严禁在主页或在线页作品卡片底部放置 `左键打开详情 · 右键创建下载任务 →`、`正在拉取目录树并入库…` 等操作提示文字。
   - 严禁在列表加载或详情切换时渲染冗余的“正在加载音频/作品…”占位提示框或顶部绿色/蓝色通知横幅 (`info-banner`)。
