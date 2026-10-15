@@ -6,6 +6,7 @@ import { DesktopLyrics } from "./features/lyrics/DesktopLyrics";
 import { DesktopIsland } from "./features/island/DesktopIsland";
 import { isDesktopIslandWindow } from "./lib/api";
 import "./styles.css";
+import { TextContextMenu } from "./components/TextContextMenu";
 
 const isLyrics = new URLSearchParams(window.location.search).get("window") === "desktop-lyrics";
 const isLyricsMenu = new URLSearchParams(window.location.search).get("window") === "desktop-lyrics-menu";
@@ -16,6 +17,7 @@ document.documentElement.classList.toggle("island-window", isIsland);
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
+    <TextContextMenu />
     {isLyricsMenu ? <DesktopLyricsMenu /> : isLyrics ? <DesktopLyrics /> : isIsland ? <DesktopIsland /> : <App />}
   </React.StrictMode>
 );
