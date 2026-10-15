@@ -59,8 +59,8 @@ export function StorageSettings() {
   const offline = overview?.entries.filter(e => e.category === "offline") ?? [];
   const filtered = offline.filter(e => e.path.toLowerCase().includes(query.toLowerCase()));
   return <section className="settings-card settings-group-card storage-settings" aria-label="存储用量与清理">
-    <div className="storage-heading"><h3><HardDrive size={18} />存储用量与清理</h3>
-      <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void run(refresh)}><RefreshCw size={14} />{busy && !preview ? "正在读取…" : "刷新用量"}</button></div>
+    <div className="storage-heading"><h3><HardDrive size={18} /><span className="ui-icon-label">存储用量与清理</span></h3>
+      <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void run(refresh)}><RefreshCw size={14} /><span className="ui-icon-label">{busy && !preview ? "正在读取…" : "刷新用量"}</span></button></div>
     <p className="settings-field-hint">只统计受管理文件的逻辑大小，实际磁盘释放量可能不同。清理需要先预览；导入目录、本地原件与正在使用的文件保留。</p>
     {error && !preview && <p className="error-banner" role="alert">{error}</p>}
     {!overview && <p className="settings-field-hint" role="status">{busy ? "正在统计存储用量…" : "尚未读取存储用量，请刷新重试。"}</p>}
@@ -87,7 +87,7 @@ export function StorageSettings() {
           <span className="storage-path">{e.path}<small>{formatBytes(e.bytes)}{e.reason ? ` · ${e.reason}` : ""}</small></span>
         </label>)}{!filtered.length && <p className="settings-field-hint">没有匹配的离线文件。</p>}</div>
         <div className="storage-actions">{filtered.length > limit && <button type="button" className="btn btn-ghost btn-sm" onClick={() => setLimit(n => n + 50)}>显示更多文件</button>}
-          <button type="button" className="btn btn-secondary btn-sm" disabled={busy || !selected.size} onClick={() => void prepare("offline")}><Trash2 size={14} />预览删除所选副本</button></div>
+          <button type="button" className="btn btn-secondary btn-sm" disabled={busy || !selected.size} onClick={() => void prepare("offline")}><Trash2 size={14} /><span className="ui-icon-label">预览删除所选副本</span></button></div>
       </div>}
     </>}
     {result && <div className="storage-result"><p role="status">已删除 {result.deletedCount} 个文件，释放约 {formatBytes(result.freedBytes)}；跳过 {result.skipped.length} 个文件。</p>

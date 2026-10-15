@@ -70,7 +70,7 @@ export function BackupSettings({ onRestored }: { onRestored: () => Promise<void>
     if (mounted.current) { setStatus(next); setNotice("备份策略已保存。保留策略在下一次自动备份成功后执行。"); }
   });
   return <section className="settings-card settings-group-card backup-settings" data-settings-group="backup-sync" aria-label="用户资产备份与多端加密同步">
-    <div className="storage-heading"><h3><ArchiveRestore size={18} />自动备份与恢复</h3><button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void run(reload)}><RefreshCw size={14} />刷新备份</button></div>
+    <div className="storage-heading"><h3><ArchiveRestore size={18} /><span className="ui-icon-label">自动备份与恢复</span></h3><button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void run(reload)}><RefreshCw size={14} /><span className="ui-icon-label">刷新备份</span></button></div>
     <p className="settings-field-hint">备份喜欢、进度、书签、A–B 循环、元数据覆盖与音效配置。媒体文件、音频库索引、播放队列方案、快捷键及应用设置不包含在此格式中。</p>
     {status ? <>
       <div className="backup-policy">
@@ -82,7 +82,7 @@ export function BackupSettings({ onRestored }: { onRestored: () => Promise<void>
       {status.lastError && <p className="error-banner" role="alert">{status.lastError}</p>}
     </> : <p className="settings-field-hint">尚未读取备份策略，可刷新重试。</p>}
     <div className="backup-toolbar"><button type="button" className="btn btn-primary btn-sm" disabled={busy || !status} onClick={()=>void run(async()=>{ await callCommand("create_user_backup"); await reload(); if(mounted.current)setNotice("手动备份已保存并校验。"); })}>{busy ? "正在处理…" : "立即备份"}</button>
-      <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={()=>void exportFile(false)}><Download size={14} />导出备份 JSON</button>
+      <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={()=>void exportFile(false)}><Download size={14} /><span className="ui-icon-label">导出备份 JSON</span></button>
       <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={()=>input.current?.click()}>从备份文件恢复</button>
       <input ref={input} hidden type="file" accept=".json,application/json" data-testid="backup-restore-input" onChange={e=>{ const file=e.target.files?.[0];e.target.value="";void readFile(file,false); }} />
     </div>

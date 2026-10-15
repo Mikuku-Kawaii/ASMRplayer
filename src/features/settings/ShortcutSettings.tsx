@@ -32,11 +32,11 @@ export function ShortcutSettings({ smtcMode }: { smtcMode?: string }) {
       </div>
       <button type="button" className="btn btn-ghost btn-sm" aria-expanded={expanded} aria-controls={contentId} onClick={() => {
         setExpanded(value => !value); setEditing(null); setCandidate(null); setReset(false); setError(""); editTrigger.current = null;
-      }}>{expanded ? <ChevronUp size={14} aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}{expanded ? "收起快捷键" : "展开快捷键"}</button>
+      }}>{expanded ? <ChevronUp size={14} aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}<span className="ui-icon-label">{expanded ? "收起快捷键" : "展开快捷键"}</span></button>
     </div>
     <div id={contentId} hidden={!expanded}>
     {expanded && <div className="settings-group-body shortcut-settings-body">
-    <div className="shortcut-actions"><button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { setReset(true); setError(""); setEditing(null); }}><RotateCcw size={14} aria-hidden="true" />恢复默认</button></div>
+    <div className="shortcut-actions"><button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { setReset(true); setError(""); setEditing(null); }}><RotateCcw size={14} aria-hidden="true" /><span className="ui-icon-label">恢复默认</span></button></div>
     <p className="settings-field-hint">应用内快捷键仅在主窗口有焦点时生效；输入框、弹窗及菜单编辑时保留正常输入。长按不会重复触发。</p>
     <label className="shortcut-search">查找操作<input className="input-text" value={filter} onChange={event => setFilter(event.target.value)} placeholder="播放、队列、字幕…" /></label>
     {loadError && <div className="shortcut-error" role="alert">{loadError}<button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={reload}>重试读取</button></div>}

@@ -83,6 +83,6 @@ function DiagnosticDialog({ preview, busy, error, onClose, onRefresh, onExport }
     {error && <p className="error-banner" role="alert">{error}</p>}
     <footer className="storage-actions"><button ref={cancel} type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button>
       <button type="button" className="btn btn-secondary" disabled={busy} onClick={onRefresh}>刷新预览</button>
-      <button type="button" className="btn btn-primary" disabled={busy} onClick={onExport}><Download size={16} />{busy ? "正在处理…" : "保存诊断包"}</button></footer>
+      <button type="button" className="btn btn-primary" disabled={busy} onClick={onExport}><Download size={16} /><span className="ui-icon-label">{busy ? "正在处理…" : "保存诊断包"}</span></button></footer>
   </dialog>, document.body);
 }

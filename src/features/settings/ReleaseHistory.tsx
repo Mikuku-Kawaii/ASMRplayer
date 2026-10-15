@@ -77,7 +77,7 @@ export function ReleaseHistoryDialog({ initialView, onClose }: { initialView: Vi
     <header className="storage-heading"><div><h2 id="release-history-title">更新历史</h2><p className="settings-field-hint">{history ? `当前安装 v${history.currentVersion} · 新增功能与设置变化` : "读取本机发布说明…"}</p></div>
       <button ref={closeButton} type="button" className="btn-icon" aria-label="关闭更新历史" title="关闭更新历史 (Esc)" onClick={onClose}><X size={18} /></button></header>
     <div className="release-history-toolbar"><label htmlFor="release-history-version">发布版本</label><Select id="release-history-version" disabled={!history} value={selected} options={entries.map(item => ({ value: item.version, label: `v${item.version}${item.version === history?.currentVersion ? " · 当前版本" : ""}${item.title && item.title !== `v${item.version}` ? ` · ${item.title}` : ""}` }))} onValueChange={setSelected} />
-      <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void refresh()}><RefreshCw size={14} />{busy ? "正在读取…" : "刷新历史"}</button></div>
+      <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void refresh()}><RefreshCw size={14} /><span className="ui-icon-label">{busy ? "正在读取…" : "刷新历史"}</span></button></div>
     <p className="settings-field-hint" role="status">{history?.fetchedAt ? `本机缓存 · 最近刷新 ${date(history.fetchedAt)}` : "打开时优先读取本机缓存；点击刷新历史获取最近 30 条发布记录中的正式版本。"}</p>
     {error && <div role="alert" className="error-banner">{error.message} {error.hint}</div>}
     <section className="release-history-body" tabIndex={0} aria-label="历史发布说明">

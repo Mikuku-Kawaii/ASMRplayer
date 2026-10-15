@@ -43,7 +43,7 @@ export const UpdateSettings: React.FC<{ onError: (error: AppError) => void }> = 
       {update?.error && <div className="error-banner" role="alert">{update.error.message} {update.error.hint}</div>}
       <div className="update-actions">
         <button className="btn btn-secondary" disabled={!update || busy || pending || update.phase === "ready"}
-          onClick={() => void perform("check_for_updates")}><RefreshCw size={14} />{update?.phase === "checking" ? "正在检查…" : "检查更新"}</button>
+          onClick={() => void perform("check_for_updates")}><RefreshCw size={14} /><span className="ui-icon-label">{update?.phase === "checking" ? "正在检查…" : "检查更新"}</span></button>
         {update?.latestVersion && <button className="btn btn-primary" onClick={openUpdateDialog}>查看更新</button>}
         <button className="btn btn-secondary" disabled={!update} onClick={() => openReleaseHistory("current")}>当前版本说明</button>
         <button className="btn btn-secondary" disabled={!update} onClick={() => openReleaseHistory("history")}>更新历史</button>

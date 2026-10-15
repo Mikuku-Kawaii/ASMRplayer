@@ -1,6 +1,8 @@
 import { DesktopLyricsSettings } from "./DesktopLyricsSettings";
 import { InterfaceScaleSettings } from "./InterfaceScaleSettings";
 import { Select } from "../../components/Select";
+import { Toast } from "../../components/Toast";
+import { RemoveLibraryRootButton } from "./RemoveLibraryRootButton";
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -87,8 +89,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
   const [islandToastDurationSec, setIslandToastDurationSec] = useState(3.0);
   const [islandPrivacyMode, setIslandPrivacyMode] = useState(false);
   const [authTokenInput, setAuthTokenInput] = useState("");
-  const [savedNotice, setSavedNotice] = useState("");
-  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [savedNotice, setSavedNotice] = useState<{ id: number; message: string } | null>(null);
+  const noticeId = useRef(0);
+  const showNotice = (message: string) => setSavedNotice({ id: ++noticeId.current, message });
   const textAutoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingTextRef = useRef<Record<string, string | null>>({});
   const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -137,6 +140,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
     let unlisten: (() => void) | undefined;
     void subscribeSettingsUpdated(next => {
       if (disposed) return;
+      setNsfwEnabled(next.nsfwEnabled ?? false);
       setIslandPrivacyMode(next.islandPrivacyMode ?? false);
       setIslandAlwaysOnTop(next.islandAlwaysOnTop ?? true);
     }).then(fn => { if (disposed) fn(); else unlisten = fn; });
@@ -233,11 +237,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
         if (nextAuthToken && nextAuthToken !== "__CLEAR__") {
           setAuthTokenInput("");
         }
-        setSavedNotice("设置已保存并立即生效");
-        if (noticeTimerRef.current) {
-          clearTimeout(noticeTimerRef.current);
-        }
-        noticeTimerRef.current = setTimeout(() => setSavedNotice(""), 2000);
       } catch (err) {
         onError(normalizeAppError(err));
         if (overrides?.audioExclusive !== undefined) {
@@ -273,7 +272,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
   persistSettingsRef.current = persistSettings;
 
   useEffect(() => () => {
-    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     if (textAutoSaveTimerRef.current) {
       clearTimeout(textAutoSaveTimerRef.current);
       // Flush the latest field values on navigation; never run an old render's closure.
@@ -307,12 +305,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
       const reports = await callCommand<ScanReportDto[]>("sync_watched_roots_now");
       const added = reports.reduce((acc, r) => acc + r.worksAdded, 0);
       await loadAll();
-      setSavedNotice(
+      showNotice(
         reports.length === 0
           ? "所有监听目录指纹未变化，无需重扫"
           : `已完成变化目录增量同步（新增作品 ${added} 部）`
       );
-      setTimeout(() => setSavedNotice(""), 3000);
     } catch (err) {
       onError(normalizeAppError(err));
     }
@@ -359,8 +356,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
         selectedCandidates: null,
       });
       await loadAll();
-      setSavedNotice(`已完成根目录增量复查: ${root.displayName}`);
-      setTimeout(() => setSavedNotice(""), 2500);
+      showNotice(`已完成根目录增量复查: ${root.displayName}`);
     } catch (err) {
       onError(normalizeAppError(err));
     }
@@ -378,7 +374,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
           {settingsSections.map(({id,title,hint,icon:Icon}) => <button key={id} type="button" aria-current={!query && section === id ? "page" : undefined} onClick={() => { setSection(id); setSearch(""); if (contentRef.current) contentRef.current.scrollTop = 0; }}><Icon size={20} aria-hidden="true" /><span><strong>{title}</strong><small>{hint}</small></span></button>)}
         </nav>
         <div className="settings-content" ref={contentRef} role="region" aria-label="设置内容" tabIndex={0}>
-      {savedNotice && <div className="info-banner" role="status">{savedNotice}</div>}
+      {savedNotice && <Toast key={savedNotice.id} message={savedNotice.message} onClose={() => setSavedNotice(null)} />}
       {query && !settingsSections.some(x => visible(x.id)) && <p className="settings-field-hint" role="status">没有找到相关设置，试试“字幕”“音频”或“网络”。</p>}
       <div hidden={!visible("updates")}><UpdateSettings onError={onError} /></div>
 
@@ -434,9 +430,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                   onClick={() => {
                     const nextVal = !nsfwEnabled;
                     setNsfwEnabled(nextVal);
-                    void callCommand<boolean>("set_nsfw_enabled", {
-                      enabled: nextVal,
-                    }).catch(() => {});
                     void persistSettings({ nsfwEnabled: nextVal });
                   }}
                 >
@@ -1142,6 +1135,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                               >
                                 重新定位路径
                               </button>
+                              <RemoveLibraryRootButton root={r} onError={onError} onRemoved={removed => {
+                                setRoots(current => current.filter(root => root.id !== removed.id));
+                                if (relocatingRootId === removed.id) { setRelocatingRootId(null); setRelocatePath(""); }
+                                showNotice(`已移除目录引用：${removed.displayName}`);
+                              }} />
                             </div>
                           </td>
                         </tr>
