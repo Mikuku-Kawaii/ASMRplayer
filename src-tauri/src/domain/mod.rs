@@ -178,6 +178,10 @@ pub enum ListeningStatus {
 #[serde(rename_all = "camelCase")]
 pub struct WorkSummary {
     #[serde(default)]
+    pub nsfw: bool,
+    #[serde(default)]
+    pub has_subtitle: bool,
+    #[serde(default)]
     pub listening_status: ListeningStatus,
     #[serde(default)]
     pub is_listened: bool,
@@ -299,6 +303,10 @@ pub struct DirectoryGroupOption {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkDetailDto {
+    #[serde(default)]
+    pub nsfw: bool,
+    #[serde(default)]
+    pub has_subtitle: bool,
     pub id: String,
     pub title: String,
     pub description: String,
