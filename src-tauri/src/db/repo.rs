@@ -10,6 +10,27 @@ use std::path::Path;
 use std::sync::LazyLock;
 use uuid::Uuid;
 
+fn adult_label(value: &str) -> bool {
+    let normalized: String = value.trim().to_uppercase().chars()
+        .filter(|c| !c.is_whitespace() && !matches!(c, '-' | '－' | '−' | '+' | '＋')).collect();
+    matches!(normalized.as_str(), "R18" | "R18G" | "18禁" | "18歳以上" | "18岁以上" | "成人向" | "成人向け" | "成人指定" | "NSFW" | "ADULT")
+}
+
+fn content_is_nsfw(manual: Option<&str>, meta: Option<&Value>, tags: &[String], title: &str) -> bool {
+    if let Some(value) = manual.and_then(|v| v.parse::<bool>().ok()) { return value; }
+    let flagged = meta.is_some_and(|m| m.get("nsfw").and_then(Value::as_bool) == Some(true)
+        || ["age_category_string", "age_category", "ageRating"].iter()
+            .any(|key| m.get(key).and_then(Value::as_str).is_some_and(adult_label)));
+    flagged || tags.iter().any(|tag| adult_label(tag))
+        || title.split(|c: char| c.is_whitespace() || matches!(c, '[' | ']' | '【' | '】' | '(' | ')' | '（' | '）'))
+            .any(adult_label)
+}
+
+fn metadata_has_subtitle(meta: Option<&Value>) -> bool {
+    meta.is_some_and(|m| ["hasSubtitle", "has_subtitle"].iter()
+        .any(|key| m.get(key).and_then(Value::as_bool) == Some(true)))
+}
+
 struct LruCoverCache {
     map: HashMap<String, Option<String>>,
     order: VecDeque<String>,
@@ -228,7 +249,7 @@ impl Database {
 
         let title = {
             let t = resolve_str("title", online_title, base_title);
-            if t.is_empty() {
+            if t.is_empty() && !ov_map.and_then(|m| m.get("title")).is_some_and(|(mode, _)| mode == "cleared") {
                 base_title.to_string()
             } else {
                 t
@@ -420,6 +441,9 @@ impl Database {
         override_mode: &str,
         value_text: Option<&str>,
     ) -> AppResult<()> {
+        if field == "nsfw" && (override_mode != "set" || !matches!(value_text, Some("true" | "false"))) {
+            return Err(AppError::new(ErrorCode::InvalidInput, "R18 分级必须为是或否；自动识别请使用重置"));
+        }
         if override_mode != "set" && override_mode != "cleared" {
             return Err(AppError::new(
                 ErrorCode::InvalidInput,
@@ -506,6 +530,13 @@ impl Database {
                 )?;
                 Ok(true)
             }
+        })
+    }
+
+    pub fn clear_recent_works(&self) -> AppResult<()> {
+        self.with_conn(|conn| {
+            conn.execute("DELETE FROM work_playback_state", [])?;
+            Ok(())
         })
     }
 
@@ -671,7 +702,7 @@ impl Database {
                         COALESCE(sa.any_available, 0),
                         COALESCE(sa.any_offline_disk, 0),
                         CASE WHEN c.work_id IS NOT NULL THEN 1 ELSE 0 END AS is_col,
-                        COALESCE(sa.has_local_imported, 0)
+                        COALESCE(sa.has_local_imported, 0), w.nsfw_detected, w.has_subtitle_metadata
                  FROM works w
                  LEFT JOIN favorites f ON f.work_id = w.id
                  LEFT JOIN collected_works c ON c.work_id = w.id
@@ -709,9 +740,18 @@ impl Database {
                     r.get::<_, i64>(20)? == 1,
                     r.get::<_, i64>(21)? == 1,
                     r.get::<_, i64>(22)? == 1,
+                    r.get::<_, bool>(23)?,
+                    r.get::<_, bool>(24)?,
                 ))
             })?;
 
+            let nsfw_enabled = conn.query_row("SELECT value_json FROM app_settings WHERE key='nsfw_enabled'", [], |r| r.get::<_, String>(0))
+                .optional()?.is_some_and(|v| v == "true" || v == "1");
+            let subtitle_works = {
+                let mut stmt = conn.prepare("SELECT DISTINCT work_id FROM attachments WHERE attachment_type='subtitle' AND availability='available'")?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+                rows.collect::<Result<HashSet<_>, _>>()?
+            };
             let mut results = Vec::new();
 
             for row in rows {
@@ -739,6 +779,8 @@ impl Database {
                     any_offline_disk,
                     is_collected,
                     has_local_imported,
+                    nsfw_detected,
+                    has_subtitle_metadata,
                 ) = row?;
 
                 if filter == "favorites" && !is_favorite {
@@ -776,31 +818,10 @@ impl Database {
                         &tags_json,
                     );
 
-                // T1119: When nsfw_enabled is false (default OFF), filter out works flagged NSFW or tagged R18
-                let nsfw_enabled: bool = conn
-                    .query_row(
-                        "SELECT value_json FROM app_settings WHERE key = 'nsfw_enabled'",
-                        [],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .optional()?
-                    .map(|v| v == "true" || v == "1")
-                    .unwrap_or(false);
-
-                if !nsfw_enabled {
-                    let is_nsfw_meta = online_meta
-                        .as_ref()
-                        .and_then(|m| m.get("nsfw"))
-                        .and_then(|b| b.as_bool())
-                        .unwrap_or(false);
-                    let is_nsfw_tag = tags.iter().any(|t| {
-                        let u = t.trim().to_ascii_uppercase();
-                        u == "R18" || u == "R-18" || u == "NSFW" || u == "成人向"
-                    });
-                    if is_nsfw_meta || is_nsfw_tag {
-                        continue;
-                    }
-                }
+                let manual = ov_map.and_then(|m| m.get("nsfw")).filter(|v| v.0 == "set").and_then(|v| v.1.as_deref());
+                let nsfw = manual.and_then(|v| v.parse::<bool>().ok()).unwrap_or_else(|| nsfw_detected || content_is_nsfw(None, online_meta.as_ref(), &tags, &title));
+                if !nsfw_enabled && nsfw { continue; }
+                let has_subtitle = has_subtitle_metadata || subtitle_works.contains(&id) || metadata_has_subtitle(online_meta.as_ref());
 
                 if !q_lower.is_empty() {
                     let matched = fts_matched_work_ids.contains(&id)
@@ -828,6 +849,8 @@ impl Database {
                 };
 
                 results.push(WorkSummary {
+                    nsfw,
+                    has_subtitle,
                     listening_status: listening_statuses.get(&id).copied().unwrap_or_default(),
                     is_listened: listening_states.get(&id).copied().unwrap_or(false),
                     id,
@@ -851,6 +874,7 @@ impl Database {
                     source_work_id,
                     updated_at,
                 });
+                if filter == "recent" && results.len() == 100 { break; }
             }
 
             Ok(results)
@@ -1299,7 +1323,15 @@ impl Database {
                 )
                 .optional()?;
 
+            let raw: Option<String> = conn.query_row("SELECT raw_metadata_json FROM work_sources WHERE work_id=?1 ORDER BY refreshed_at DESC LIMIT 1", [work_id], |r| r.get(0)).optional()?;
+            let meta: Option<Value> = raw.as_deref().and_then(|s| serde_json::from_str(s).ok());
+            let manual = overrides.iter().find(|o| o.field == "nsfw" && o.override_mode == "set").and_then(|o| o.value_text.as_deref());
+            let (detected, subtitle_metadata): (bool, bool) = conn.query_row("SELECT nsfw_detected,has_subtitle_metadata FROM works WHERE id=?1", [work_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            let nsfw = manual.and_then(|v| v.parse::<bool>().ok()).unwrap_or_else(|| detected || content_is_nsfw(None, meta.as_ref(), &tags, &title));
+            let has_subtitle = subtitle_metadata || metadata_has_subtitle(meta.as_ref()) || attachments.iter().any(|a| a.attachment_type == "subtitle" && a.availability == "available");
             Ok(WorkDetailDto {
+                nsfw,
+                has_subtitle,
                 id,
                 title,
                 description,
@@ -2690,6 +2722,71 @@ impl Database {
 mod repo_tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn recent_history_is_capped_and_clear_keeps_progress_and_collection() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        db.with_conn(|conn| {
+            for i in 0..105 {
+                let id = format!("w{i:03}");
+                conn.execute("INSERT INTO works(id,title,created_at,updated_at) VALUES(?1,?1,'now','now')", [&id])?;
+                conn.execute("INSERT INTO tracks(id,work_id,title,sort_key,created_at) VALUES(?1,?1,?1,?1,'now')", [&id])?;
+                conn.execute("INSERT INTO track_versions(id,track_id,created_at) VALUES(?1,?1,'now')", [&id])?;
+                conn.execute("INSERT INTO collected_works VALUES(?1,'now')", [&id])?;
+                conn.execute("INSERT INTO playback_positions(version_id,position_ms,updated_at) VALUES(?1,1234,'now')", [&id])?;
+                conn.execute("INSERT INTO work_playback_state(work_id,last_version_id,last_played_at,updated_at) VALUES(?1,?1,?1,'now')", [&id])?;
+            }
+            Ok(())
+        }).unwrap();
+        let recent = db.list_works("recent", None).unwrap();
+        assert_eq!(recent.len(), 100);
+        assert_eq!(recent[0].id, "w104"); assert_eq!(recent[99].id, "w005");
+        db.clear_recent_works().unwrap();
+        assert!(db.list_works("recent", None).unwrap().is_empty());
+        assert_eq!(db.list_works("all", None).unwrap().len(), 105);
+        assert_eq!(db.get_playback_position("w000").unwrap().0, 1234);
+        db.set_work_override("w000", "title", "cleared", None).unwrap();
+        assert_eq!(db.get_work_detail("w000").unwrap().title, "");
+        db.reset_work_override("w000", "title").unwrap();
+        assert_eq!(db.get_work_detail("w000").unwrap().title, "w000");
+    }
+
+    #[test]
+    fn r18_overrides_filter_local_and_favorites_and_share_content_badges() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        db.with_conn(|conn| {
+            for (id, title, tags) in [("tag", "local", "[\"成人向け\"]"), ("title", "[R-18] local", "[]"), ("remote", "online", "[]"), ("unknown", "unknown local", "[]")] {
+                conn.execute("INSERT INTO works(id,title,tags_json,created_at,updated_at) VALUES(?1,?2,?3,'now','now')", params![id,title,tags])?;
+                conn.execute("INSERT INTO collected_works VALUES(?1,'now')", [id])?;
+                conn.execute("INSERT INTO favorites(work_id,created_at) VALUES(?1,'now')", [id])?;
+            }
+            conn.execute_batch("INSERT INTO work_sources(id,work_id,provider,source_work_id,raw_metadata_json,refreshed_at)
+                VALUES('ws','remote','asmr_one','1','{\"age_category_string\":\"adult\",\"has_subtitle\":true}','now');
+                INSERT INTO attachments(id,work_id,attachment_type,title,created_at) VALUES('sub','tag','subtitle','01.srt','now');")?;
+            Ok(())
+        }).unwrap();
+        for filter in ["all", "favorites"] {
+            assert_eq!(db.list_works(filter, None).unwrap().iter().map(|w| w.id.as_str()).collect::<Vec<_>>(), vec!["unknown"]);
+        }
+        db.set_setting("nsfw_enabled", "true").unwrap();
+        let works = db.list_works("all", None).unwrap();
+        assert_eq!(works.len(), 4);
+        for id in ["tag", "remote"] {
+            let summary = works.iter().find(|w| w.id == id).unwrap();
+            let detail = db.get_work_detail(id).unwrap();
+            assert!(summary.nsfw && summary.has_subtitle && detail.nsfw && detail.has_subtitle);
+        }
+        db.set_work_override("tag", "nsfw", "set", Some("false")).unwrap();
+        db.set_work_override("unknown", "nsfw", "set", Some("true")).unwrap();
+        assert!(db.set_work_override("tag", "nsfw", "set", Some("invalid")).is_err());
+        db.set_setting("nsfw_enabled", "false").unwrap();
+        assert_eq!(db.list_works("favorites", None).unwrap()[0].id, "tag");
+        assert!(!db.get_work_detail("tag").unwrap().nsfw);
+        db.reset_work_override("tag", "nsfw").unwrap();
+        assert!(db.list_works("all", None).unwrap().is_empty());
+    }
 
     #[test]
     fn test_override_priority_and_online_refresh_preservation_r09() {

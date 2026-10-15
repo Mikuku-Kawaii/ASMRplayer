@@ -65,6 +65,8 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (13, "013_download_schedule", include_str!("../../migrations/013_download_schedule.sql")),
     (14, "014_listening_completion", include_str!("../../migrations/014_listening_completion.sql")),
     (15, "015_favorite_versions", include_str!("../../migrations/015_favorite_versions.sql")),
+    (16, "016_detached_root_sources", include_str!("../../migrations/016_detached_root_sources.sql")),
+    (17, "017_synced_content_flags", include_str!("../../migrations/017_synced_content_flags.sql")),
 ];
 
 #[derive(Clone)]
