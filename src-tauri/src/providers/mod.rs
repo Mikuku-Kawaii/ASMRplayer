@@ -1840,7 +1840,7 @@ impl AsmrOneProvider {
                      voice_actors_json = CASE WHEN ?3 != '[]' THEN ?3 ELSE voice_actors_json END,
                      tags_json = CASE WHEN ?4 != '[]' THEN ?4 ELSE tags_json END,
                      cover_ref = CASE WHEN ?6 = 1 THEN COALESCE(?5, cover_ref) ELSE COALESCE(cover_ref, ?5) END,
-                     updated_at = ?7
+                     updated_at = ?7, nsfw_detected = ?9, has_subtitle_metadata = ?10
                  WHERE id = ?8",
                 params![
                     pwork.rj_code,
@@ -1850,7 +1850,9 @@ impl AsmrOneProvider {
                     pwork.cover_url,
                     prefer_flag,
                     now_str,
-                    work_id
+                    work_id,
+                    pwork.nsfw,
+                    pwork.has_subtitle
                 ],
             )?;
 
@@ -2040,7 +2042,8 @@ mod provider_tests {
         provider.set_api_base(&server.uri()).unwrap();
 
         let wi_str = include_str!("../../../tests/fixtures/provider/work_info_sample.json")
-            .replace("https://api.example.invalid", &server.uri());
+            .replace("https://api.example.invalid", &server.uri())
+            .replace("\"nsfw\": false", "\"nsfw\": true");
         Mock::given(method("GET"))
             .and(path("/api/workInfo/1705068"))
             .respond_with(ResponseTemplate::new(200).set_body_string(wi_str))
@@ -2071,6 +2074,12 @@ mod provider_tests {
         assert_eq!(enriched, 1);
 
         let detail = db.get_work_detail("w_local").unwrap();
+        assert!(detail.nsfw && detail.has_subtitle);
+        db.set_work_override("w_local", "nsfw", "set", Some("false")).unwrap();
+        let refreshed = provider.sync_work_from_asmr_one("w_local", None, false).await.unwrap();
+        assert!(!refreshed.nsfw, "sync must preserve the user's explicit age rating");
+        db.reset_work_override("w_local", "nsfw").unwrap();
+        assert!(db.get_work_detail("w_local").unwrap().nsfw);
         assert_eq!(detail.circle_name, "サンプルサークル");
         assert_eq!(detail.voice_actors, vec!["テスト声優"]);
         assert!(detail.tags.contains(&"耳かき".to_string()));
