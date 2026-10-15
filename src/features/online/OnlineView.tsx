@@ -1,8 +1,10 @@
 import { Select } from "../../components/Select";
+import { WorkContentBadges } from "../../components/WorkContentBadges";
 import { ContextMenu } from "../../components/ContextMenu";
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import {
   Search,
+  ChevronRight,
   RefreshCw,
   ExternalLink,
   Subtitles,
@@ -23,7 +25,6 @@ import {
   WorkDetailDto,
   DownloadPreviewDto,
   DownloadTaskDto,
-  AppSettingsDto,
   callCommand,
   normalizeAppError,
   AppError,
@@ -31,6 +32,7 @@ import {
 } from "../../lib/api";
 import { DownloadTaskModal } from "../../components/DownloadTaskModal";
 import { OnlineFilters, OnlineFilterSummary } from "./OnlineFilters";
+import { useNsfwSetting } from "../settings/useNsfwSetting";
 
 interface OnlineViewProps {
   externalSearch?: { keyword: string; seq: number } | null;
@@ -62,7 +64,8 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
   const [sort, setSort] = useState("desc");
   const [subtitleOnly, setSubtitleOnly] = useState(false);
   const [filters, setFilters] = useState<OnlineFilter[]>([]);
-  const [nsfwEnabled, setNsfwEnabled] = useState(false);
+  const [nsfwSetting, setNsfwEnabled] = useNsfwSetting();
+  const nsfwEnabled = nsfwSetting ?? false;
   const [nsfwSaving, setNsfwSaving] = useState(false);
   const [page, setPage] = useState(1);
 
@@ -81,16 +84,6 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
   const [contextMenu, setContextMenu] = useState<OnlineContextMenuState | null>(
     null
   );
-
-  useEffect(() => {
-    void callCommand<AppSettingsDto | null>("get_app_settings")
-      .then((s) => {
-        if (s && typeof s.nsfwEnabled === "boolean") {
-          setNsfwEnabled(s.nsfwEnabled);
-        }
-      })
-      .catch(() => {});
-  }, []);
 
   // Sync external CV / Tag search keyword when triggered from WorkDetailView
   useEffect(() => {
@@ -160,7 +153,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
     const sequence = reqSeqRef;
     void fetchPage(1);
     return () => { ++sequence.current; };
-  }, [fetchPage, nsfwSaving]);
+  }, [fetchPage, nsfwSaving, nsfwEnabled]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -189,8 +182,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
     setWorks([]);
     setTotalCount(0);
     try {
-      await callCommand<boolean>("set_nsfw_enabled", { enabled: nextVal });
-      setNsfwEnabled(nextVal);
+      setNsfwEnabled(await callCommand<boolean>("set_nsfw_enabled", { enabled: nextVal }));
     } catch (e) {
       onError(normalizeAppError(e));
     } finally {
@@ -320,7 +312,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
         </div>
 
         <div className="top-bar-controls-row">
-          <form onSubmit={handleSearchSubmit} className="search-input-wrap">
+          <form onSubmit={handleSearchSubmit} className="search-input-wrap online-search-form">
             <Search size={15} className="text-muted" />
             <input
               type="text"
@@ -333,8 +325,8 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
             />
-            <button type="submit" className="btn btn-primary btn-sm" disabled={nsfwSaving}>
-              搜索
+            <button type="submit" className="btn btn-sm online-search-submit" aria-label="搜索" title="搜索" disabled={nsfwSaving}>
+              <ChevronRight size={22} aria-hidden="true" />
             </button>
           </form>
         </div>
@@ -368,7 +360,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
             type="button"
             className={`btn-chip ${nsfwEnabled ? "active btn-chip-nsfw" : ""}`}
             aria-label="切换全年龄或NSFW模式"
-            aria-pressed={nsfwEnabled}
+            aria-pressed={nsfwEnabled ?? false}
             disabled={nsfwSaving}
             onClick={() => void handleToggleNsfwMode()}
             title={
@@ -461,16 +453,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
                         ).style.display = "none";
                       }}
                     />
-                    {(w.nsfw || w.hasSubtitle) && (
-                      <div className="work-card-cover-badges">
-                        {w.hasSubtitle && (
-                          <span className="badge badge-downloaded">含字幕</span>
-                        )}
-                        {w.nsfw && (
-                          <span className="badge badge-nsfw">R18</span>
-                        )}
-                      </div>
-                    )}
+                    <WorkContentBadges nsfw={w.nsfw} hasSubtitle={w.hasSubtitle} />
                   </div>
                 )}
 
@@ -505,7 +488,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
                 <div className="work-card-meta">
                   {w.circleName && <button type="button" className="tag-pill tag-pill-btn"
                     onClick={e => { e.stopPropagation(); addFilter("circle", w.circleName); }}
-                    title={`筛选社团：${w.circleName}`}>社团: {w.circleName}</button>}
+                    title={`筛选社团：${w.circleName}`}><span className="ui-tag-label">社团: {w.circleName}</span></button>}
                   {w.voiceActors.length > 0 && (
                     <span className="cv-list">
                       CV:{" "}
@@ -519,9 +502,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
                             addFilter("voiceActor", va);
                           }}
                           title={`筛选声优: ${va}`}
-                        >
-                          {va}
-                        </button>
+                        ><span className="ui-tag-label">{va}</span></button>
                       ))}
                     </span>
                   )}
@@ -539,9 +520,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
                           addFilter("tag", tag);
                         }}
                         title={`筛选标签: ${tag}`}
-                      >
-                        {tag}
-                      </button>
+                      ><span className="ui-tag-label">{tag}</span></button>
                     ))}
                   </div>
                 )}
