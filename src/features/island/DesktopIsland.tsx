@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ScrollingText } from "./ScrollingText";
+import { PlayerLibraryActions } from "../player/PlayerLibraryActions";
 import { Play, Pause, SkipBack, SkipForward, Volume2, Volume1, Disc3, ExternalLink, EyeOff, Eye, X, ChevronUp, ChevronLeft, MoreHorizontal, RotateCcw } from "lucide-react";
 import {
-  PlaybackSnapshot, SubtitleCueDto, WorkDetailDto, AutoMatchedSubtitleDto, AppSettingsDto,
+  PlaybackSnapshot, SubtitleCueDto, WorkDetailDto, AutoMatchedSubtitleDto, AppSettingsDto, AppError,
   IslandForm, IslandLayout, IslandPreferences, formatDurationMs, callCommand,
   subscribePlaybackSnapshot, subscribePlaybackTick, subscribeIslandFullscreen,
   subscribeIslandLayout, subscribeIslandGlass, subscribeSettingsUpdated, subscribeActiveSubtitles, defaultSnapshot, isTauriRuntime, normalizeAppError,
@@ -21,6 +22,7 @@ export function DesktopIsland() {
   const [cues, setCues] = useState<SubtitleCueDto[]>([]);
   const [cover, setCover] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const reportLibraryError = useCallback((next: AppError) => setError(next.message), []);
   const [avoided, setAvoided] = useState(false);
   const [toast, setToast] = useState<{ text: string; volume?: number } | null>(null);
   const [seekPreview, setSeekPreview] = useState<number | null>(null);
@@ -88,12 +90,15 @@ export function DesktopIsland() {
       }
     }));
     keep(subscribeIslandGlass(enabled => { if (!disposed) setNativeGlass(enabled); }));
-    keep(subscribeIslandLayout(next => { if (!disposed) applyLayout(next); }));
+    const layouts = subscribeIslandLayout(next => { if (!disposed) applyLayout(next); });
+    keep(layouts);
     keep(subscribeIslandFullscreen(next => { if (!disposed) setAvoided(next); }));
     keep(subscribeSettingsUpdated(next => { if (!disposed) setSettings(next); }));
     void snapshots.then(() => callCommand<PlaybackSnapshot>("get_playback_snapshot")).then(receiveSnapshot).catch(() => {});
     void callCommand<AppSettingsDto>("get_app_settings").then(next => { if (!disposed && next) setSettings(next); }).catch(() => {});
-    void callCommand<IslandPreferences>("get_island_preferences").then(next => { if (!disposed && next) applyLayout(next.layout); }).catch(() => {});
+    // Register before reading: initialization runs concurrently with this WebView.
+    // Otherwise its only layout event can fall between the read and subscription.
+    void layouts.then(() => disposed ? null : callCommand<IslandPreferences>("get_island_preferences")).then(next => { if (!disposed && next) applyLayout(next.layout); }).catch(() => {});
     return () => { disposed = true; cleanups.forEach(fn => fn()); clearTimeout(toastTimer.current); };
   }, [applyLayout, applySnapshot]);
 
@@ -150,9 +155,19 @@ export function DesktopIsland() {
   const cue = cues.reduce<SubtitleCueDto | undefined>((latest, candidate) =>
     candidate.startMs <= position && (!latest || candidate.startMs > latest.startMs) ? candidate : latest, undefined);
   const lines = privacy ? [] : (cue?.text ?? "").split(/\n| \/\/ /).map(s => s.trim()).filter(Boolean);
-  const primaryText = privacy ? "ASMR Audio Track" : lines[0] || snapshot.currentTrackTitle || "ASMR Player";
   const subtitleText = lines[0] || "";
   const hasSubtitles = !privacy && cues.length > 0;
+  const source = snapshot.activeSource ?? snapshot.alternativeSources[0];
+  const sourcePath = source?.relativePath || source?.remoteRelativePath || source?.absolutePath;
+  const fileName = sourcePath?.split(/[\\/]/).filter(Boolean).pop() || snapshot.currentTrackTitle?.trim() || "";
+  const workTitle = snapshot.currentWorkTitle?.trim() || "";
+  const titleText = [...new Set([workTitle, fileName].filter(Boolean))].join(" · ") || "ASMR Player";
+  const primaryText = privacy ? "ASMR Audio Track" : hasSubtitles
+    ? lines[0] || snapshot.currentTrackTitle || "ASMR Player" : titleText;
+  const expandedTitle = privacy || hasSubtitles ? primaryText : workTitle || fileName || "ASMR Player";
+  const secondaryText = privacy ? "隐私模式" : hasSubtitles
+    ? lines[1] || workTitle || "选择音轨开始收听"
+    : workTitle && fileName !== workTitle ? fileName : "";
   const textIdentity = `${snapshot.currentVersionId}:${hasSubtitles ? cue?.index ?? "gap" : "title"}:${privacy}`;
   const [compactText, setCompactText] = useState({ text: primaryText, identity: textIdentity });
   useEffect(() => {
@@ -224,11 +239,10 @@ export function DesktopIsland() {
   }
   const coverImage = !privacy && cover ? <img src={cover} alt="作品封面" draggable={false} /> : <Disc3 size={20} />;
   return <div className={`desktop-island-container form-${form} ${nativeGlass ? "has-native-glass" : ""} ${avoided ? "is-fullscreen-avoided" : ""}`}
-    style={{ zoom: layout.scale } as React.CSSProperties}
     onContextMenu={e => { e.preventDefault(); changeForm("menu"); }}
     onKeyDown={e => { if (e.key === "Escape") { changeForm("compact"); } }}>
     <span ref={textMeasure} className="island-text-measure" aria-hidden="true" />
-    <div className={`island-capsule island-capsule-${form}`} style={{ width: layout.width, height: layout.height, borderRadius: layout.radius, transitionDuration: layout.animate === false ? "0ms" : undefined }}
+    <div className={`island-capsule island-capsule-${form}`} style={{ width: layout.width, height: layout.height, borderRadius: layout.radius, transform: `scale(${layout.scale})`, transformOrigin: "top center", transitionDuration: layout.animate === false ? "0ms" : undefined }}
       onPointerDown={dragStart} onPointerMove={e => void dragMove(e)} onPointerUp={() => { pointerStart.current = null; }} onPointerCancel={() => { pointerStart.current = null; }}
       onDoubleClick={e => { if (!(e.target as HTMLElement).closest("button, input")) void run("island_focus_main_window"); }}
       role={form === "expanded" || form === "menu" ? "dialog" : "region"}
@@ -237,17 +251,24 @@ export function DesktopIsland() {
       onKeyDown={e => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); changeForm("expanded"); } }}
       onClick={() => { if ((form === "compact" || form === "toast") && !dragging.current) changeForm("expanded"); }}
       onWheel={form === "compact" || form === "toast" ? e => void wheelVolume(e) : undefined}>
-      <div key={form} className={`island-content island-content-${form}`} style={{ width: layout.width - 2, height: layout.height - 2 }}>
-      {form === "compact" && <>
-        <div className={`island-avatar-wrap ${playing ? "island-cover-breathing" : "is-paused"}`}>{coverImage}</div>
+      <div className={`island-cover-motion ${form === "expanded" ? "island-cover-large-wrap" : "island-avatar-wrap"} ${form === "compact" && playing ? "island-cover-breathing" : ""}`}
+        aria-hidden={form !== "compact" && form !== "expanded" ? true : undefined}
+        style={{ transitionDuration: layout.animate === false ? "0ms" : undefined }}>{coverImage}</div>
+      <div aria-hidden="true" className={`island-waveform-bars island-waveform-motion ${playing ? "is-dancing" : "is-frozen"}`}
+        style={{ transitionDuration: layout.animate === false ? "0ms" : undefined }}>{[1, 2, 3, 4, 5, 6].map(n => <span key={n} className={`island-bar bar-${n}`} />)}</div>
+      <div className="island-compact-text-motion" aria-hidden={form !== "compact" ? true : undefined}
+        style={{ transitionDuration: layout.animate === false ? "0ms" : undefined }}>
         <ScrollingText className="island-compact-text" text={privacy ? primaryText : compactText.text} identity={privacy ? textIdentity : compactText.identity} loop={!hasSubtitles} />
-        <div aria-hidden="true" className={`island-waveform-bars ${playing ? "is-dancing" : "is-frozen"}`}>{[1, 2, 3, 4, 5, 6].map(n => <span key={n} className={`island-bar bar-${n}`} />)}</div>
-      </>}
+      </div>
+      <div key={form} className={`island-content island-content-${form}`} style={{ width: layout.width - 2, height: layout.height - 2 }}>
       {form === "expanded" && <>
         <div className="island-header">
-          <div className="island-cover-large-wrap">{coverImage}</div>
+          <div aria-hidden="true" />
           <div className="island-subtitles-stage">
-            <ScrollingText className="island-sub-primary" text={primaryText} identity={textIdentity} loop={!hasSubtitles} /><div key={`${textIdentity}:${lines[1] ?? ""}`} className="island-sub-secondary island-text-transition">{privacy ? "隐私模式" : lines[1] || snapshot.currentWorkTitle || "选择音轨开始收听"}</div>
+            <ScrollingText className="island-sub-primary" text={expandedTitle} identity={textIdentity} loop={!hasSubtitles} />
+            {secondaryText && (!privacy && !hasSubtitles
+              ? <ScrollingText className="island-sub-secondary" text={secondaryText} identity={`${textIdentity}:filename`} loop />
+              : <div key={`${textIdentity}:${secondaryText}`} className="island-sub-secondary island-text-transition" title={secondaryText}>{secondaryText}</div>)}
           </div>
           <button type="button" className="island-btn-icon" aria-label="收起灵动岛" aria-description="收起灵动岛 (Esc)" onClick={() => changeForm("compact")}><ChevronUp size={16} /></button>
         </div>
@@ -275,17 +296,23 @@ export function DesktopIsland() {
       {form === "toast" && <div className="island-toast-content" role="status">{toast?.volume !== undefined ? <Volume2 size={16} /> : <Disc3 size={16} />}<span>{privacy && toast?.volume === undefined ? "已切换音轨" : toast?.text}</span></div>}
       {form === "menu" && <div className="island-context-menu">
         <div className="island-menu-heading"><span>灵动岛</span><button type="button" className="island-btn-icon" aria-description="返回播放控制" aria-label="返回播放控制" onClick={() => changeForm("expanded")}><ChevronLeft size={16} /></button></div>
-        <button type="button" className="island-menu-item" onClick={() => void run("island_focus_main_window")}><ExternalLink size={14} />打开主软件</button>
-        <button type="button" className="island-menu-item" onClick={() => void togglePrivacy()}>{privacy ? <Eye size={14} /> : <EyeOff size={14} />}{privacy ? "关闭脱敏模式" : "脱敏模式"}</button>
-        <button type="button" className="island-menu-item" aria-label="提高音量" aria-description="每次提高 5 点音量" onClick={() => adjustVolume(5)}><Volume2 size={14} />提高音量</button>
-        <button type="button" className="island-menu-item" aria-label="降低音量" aria-description="每次降低 5 点音量" onClick={() => adjustVolume(-5)}><Volume1 size={14} />降低音量</button>
+        <div className="island-menu-columns">
+        <div className="island-menu-column">
+        <PlayerLibraryActions versionId={snapshot.currentVersionId} onError={reportLibraryError} variant="island-menu" />
+        <button type="button" className="island-menu-item" aria-pressed={privacy} onClick={() => void togglePrivacy()}>{privacy ? <Eye size={14} /> : <EyeOff size={14} />}<span className="ui-icon-label">{privacy ? "关闭脱敏模式" : "脱敏模式"}</span></button>
+        </div>
+        <div className="island-menu-column" role="group" aria-label="灵动岛与音量">
+        <button type="button" className="island-menu-item" aria-label="提高音量" aria-description="每次提高 5 点音量" onClick={() => adjustVolume(5)}><Volume2 size={14} /><span className="ui-icon-label">提高音量</span></button>
+        <button type="button" className="island-menu-item" aria-label="降低音量" aria-description="每次降低 5 点音量" onClick={() => adjustVolume(-5)}><Volume1 size={14} /><span className="ui-icon-label">降低音量</span></button>
         <button type="button" className="island-menu-item" title="恢复到所选屏幕顶部居中位置" onClick={() => {
           layoutQueue.current = layoutQueue.current.then(async () => {
             try { applyLayout(await callCommand<IslandLayout>("island_reset_position")); setError(""); }
             catch (e) { setError(normalizeAppError(e).message); }
           });
-        }}><RotateCcw size={14} />恢复原位</button>
-        <button type="button" className="island-menu-item" onClick={() => void run("window_toggle_island", { open: false })}><X size={14} />关闭灵动岛</button>
+        }}><RotateCcw size={14} /><span className="ui-icon-label">恢复原位</span></button>
+        <button type="button" className="island-menu-item" onClick={() => void run("window_toggle_island", { open: false })}><X size={14} /><span className="ui-icon-label">关闭灵动岛</span></button>
+        </div>
+        </div>
       </div>}
       {error && <div className="island-error" role="alert" aria-description={error}>{error}</div>}
       </div>
