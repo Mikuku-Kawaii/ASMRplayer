@@ -5,9 +5,9 @@ import { normalizeAppError } from "../lib/api";
 
 export interface TagOption { id: string; name: string; label: string; count: number }
 
-export function TagFilterPopover({ value, onChange, loadTags, countDescription, cacheTags = true }: {
+export function TagFilterPopover({ value, onChange, loadTags, countDescription, cacheTags = true, placement = "below-end" }: {
   value: string[]; onChange: (value: string[]) => void; loadTags: () => Promise<TagOption[]>;
-  countDescription: string; cacheTags?: boolean;
+  countDescription: string; cacheTags?: boolean; placement?: "below-end" | "below-start";
 }) {
   const menuId = useId();
   const [open, setOpen] = useState(false);
@@ -44,7 +44,7 @@ export function TagFilterPopover({ value, onChange, loadTags, countDescription, 
       const above = rect.top - 24;
       const useAbove = below < 280 && above > below;
       const maxHeight = Math.max(120, Math.min(560, useAbove ? above : below));
-      setPosition({ width, left: Math.max(16, Math.min(rect.right - width, window.innerWidth - width - 16)),
+      setPosition({ width, left: Math.max(16, Math.min(placement === "below-start" ? rect.left : rect.right - width, window.innerWidth - width - 16)),
         top: useAbove ? rect.top - maxHeight - 8 : rect.bottom + 8, maxHeight });
     };
     place(); input.current?.focus();
@@ -59,7 +59,7 @@ export function TagFilterPopover({ value, onChange, loadTags, countDescription, 
       window.removeEventListener("resize", place); window.removeEventListener("scroll", place, true);
       document.removeEventListener("pointerdown", outside); document.removeEventListener("focusin", outside);
     };
-  }, [open]);
+  }, [open, placement]);
 
   const sorted = [...(tags ?? [])].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, "zh-CN"));
   const popular = sorted.slice(0, 12);
@@ -82,7 +82,7 @@ export function TagFilterPopover({ value, onChange, loadTags, countDescription, 
       onClick={() => {
         if (open) close();
         else { setDraft(value); if (!cacheTags) setTags(null); setSearch(""); setOpen(true); }
-      }}><SlidersHorizontal size={13} aria-hidden="true" />筛选{count ? ` (${count})` : ""}</button>
+      }}><SlidersHorizontal size={13} aria-hidden="true" /><span className="ui-icon-label">筛选{count ? ` (${count})` : ""}</span></button>
     {open && createPortal(<div ref={panel} id={menuId} className="online-filter-popover" role="dialog"
       aria-label="标签筛选" style={position} onKeyDown={event => {
         event.stopPropagation();

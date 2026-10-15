@@ -1,13 +1,15 @@
 import { ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-export function ContextMenu({ x, y, onClose, children, label = "作品操作菜单" }: { x: number; y: number; onClose: () => void; children: ReactNode; label?: string }) {
+export function ContextMenu({ x, y, onClose, children, label = "作品操作菜单", host = document.body }: { x: number; y: number; onClose: () => void; children: ReactNode; label?: string; host?: Element }) {
   const menu = useRef<HTMLDivElement>(null);
   const close = useRef(onClose); close.current = onClose;
   const [position, setPosition] = useState({ left: x, top: y });
   useLayoutEffect(() => {
     const element = menu.current!;
     const previousFocus = document.activeElement as HTMLElement | null;
+    element.setAttribute("popover", "manual");
+    element.showPopover?.();
     const place = () => {
       const viewport = window.visualViewport;
       const left = viewport?.offsetLeft ?? 0, top = viewport?.offsetTop ?? 0;
@@ -52,5 +54,5 @@ export function ContextMenu({ x, y, onClose, children, label = "作品操作菜�
       const index = items.indexOf(document.activeElement as HTMLButtonElement);
       const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length;
       items[next]?.focus();
-    }}>{children}</div>, document.body);
+    }}>{children}</div>, host);
 }
