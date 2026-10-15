@@ -99,6 +99,9 @@ pub fn run() {
                         .zoom_hotkeys_enabled(false).visible(false).build()?;
                 }
             }
+            if let Some(island_win) = app.get_webview_window("island") {
+                island.prepare_window(&island_win).map_err(|e| e.message)?;
+            }
             if let Some(main_win) = app.get_webview_window("main") {
                 main_win.set_zoom(services::interface_scale::read(&db).map_err(|e| e.message)?)?;
                 commands::restore_window_placement_from_db(&main_win, &db);
@@ -312,6 +315,7 @@ pub fn run() {
             commands::desktop_lyrics_save_position,
             commands::desktop_lyrics_open_menu,
             commands::desktop_lyrics_close_menu,
+            commands::desktop_lyrics_set_content_bounds,
             commands::get_active_subtitles,
             commands::get_island_preferences,
             commands::set_island_preferences,
@@ -333,6 +337,7 @@ pub fn run() {
             commands::open_release_page,
             commands::open_update_link,
             commands::list_works,
+            commands::clear_recent_works,
             commands::preview_library_batch,
             commands::execute_library_batch,
             commands::undo_library_batch,
@@ -349,6 +354,7 @@ pub fn run() {
             commands::set_work_override,
             commands::reset_work_override,
             commands::list_library_roots,
+            commands::remove_library_root,
             commands::preview_import,
             commands::preview_smart_import,
             commands::scan_and_import,
@@ -371,6 +377,7 @@ pub fn run() {
             commands::set_loop_mode,
             commands::step_queue,
             commands::append_to_queue,
+            commands::append_works_to_queue,
             commands::remove_from_queue,
             commands::move_in_queue,
             commands::clear_queue,
