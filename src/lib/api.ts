@@ -72,6 +72,8 @@ export interface ProviderTag {
 }
 
 export interface WorkSummary {
+  nsfw?: boolean;
+  hasSubtitle?: boolean;
   listeningStatus?: "unplayed" | "inProgress" | "played";
   isListened?: boolean;
   id: string;
@@ -188,6 +190,8 @@ export interface DirectoryGroupOption {
 }
 
 export interface WorkDetailDto {
+  nsfw?: boolean;
+  hasSubtitle?: boolean;
   id: string;
   title: string;
   description: string;
