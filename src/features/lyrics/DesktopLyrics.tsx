@@ -1,4 +1,4 @@
-import { CSSProperties, useEffect, useRef, useState } from "react";
+import { CSSProperties, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { lyricsFonts } from "./lyricsAppearance";
 import { GripHorizontal, Lock, X } from "lucide-react";
@@ -10,6 +10,8 @@ export function DesktopLyrics() {
   const [snapshot, setSnapshot] = useState(defaultSnapshot);
   const [subtitles, setSubtitles] = useState<{ versionId: string; cues: SubtitleCueDto[] } | null>(null);
   const seq = useRef(-1);
+  const textBox = useRef<HTMLDivElement>(null);
+  const boundsQueue = useRef(Promise.resolve());
   async function openMenu(x: number, y: number) {
     if (!settings || busy) return;
     try { await callCommand("desktop_lyrics_open_menu", { x, y }); }
@@ -37,6 +39,32 @@ export function DesktopLyrics() {
   const cues = subtitles?.versionId === snapshot.currentVersionId ? subtitles?.cues ?? [] : [];
   const cue = [...cues].reverse().find(c => c.startMs <= snapshot.positionMs);
   const lines = (cue?.text ?? snapshot.currentTrackTitle ?? "播放音频后显示字幕").split(/\n|\s*\/\/\s*/).filter(Boolean);
+  const displayedText = lines.join("\n");
+  useLayoutEffect(() => {
+    const box = textBox.current;
+    if (!box || !settings?.locked) return;
+    let disposed = false;
+    let last = "";
+    const measure = () => {
+      // Layout coordinates exclude the subtitle entry animation's transform.
+      const bounds = { x: box.offsetLeft, y: box.offsetTop, width: box.offsetWidth, height: box.offsetHeight };
+      if (!bounds.width || !bounds.height) return;
+      const key = JSON.stringify(bounds);
+      if (key === last) return;
+      last = key;
+      boundsQueue.current = boundsQueue.current.then(async () => {
+        if (disposed) return;
+        try { await callCommand("desktop_lyrics_set_content_bounds", { revision: settings.revision, bounds }); }
+        catch (e) { if (!disposed) setError(normalizeAppError(e).message); }
+      });
+    };
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(box);
+    if (box.parentElement) observer?.observe(box.parentElement);
+    window.addEventListener("resize", measure);
+    measure();
+    return () => { disposed = true; observer?.disconnect(); window.removeEventListener("resize", measure); };
+  }, [settings, displayedText, snapshot.currentVersionId, cue?.index, setError]);
   async function drag() {
     if (!settings || settings.locked || busy) return;
     try { await getCurrentWindow().startDragging(); await callCommand("desktop_lyrics_save_position"); }
@@ -49,7 +77,7 @@ export function DesktopLyrics() {
       <button className="btn btn-icon" disabled={busy} aria-label="锁定桌面歌词" title="锁定当前位置" onClick={() => void update({ locked: true })}><Lock size={16} /></button>
       <button className="btn btn-icon" disabled={busy} aria-label="关闭桌面歌词" title="关闭桌面歌词" onClick={() => void update({ enabled: false })}><X size={18} /></button>
     </div>}
-    <div className="desktop-lyrics-text" key={`${snapshot.currentVersionId}-${cue?.index ?? "title"}`}>
+    <div ref={textBox} className="desktop-lyrics-text" key={`${snapshot.currentVersionId}-${cue?.index ?? "title"}`}>
       <div>{lines[0]}</div>{settings.showTranslation && lines.length > 1 && <div className="desktop-lyrics-translation">{lines.slice(1).join("\n")}</div>}
     </div>
     {error && <p role="alert" className="desktop-lyrics-error">{error}</p>}
