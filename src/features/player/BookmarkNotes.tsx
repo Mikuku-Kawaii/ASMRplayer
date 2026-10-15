@@ -70,7 +70,7 @@ export function BookmarkNotes({ snapshot, onSnapshotChange, onOpenWorkDetail }: 
     setRestore({bundle,report});
   }
   return <section className="drawer-section bookmark-notes" aria-label="书签笔记" onKeyDown={e => e.stopPropagation()}>
-    <h4><BookmarkCheck size={14}/>书签笔记</h4>
+    <h4><BookmarkCheck size={14}/><span className="ui-icon-label">书签笔记</span></h4>
     <div className="bookmark-notes-toolbar">
       <Select size="compact" aria-label="书签范围" value={scope} onValueChange={value => { setScope(value); setOffset(0); }}
         options={[{value:"current", label:"当前音轨", disabled:!snapshot.currentVersionId}, {value:"work", label:"当前作品", disabled:!snapshot.currentWorkId}, {value:"all", label:"全部作品"}]}/>
@@ -88,7 +88,7 @@ export function BookmarkNotes({ snapshot, onSnapshotChange, onOpenWorkDetail }: 
       <textarea id={`${id}-note`} className="input-text" placeholder="记录这一刻的感受或内容…" rows={2} maxLength={10000} value={note} disabled={busy||!snapshot.currentVersionId} onChange={e=>setNote(e.target.value)}/>
       <label htmlFor={`${id}-tags`}>标签</label>
       <input id={`${id}-tags`} className="input-text" placeholder="用逗号分隔，最多 16 个" maxLength={1040} value={tags} disabled={busy||!snapshot.currentVersionId} onChange={e=>setTags(e.target.value)}/>
-      <button type="submit" className="btn btn-primary btn-sm" disabled={busy||!snapshot.currentVersionId}><Plus size={14}/>添加书签</button>
+      <button type="submit" className="btn btn-primary btn-sm" disabled={busy||!snapshot.currentVersionId}><Plus size={14}/><span className="ui-icon-label">添加书签</span></button>
     </form>
     {error && <div role="alert" className="error-banner">{error}<button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={()=>void load()}>重新加载</button></div>}
     {notice && <p role="status" className="text-muted">{notice}</p>}
@@ -103,9 +103,9 @@ export function BookmarkNotes({ snapshot, onSnapshotChange, onOpenWorkDetail }: 
           <label htmlFor={`${id}-edit-note`}>编辑笔记</label><textarea autoFocus id={`${id}-edit-note`} className="input-text" maxLength={10000} rows={4} value={editNote} disabled={busy} onChange={e=>setEditNote(e.target.value)}/>
           <label htmlFor={`${id}-edit-tags`}>编辑标签</label><input id={`${id}-edit-tags`} className="input-text" maxLength={1040} value={editTags} disabled={busy} onChange={e=>setEditTags(e.target.value)}/>
           <div className="bookmark-notes-toolbar"><button className="btn btn-secondary btn-sm" disabled={busy}>保存笔记</button><button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={()=>setEditing(null)}>取消编辑</button></div>
-        </form> : <><p className="bookmark-note-text">{bm.note || "无笔记"}</p><div className="bookmark-note-tags">{(bm.tags??[]).map(tag=><span className="tag-pill" key={tag}>{tag}</span>)}</div></>}
+        </form> : <><p className="bookmark-note-text">{bm.note || "无笔记"}</p><div className="bookmark-note-tags">{(bm.tags??[]).map(tag=><span className="tag-pill" key={tag}><span className="ui-tag-label">{tag}</span></span>)}</div></>}
         <div className="bookmark-notes-toolbar">
-          <button type="button" className="btn btn-secondary btn-sm" disabled={busy||!bm.linked||!bm.playable} onClick={()=>void run(async()=>onSnapshotChange(await callCommand<PlaybackSnapshot>("play_bookmark",{bookmarkId:bm.id})))}><Play size={13}/>从书签播放</button>
+          <button type="button" className="btn btn-secondary btn-sm" disabled={busy||!bm.linked||!bm.playable} onClick={()=>void run(async()=>onSnapshotChange(await callCommand<PlaybackSnapshot>("play_bookmark",{bookmarkId:bm.id})))}><Play size={13}/><span className="ui-icon-label">从书签播放</span></button>
           {onOpenWorkDetail && <button type="button" className="btn-icon" disabled={!bm.linked} title="定位所属音轨" aria-label="定位所属音轨" onClick={()=>onOpenWorkDetail(bm.workId,bm.versionId)}><FolderTree size={15}/></button>}
           <button type="button" className="btn-icon" disabled={busy} title="编辑书签" aria-label="编辑书签" onClick={()=>{setEditing(bm);setEditNote(bm.note);setEditTags((bm.tags??[]).join("，"));}}><Edit3 size={15}/></button>
           <button type="button" className="btn-icon" disabled={busy} title="删除书签" aria-label="删除书签" onClick={()=>void run(async()=>{await callCommand("delete_bookmark",{bookmarkId:bm.id});setRevision(value=>value+1);})}><Trash2 size={15}/></button>
@@ -115,8 +115,8 @@ export function BookmarkNotes({ snapshot, onSnapshotChange, onOpenWorkDetail }: 
     {!loading && page.total===0 && !error && <p className="empty-box">暂无匹配书签，可切换到全部作品或调整搜索词。</p>}
     {(page.total>100||offset>0) && <div className="bookmark-notes-toolbar"><button type="button" className="btn btn-ghost btn-sm" disabled={loading||offset===0} onClick={()=>setOffset(Math.max(0,offset-100))}>上一页</button><span>{Math.floor(offset/100)+1} / {Math.max(1,Math.ceil(page.total/100))}</span><button type="button" className="btn btn-ghost btn-sm" disabled={loading||offset+100>=page.total} onClick={()=>setOffset(offset+100)}>下一页</button></div>}
     <div className="bookmark-notes-toolbar">
-      <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={()=>void run(exportNotes)}><Download size={14}/>导出全部书签</button>
-      <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={()=>file.current?.click()}><Upload size={14}/>恢复书签</button>
+      <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={()=>void run(exportNotes)}><Download size={14}/><span className="ui-icon-label">导出全部书签</span></button>
+      <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={()=>file.current?.click()}><Upload size={14}/><span className="ui-icon-label">恢复书签</span></button>
       <input ref={file} type="file" accept=".json,application/json" hidden aria-label="书签备份文件" onChange={e=>{const selected=e.target.files?.[0];e.target.value="";if(selected) void run(()=>preview(selected));}}/>
     </div>
     {restore && <div className="bookmark-restore-preview" role="region" aria-label="书签恢复预览">

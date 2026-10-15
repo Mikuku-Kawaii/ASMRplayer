@@ -328,25 +328,27 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
 
   const audioInfo = () => {
     const tel = snapshot.audioTelemetry;
-    const parts: string[] = [];
+    const parts: { kind: string; label: string }[] = [];
     if (tel?.sampleRateHz && Number.isFinite(tel.sampleRateHz) && tel.sampleRateHz > 0) {
-      parts.push(`${(tel.sampleRateHz / 1000).toLocaleString("en-US", { maximumFractionDigits: 3 })} kHz`);
+      parts.push({ kind: "sample-rate", label: `${(tel.sampleRateHz / 1000).toLocaleString("en-US", { maximumFractionDigits: 3 })} kHz` });
     }
     const codec = tel?.codec || snapshot.activeSource?.format;
-    if (codec) parts.push(codec.toUpperCase());
-    if (tel?.channels) parts.push(tel.channels);
+    if (codec) parts.push({ kind: "codec", label: codec.toUpperCase() });
+    if (tel?.channels) parts.push({ kind: "channels", label: tel.channels });
     if (tel?.bitrateKbps && Number.isFinite(tel.bitrateKbps) && tel.bitrateKbps > 0) {
-      parts.push(`${Math.round(tel.bitrateKbps)} kbps`);
+      parts.push({ kind: "bitrate", label: `${Math.round(tel.bitrateKbps)} kbps` });
     }
-    if (trackMetrics) parts.push(`${trackMetrics.integratedLufs.toFixed(1)} LUFS`);
-    const summary = parts.join(" · ") || (snapshot.currentVersionId ? "音频信息待读取" : "选择作品开始收听");
+    if (trackMetrics) parts.push({ kind: "loudness", label: `${trackMetrics.integratedLufs.toFixed(1)} LUFS` });
+    const summary = parts.map(part => part.label).join(" · ") || (snapshot.currentVersionId ? "音频信息待读取" : "选择作品开始收听");
     const details = [summary];
     if (tel?.sampleFormat) details.push(`解码采样格式：${tel.sampleFormat}`);
     if (snapshot.activeSource) {
       details.push(snapshot.activeSource.sourceKind === "local_imported" ? "本地原件" : snapshot.activeSource.sourceKind === "local_downloaded" ? "已下载离线" : "在线流");
     }
     if (trackMetrics) details.push(`真峰值：${trackMetrics.truePeakDbtp.toFixed(1)} dBTP`);
-    return <div className="player-audio-info tabular-nums" aria-label={`音频信息：${summary}`} title={details.join(" · ")}>{summary}</div>;
+    return <div className="player-audio-info tabular-nums" role="group" tabIndex={parts.length ? 0 : undefined} aria-label={`音频信息：${summary}`} title={details.join(" · ")}>
+      {parts.length ? parts.map(part => <span key={part.kind} className={`player-audio-tag is-${part.kind}`}><span className="ui-tag-label">{part.label}</span></span>) : summary}
+    </div>;
   };
 
   const loopLabel =
@@ -472,9 +474,9 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
             className={`badge player-source-tag ${snapshot.activeSource.sourceKind === "online_provider" ? "badge-online" : "badge-local"}`}
             title={snapshot.activeSource.sourceKind === "online_provider" ? "在线流" : snapshot.activeSource.sourceKind === "local_downloaded" ? "本地流 · 已下载离线" : "本地流 · 本地导入"}
           >
-            {snapshot.activeSource.sourceKind === "online_provider" ? <Radio size={11} aria-hidden="true" /> : <HardDrive size={11} aria-hidden="true" />}
+            {snapshot.activeSource.sourceKind === "online_provider" ? <Radio size={11} aria-hidden="true" /> : <HardDrive size={11} aria-hidden="true" />}<span className="ui-icon-label">
             {snapshot.activeSource.sourceKind === "online_provider" ? "在线流" : "本地流"}
-          </span>}
+          </span></span>}
           </div>
           {audioInfo()}
         </div>

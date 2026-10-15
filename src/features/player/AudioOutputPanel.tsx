@@ -65,7 +65,7 @@ export function AudioOutputPanel({ snapshot, onSnapshotChange, onError }: Props)
         title={snapshot.audioExclusive ? "关闭独占，切回共享模式" : "开启独占模式"}
         disabled={busy} onClick={() => void update("exclusive")}>
         <span className="audio-output-mode-heading">
-          <span className="audio-output-mode-title"><Headphones size={18} aria-hidden="true" />输出模式</span>
+          <span className="audio-output-mode-title"><Headphones size={18} aria-hidden="true" /><span className="ui-icon-label">输出模式</span></span>
           <span className="audio-output-mode-state">{snapshot.audioExclusive ? "独占已开启" : "独占已关闭"}</span>
         </span>
         <span className="audio-output-mode-name">{snapshot.audioExclusive ? "WASAPI 独占模式" : "WASAPI 共享模式"}</span>

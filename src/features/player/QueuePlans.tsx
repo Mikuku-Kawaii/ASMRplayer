@@ -84,7 +84,7 @@ export function QueuePlans({ snapshot, onSnapshotChange }: {
     });
   }
   return <section className="queue-plans" aria-label="队列方案" onKeyDown={event => event.stopPropagation()}>
-    <h3><ListMusic size={17} aria-hidden="true" />队列方案</h3>
+    <h3><ListMusic size={17} aria-hidden="true" /><span className="ui-icon-label">队列方案</span></h3>
     <form aria-label="保存当前队列" className="queue-plan-form" onSubmit={event => {
       event.preventDefault();
       void run(async () => {
@@ -97,7 +97,7 @@ export function QueuePlans({ snapshot, onSnapshotChange }: {
       <div className="queue-plan-row">
         <input className="input-text" id={`${id}-name`} maxLength={80} value={draft} placeholder="例如：睡前雨声" disabled={busy}
           onChange={event => setDraft(event.target.value)} />
-        <button className="btn btn-tonal btn-sm" type="submit" disabled={busy || !draft.trim() || snapshot.queue.length === 0}><Save size={14} />保存</button>
+        <button className="btn btn-tonal btn-sm" type="submit" disabled={busy || !draft.trim() || snapshot.queue.length === 0}><Save size={14} /><span className="ui-icon-label">保存</span></button>
       </div>
     </form>
     {snapshot.queue.length === 0 && <p className="queue-plan-hint">队列为空，加入音轨后即可保存。</p>}
@@ -110,7 +110,7 @@ export function QueuePlans({ snapshot, onSnapshotChange }: {
     {selected && !preview && !error && <p className="queue-plan-hint" role="status">正在读取方案…</p>}
     {preview && <div className="queue-plan-preview" aria-label="方案预览">
       <div className="queue-plan-row"><strong>{preview.plan.name}</strong>
-        <button type="button" className="btn btn-ghost btn-sm" disabled={busy || confirm} onClick={() => setRename(preview.plan.name)}><Pencil size={13} />重命名</button></div>
+        <button type="button" className="btn btn-ghost btn-sm" disabled={busy || confirm} onClick={() => setRename(preview.plan.name)}><Pencil size={13} /><span className="ui-icon-label">重命名</span></button></div>
       {rename !== null && <form className="queue-plan-form" aria-label="重命名方案" onSubmit={event => {
         event.preventDefault();
         void run(async () => {
@@ -133,7 +133,7 @@ export function QueuePlans({ snapshot, onSnapshotChange }: {
       <p className="queue-plan-hint">在线来源的网络状态将在实际播放时检查。</p>
       {unavailable > 0 && <button type="button" className={`btn btn-sm ${skip ? "btn-tonal" : "btn-ghost"}`} aria-pressed={skip} disabled={busy || confirm} onClick={() => setSkip(value => !value)}>跳过 {unavailable} 个不可用项</button>}
       <div className="queue-plan-actions">
-        <button type="button" className="btn btn-tonal btn-sm" disabled={!canApply || confirm} onClick={() => void apply("append")}><Plus size={14} />追加到队尾</button>
+        <button type="button" className="btn btn-tonal btn-sm" disabled={!canApply || confirm} onClick={() => void apply("append")}><Plus size={14} /><span className="ui-icon-label">追加到队尾</span></button>
         <button type="button" ref={replaceButton} className="btn btn-ghost btn-sm" disabled={!canApply || confirm} onClick={() => setConfirm(true)}>替换当前队列</button>
       </div>
       {confirm && <div className="queue-plan-confirm" role="group" aria-labelledby={`${id}-confirm`} onKeyDown={event => {
