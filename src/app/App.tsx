@@ -1,4 +1,5 @@
 import { useSubtitleFollow } from "../features/lyrics/useSubtitleFollow";
+import { BrandButton } from "./BrandButton";
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import {
   ChevronDown, ExternalLink,
@@ -983,13 +984,7 @@ const AppShell: React.FC = () => {
       <div className="app-upper">
         <nav className="left-sidebar" aria-label="主导航">
           <div className="brand-header">
-            <div className="brand-icon-wrap">
-              <img
-                src="/asmr-icon.png"
-                alt="ASMR Player Logo"
-                className="brand-icon-img"
-              />
-            </div>
+            <BrandButton onError={setGlobalError} />
             <div>
               <div className="brand-title">ASMR Player</div>
             </div>
@@ -1072,8 +1067,8 @@ const AppShell: React.FC = () => {
           <ReleaseHistoryHost enabled={!isMiniMode && !commandSearchOpen} onOpenChange={setReleaseHistoryOpen} />
           {update?.latestVersion && !update.dismissed && ["available", "ready"].includes(update.phase) && (
             <button type="button" className="btn btn-secondary update-nav-notice" onClick={openUpdateDialog}>
-              <Download size={16} />{update.phase === "ready" ? "更新已备妥" : `发现新版本 v${update.latestVersion}`}
-            </button>
+              <Download size={16} /><span className="ui-icon-label">{update.phase === "ready" ? "更新已备妥" : `发现新版本 v${update.latestVersion}`}
+            </span></button>
           )}
         </nav>
 
