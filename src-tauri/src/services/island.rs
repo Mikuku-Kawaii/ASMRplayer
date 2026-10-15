@@ -10,7 +10,8 @@ use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Webview
 
 const EXPANDED_WIDTH: f64 = 400.;
 const EXPANDED_HEIGHT: f64 = 186.;
-const MENU_HEIGHT: f64 = 248.;
+// Four 32px rows + three 4px gaps, 34px heading, 10px padding and 1px border per edge.
+const MENU_HEIGHT: f64 = 196.;
 const COMPACT_MIN_WIDTH: f64 = 200.;
 const COMPACT_MAX_WIDTH: f64 = 640.;
 
@@ -83,7 +84,7 @@ impl IslandForm {
             Self::Compact => (COMPACT_MIN_WIDTH, 42.),
             Self::Expanded => (EXPANDED_WIDTH, EXPANDED_HEIGHT),
             Self::Toast => (232., 38.),
-            Self::Menu => (240., MENU_HEIGHT),
+            Self::Menu => (280., MENU_HEIGHT),
         }
     }
 }
@@ -138,6 +139,7 @@ struct State {
     canvas: PhysicalSize<u32>,
     pending: Option<(u64, PhysicalSize<u32>, PhysicalSize<u32>, i32)>,
     ready_revision: Option<u64>,
+    surface_ready: bool,
 }
 #[derive(Clone)]
 pub struct IslandService {
@@ -196,6 +198,27 @@ fn apply_bounds(
     Ok(())
 }
 
+#[cfg(windows)]
+fn rounded_input_region(
+    canvas: PhysicalSize<u32>,
+    size: PhysicalSize<u32>,
+    radius: i32,
+) -> windows::Win32::Graphics::Gdi::HRGN {
+    // Keep native bounds on the capsule. Expanding this region exposes the
+    // window's backing surface, producing a persistent rim outside the glass.
+    let left = (canvas.width as i32 - size.width as i32) / 2;
+    unsafe {
+        windows::Win32::Graphics::Gdi::CreateRoundRectRgn(
+            left,
+            0,
+            left + size.width as i32 + 1,
+            size.height as i32 + 1,
+            radius * 2,
+            radius * 2,
+        )
+    }
+}
+
 fn apply_region(
     win: &WebviewWindow,
     canvas: PhysicalSize<u32>,
@@ -208,28 +231,20 @@ fn apply_region(
             use windows::Win32::{
                 Foundation::HWND,
                 Graphics::Gdi::{
-                    CreateRoundRectRgn, DeleteObject, RedrawWindow, SetWindowRgn, RDW_ALLCHILDREN,
+                    DeleteObject, RedrawWindow, SetWindowRgn, RDW_ALLCHILDREN,
                     RDW_INVALIDATE, RDW_NOERASE,
                 },
             };
-            let region = shape.map(|(size, radius)| {
-                let left = (canvas.width as i32 - size.width as i32) / 2;
-                CreateRoundRectRgn(
-                    left,
-                    0,
-                    left + size.width as i32 + 1,
-                    size.height as i32 + 1,
-                    radius * 2,
-                    radius * 2,
-                )
-            });
+            let region = shape.map(|(size, radius)| rounded_input_region(canvas, size, radius));
             if region.is_some_and(|r| r.0.is_null()) {
                 eprintln!("Island input region allocation failed");
                 return;
             }
-            // Keep the viewport fixed; the rounded region only clips idle input bounds.
+            // Keep the viewport fixed; the region bounds idle input without touching the visible curve.
             let hwnd = HWND(raw as *mut _);
-            if SetWindowRgn(hwnd, region, true) == 0 {
+            // Avoid SetWindowRgn's synchronous frame/background repaint, which
+            // exposes a white backing surface before WebView/DComp supplies a frame.
+            if SetWindowRgn(hwnd, region, false) == 0 {
                 if let Some(region) = region {
                     let _ = DeleteObject(region.into());
                 }
@@ -346,6 +361,7 @@ impl IslandService {
                 canvas: PhysicalSize::new(0, 0),
                 pending: None,
                 ready_revision: None,
+                surface_ready: false,
             })),
         }
     }
@@ -675,48 +691,62 @@ impl IslandService {
         let service = self.clone();
         self.app.run_on_main_thread(move || {
             let state = service.state.lock();
-            if state.ready_revision == Some(state.layout.revision) && !state.avoided && service.is_open() {
+            if state.surface_ready && state.ready_revision == Some(state.layout.revision) && !state.avoided && service.is_open() {
                 if let Ok(win) = service.window() { let _ = win.show(); }
             }
         }).map_err(error)
     }
-    pub fn initialize(&self) {
-        if let Ok(win) = self.window() {
-            // Whole-window Acrylic/Blur paints a rectangular backing surface on some GPUs.
-            // Keep the native and WebView surfaces alpha-transparent; glass tint is in CSS.
-            let _ = win.set_effects(None::<tauri::utils::config::WindowEffectsConfig>);
-            let _ = win.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-            #[cfg(windows)]
-            if let Ok(hwnd) = win.hwnd() {
-                let raw = hwnd.0 as isize;
-                let _ = win.run_on_main_thread(move || unsafe {
-                    use windows::Win32::{
-                        Foundation::HWND,
-                        Graphics::Dwm::{
-                            DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
-                            DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
-                        },
-                    };
-                    // DComp owns capsule rounding; Windows must not add its own
-                    // focus border/corners to the changing input region. Older
-                    // Windows versions may not support these optional attributes.
-                    let border = DWMWA_COLOR_NONE;
-                    let corners = DWMWCP_DONOTROUND.0;
-                    let _ = DwmSetWindowAttribute(
-                        HWND(raw as *mut _),
-                        DWMWA_BORDER_COLOR,
-                        (&border as *const u32).cast(),
-                        size_of_val(&border) as u32,
-                    );
-                    let _ = DwmSetWindowAttribute(
-                        HWND(raw as *mut _),
-                        DWMWA_WINDOW_CORNER_PREFERENCE,
-                        (&corners as *const i32).cast(),
-                        size_of_val(&corners) as u32,
-                    );
-                });
-            }
+    // Called on the setup/UI thread immediately after creation, before any reveal.
+    // Do not acquire the layout-operation lock or query monitors here.
+    pub fn prepare_window(&self, win: &WebviewWindow) -> AppResult<()> {
+        #[cfg(windows)]
+        super::island_window::prepare(win.hwnd().map_err(error)?).map_err(error)?;
+        // Native clipping uses monitor DPI × island scale; browser zoom must
+        // stay neutral rather than adding a third, independently restored scale.
+        if let Err(e) = win.set_zoom(1.) {
+            eprintln!("Island WebView zoom: {e}");
         }
+        // Tao's native background brush ignores alpha. Only WebView gets an
+        // RGBA background; the host must not erase transparent pixels with GDI.
+        // Keep the transparent HWND's initial DWM setup instead of clearing
+        // effects that were never installed on this window.
+        let webview: &tauri::Webview = win.as_ref();
+        webview.window().set_background_color(None).map_err(error)?;
+        webview.set_background_color(Some(tauri::window::Color(0, 0, 0, 0))).map_err(error)?;
+        #[cfg(windows)]
+        if let Ok(hwnd) = win.hwnd() {
+            let raw = hwnd.0 as isize;
+            let _ = win.run_on_main_thread(move || unsafe {
+                use windows::Win32::{
+                    Foundation::HWND,
+                    Graphics::Dwm::{
+                        DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
+                        DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+                    },
+                };
+                // DComp owns capsule rounding; Windows must not add its own
+                // focus border/corners to the changing input region. Older
+                // Windows versions may not support these optional attributes.
+                let border = DWMWA_COLOR_NONE;
+                let corners = DWMWCP_DONOTROUND.0;
+                let _ = DwmSetWindowAttribute(
+                    HWND(raw as *mut _),
+                    DWMWA_BORDER_COLOR,
+                    (&border as *const u32).cast(),
+                    size_of_val(&border) as u32,
+                );
+                let _ = DwmSetWindowAttribute(
+                    HWND(raw as *mut _),
+                    DWMWA_WINDOW_CORNER_PREFERENCE,
+                    (&corners as *const i32).cast(),
+                    size_of_val(&corners) as u32,
+                );
+            });
+        }
+        self.state.lock().surface_ready = true;
+        Ok(())
+    }
+    pub fn initialize(&self) {
         let _ = self.set_form(IslandForm::Compact);
         if self.is_open() {
             let _ = self.show(true);
@@ -918,6 +948,29 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn native_input_region_never_exposes_a_rim_outside_the_capsule() {
+        use windows::Win32::Graphics::Gdi::{DeleteObject, PtInRegion};
+        for dpi in [1., 1.25, 1.5, 2., 2.25] {
+            for (width, height, radius) in [(200., 42., 21.), (400., 186., 28.), (280., 196., 28.)] {
+                let size = PhysicalSize::new((width * dpi) as u32, (height * dpi) as u32);
+                let canvas = PhysicalSize::new(size.width + 101, size.height + 30);
+                let r: f64 = radius * dpi;
+                let region = rounded_input_region(canvas, size, r.round() as i32);
+                assert!(!region.0.is_null());
+                let left = ((canvas.width - size.width) / 2) as i32;
+                let center = left + size.width as i32 / 2;
+                let middle = size.height as i32 / 2;
+                assert!(unsafe { PtInRegion(region, center, middle) }.as_bool());
+                for (x, y) in [(left - 1, middle), (left + size.width as i32 + 1, middle),
+                    (center, -1), (center, size.height as i32 + 1), (left, 0)] {
+                    assert!(!unsafe { PtInRegion(region, x, y) }.as_bool());
+                }
+                unsafe { let _ = DeleteObject(region.into()); }
+            }
+        }
+    }
     #[test]
     fn cleared_anchor_returns_menu_to_selected_monitor_top_center() {
         for dpi in [1., 1.25, 1.5, 2.] {

@@ -141,6 +141,35 @@ impl LibraryService {
         self.cancel_flag.store(true, Ordering::SeqCst);
     }
 
+    /// Remove the root's source references, never files or version-bound listening history.
+    pub fn remove_root(&self, root_id: &str) -> AppResult<Vec<String>> {
+        let active = self.active_scan_lock.lock();
+        if *active {
+            return Err(AppError::new(ErrorCode::InvalidInput, "目录正在扫描，请完成后再移除目录引用"));
+        }
+        self.db.with_conn(|conn| {
+            let tx = conn.transaction()?;
+            let affected = {
+                let mut stmt = tx.prepare("SELECT work_id FROM library_entries WHERE root_id = ?1
+                    UNION SELECT t.work_id FROM tracks t JOIN track_versions tv ON tv.track_id = t.id
+                    JOIN media_sources ms ON ms.version_id = tv.id WHERE ms.root_id = ?1")?;
+                let rows = stmt.query_map([root_id], |r| r.get::<_, String>(0))?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            };
+            tx.execute_batch("CREATE TEMP TABLE detached_root_works (work_id TEXT PRIMARY KEY)")?;
+            for work_id in &affected {
+                tx.execute("INSERT INTO detached_root_works VALUES (?1)", [work_id])?;
+            }
+            tx.execute("DELETE FROM attachments WHERE root_id = ?1", [root_id])?;
+            tx.execute("DELETE FROM media_sources WHERE root_id = ?1 AND source_kind = 'local_imported'", [root_id])?;
+            tx.execute("DELETE FROM library_roots WHERE id = ?1", [root_id])?;
+            tx.execute("DELETE FROM app_settings WHERE key = ?1", [format!("watch_fp_{}", root_id)])?;
+            tx.execute_batch(include_str!("../../migrations/016_detached_root_sources.sql"))?;
+            tx.commit()?;
+            Ok(affected)
+        })
+    }
+
     pub fn list_roots(&self) -> AppResult<Vec<LibraryRootDto>> {
         self.db.with_conn(|conn| {
             let mut stmt = conn.prepare(
@@ -1487,13 +1516,35 @@ impl LibraryService {
             let setting_key = format!("watch_fp_{}", root.id);
             let prev_fp = self.db.get_setting(&setting_key)?.unwrap_or_default();
             if prev_fp != fp {
-                if let Ok(report) = self.scan_and_import(&root.absolute_path, &root.root_mode, None) {
-                    let _ = self.db.set_setting(&setting_key, &fp);
+                if let Ok(Some(report)) = self.scan_registered_root(&root, &fp) {
                     reports.push(report);
                 }
             }
         }
         Ok(reports)
+    }
+
+    fn scan_registered_root(&self, root: &LibraryRootDto, fingerprint: &str) -> AppResult<Option<ScanReportDto>> {
+        {
+            let mut active = self.active_scan_lock.lock();
+            if *active { return Ok(None); }
+            // The watcher may have captured this root before it was removed or relocated.
+            let exists = self.db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM library_roots WHERE id=?1 AND absolute_path=?2 AND root_mode=?3)",
+                    params![root.id, root.absolute_path, root.root_mode], |row| row.get::<_, bool>(0),
+                )?)
+            })?;
+            if !exists { return Ok(None); }
+            *active = true;
+        }
+        self.cancel_flag.store(false, Ordering::SeqCst);
+        let result = self.scan_and_import_inner(&root.absolute_path, &root.root_mode, None);
+        if result.as_ref().is_ok_and(|report| !report.canceled) {
+            let _ = self.db.set_setting(&format!("watch_fp_{}", root.id), fingerprint);
+        }
+        *self.active_scan_lock.lock() = false;
+        result.map(Some)
     }
 }
 
@@ -2443,6 +2494,81 @@ fn parse_timestamp_ms(ts: &str) -> Option<i64> {
 mod library_tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn remove_root_preserves_media_and_rejects_stale_watcher_scans() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        let svc = LibraryService::new(db.clone());
+        let root_path = dir.path().join("Work");
+        fs::create_dir_all(&root_path).unwrap();
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tests/fixtures/audio/stereo_lr_check.mp3");
+        fs::copy(fixture, root_path.join("01.mp3")).unwrap();
+        fs::write(root_path.join("01.lrc"), "[00:01.00]test").unwrap();
+        svc.scan_and_import(&root_path.to_string_lossy(), "single_work", None).unwrap();
+        let root = svc.list_roots().unwrap().remove(0);
+        let work = db.list_works("all", None).unwrap().remove(0);
+        let detail = db.get_work_detail(&work.id).unwrap();
+        let version = detail.tracks[0].versions[0].id.clone();
+        db.save_playback_position(&version, 1234, false, false).unwrap();
+        db.append_queue_items(&[(version.clone(), None)]).unwrap();
+        let key = format!("watch_fp_{}", root.id);
+        db.set_setting(&key, "fingerprint").unwrap();
+        *svc.active_scan_lock.lock() = true;
+        assert!(svc.remove_root(&root.id).is_err());
+        assert_eq!(svc.list_roots().unwrap().len(), 1);
+        *svc.active_scan_lock.lock() = false;
+        svc.remove_root(&root.id).unwrap();
+        svc.remove_root(&root.id).unwrap(); // Safe to repeat after a lost response.
+        assert!(svc.list_roots().unwrap().is_empty());
+        assert!(db.get_setting(&key).unwrap().is_none());
+        assert!(db.list_works("all", None).unwrap().is_empty());
+        assert_eq!(db.get_queue_items().unwrap()[0].version_id, version);
+        assert_eq!(db.get_work_detail(&work.id).unwrap().tracks[0].versions[0].id, version);
+        assert!(root_path.join("01.mp3").is_file());
+        assert!(root_path.join("01.lrc").is_file());
+        db.with_conn(|conn| {
+            assert_eq!(conn.query_row("SELECT position_ms FROM playback_positions WHERE version_id=?1", [&version], |r| r.get::<_, i64>(0))?, 1234);
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM media_sources", [], |r| r.get::<_, i64>(0))?, 0);
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM attachments", [], |r| r.get::<_, i64>(0))?, 0);
+            Ok(())
+        }).unwrap();
+        assert!(svc.scan_registered_root(&root, "changed").unwrap().is_none());
+        assert!(svc.poll_and_sync_watched_roots().unwrap().is_empty());
+        assert!(svc.list_roots().unwrap().is_empty());
+    }
+
+    #[test]
+    fn detached_root_repair_keeps_other_sources_and_is_idempotent() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch("INSERT INTO library_roots(id,absolute_path,display_name,created_at) VALUES('other','other','other','now');")?;
+            for id in ["orphan", "online", "download", "other_root", "unknown"] {
+                conn.execute("INSERT INTO works(id,title,created_at,updated_at) VALUES(?1,?1,'now','now')", [id])?;
+                conn.execute("INSERT INTO tracks(id,work_id,title,sort_key,created_at) VALUES(?1,?1,?1,?1,'now')", [id])?;
+                conn.execute("INSERT INTO track_versions(id,track_id,created_at) VALUES(?1,?1,'now')", [id])?;
+                conn.execute("INSERT INTO collected_works VALUES(?1,'now')", [id])?;
+                conn.execute("INSERT INTO media_sources(id,version_id,source_kind,relative_path,absolute_path,format,created_at,updated_at)
+                    VALUES(?1,?1,'local_imported',?2,'file.mp3','mp3','now','now')", params![id, if id == "unknown" { None } else { Some("file.mp3") }])?;
+            }
+            conn.execute_batch("INSERT INTO work_sources(id,work_id,provider,source_work_id,refreshed_at) VALUES('remote','online','asmr_one','1','now');
+                INSERT INTO media_sources(id,version_id,source_kind,format,created_at,updated_at) VALUES('downloaded','download','local_downloaded','mp3','now','now');
+                UPDATE media_sources SET root_id='other' WHERE id='other_root';
+                INSERT INTO favorites(work_id,created_at) VALUES('orphan','now');
+                INSERT INTO playback_positions(version_id,position_ms,updated_at) VALUES('orphan',1234,'now');")?;
+            conn.execute_batch(include_str!("../../migrations/016_detached_root_sources.sql"))?;
+            conn.execute_batch(include_str!("../../migrations/016_detached_root_sources.sql"))?;
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM collected_works", [], |r| r.get::<_, i64>(0))?, 4);
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM media_sources", [], |r| r.get::<_, i64>(0))?, 3);
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM favorites WHERE work_id='orphan'", [], |r| r.get::<_, i64>(0))?, 1);
+            assert_eq!(conn.query_row("SELECT position_ms FROM playback_positions WHERE version_id='orphan'", [], |r| r.get::<_, i64>(0))?, 1234);
+            Ok(())
+        }).unwrap();
+        let online = db.list_works("all", None).unwrap().into_iter().find(|w| w.id == "online").unwrap();
+        assert!(!online.has_local);
+        assert!(online.has_online);
+    }
 
     #[test]
     fn bilingual_lrc_and_parallel_srt_preserve_both_languages() {

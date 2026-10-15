@@ -11,6 +11,52 @@ use std::sync::{
 use tauri::{Emitter, LogicalSize, Manager, PhysicalPosition};
 
 const KEY: &str = "desktop_lyrics_v1";
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct LyricsContentBounds {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+fn content_region(bounds: LyricsContentBounds, dpi: f64, size: (u32, u32)) -> AppResult<(i32, i32, i32, i32)> {
+    if ![bounds.x, bounds.y, bounds.width, bounds.height, dpi].iter().all(|n| n.is_finite())
+        || bounds.width <= 0. || bounds.height <= 0. || dpi <= 0.
+    { return Err(error("字幕区域无效")); }
+    // Keep the shadow and 4px entry motion visible, without retaining the full frame.
+    let left = ((bounds.x - 8.) * dpi).floor().clamp(0., size.0 as f64) as i32;
+    let top = ((bounds.y - 8.) * dpi).floor().clamp(0., size.1 as f64) as i32;
+    let right = ((bounds.x + bounds.width + 8.) * dpi).ceil().clamp(0., size.0 as f64) as i32;
+    let bottom = ((bounds.y + bounds.height + 8.) * dpi).ceil().clamp(0., size.1 as f64) as i32;
+    if right <= left || bottom <= top { return Err(error("字幕区域超出窗口")); }
+    Ok((left, top, right, bottom))
+}
+
+fn apply_region(win: &tauri::WebviewWindow, bounds: Option<LyricsContentBounds>) -> AppResult<()> {
+    let size = win.inner_size().map_err(error)?;
+    let dpi = win.scale_factor().map_err(error)?;
+    let rect = bounds.map(|bounds| content_region(bounds, dpi, (size.width, size.height))).transpose()?;
+    #[cfg(windows)]
+    {
+        let raw = win.hwnd().map_err(error)?.0 as isize;
+        win.run_on_main_thread(move || unsafe {
+            use windows::Win32::{Foundation::HWND, Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn, RedrawWindow, RDW_INVALIDATE, RDW_NOERASE, RDW_ALLCHILDREN}};
+            let region = rect.map(|(left, top, right, bottom)| CreateRoundRectRgn(left, top, right, bottom, (12. * dpi) as i32, (12. * dpi) as i32));
+            if region.is_some_and(|region| region.0.is_null()) { return; }
+            let hwnd = HWND(raw as *mut _);
+            if SetWindowRgn(hwnd, region, true) == 0 {
+                if let Some(region) = region { let _ = DeleteObject(region.into()); }
+                eprintln!("Desktop lyrics input region update failed");
+                return;
+            }
+            let _ = RedrawWindow(Some(hwnd), None, None, RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
+        }).map_err(error)?;
+    }
+    #[cfg(not(windows))]
+    let _ = rect;
+    Ok(())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct LyricsSettings {
@@ -115,6 +161,7 @@ pub struct DesktopLyricsService {
     app: tauri::AppHandle,
     gate: Arc<Mutex<()>>,
     ready: Arc<AtomicBool>,
+    content_bounds: Arc<Mutex<Option<(u64, LyricsContentBounds)>>>,
 }
 impl DesktopLyricsService {
     pub fn new(db: Database, app: tauri::AppHandle) -> Self {
@@ -123,6 +170,7 @@ impl DesktopLyricsService {
             app,
             gate: Arc::new(Mutex::new(())),
             ready: Arc::new(AtomicBool::new(false)),
+            content_bounds: Arc::new(Mutex::new(None)),
         }
     }
     pub fn settings(&self) -> AppResult<LyricsSettings> {
@@ -168,11 +216,27 @@ impl DesktopLyricsService {
             self.close_menu()?;
         }
         self.position(s, false)?;
-        win.set_ignore_cursor_events(false).map_err(error)?;
+        self.apply_input_region(&win, s)?;
         if s.enabled && self.ready.load(Ordering::SeqCst) {
             win.show().map_err(error)?;
         }
         Ok(())
+    }
+    fn apply_input_region(&self, win: &tauri::WebviewWindow, settings: &LyricsSettings) -> AppResult<()> {
+        let bounds = self.content_bounds.lock().filter(|(revision, _)| settings.locked && *revision == settings.revision).map(|(_, bounds)| bounds);
+        apply_region(win, bounds)?;
+        // While waiting for the first text measurement, don't block the whole desktop frame.
+        win.set_ignore_cursor_events(settings.locked && bounds.is_none()).map_err(error)
+    }
+    pub fn set_content_bounds(&self, revision: u64, bounds: LyricsContentBounds) -> AppResult<()> {
+        let _guard = self.gate.lock();
+        let settings = self.settings()?;
+        if !settings.locked || settings.revision != revision { return Ok(()); }
+        let win = self.app.get_webview_window("desktop-lyrics").ok_or_else(|| error("窗口尚未创建"))?;
+        let size = win.inner_size().map_err(error)?;
+        content_region(bounds, win.scale_factor().map_err(error)?, (size.width, size.height))?;
+        *self.content_bounds.lock() = Some((revision, bounds));
+        self.apply_input_region(&win, &settings)
     }
     pub fn save_position(&self) -> AppResult<()> {
         let _guard = self.gate.lock();
@@ -320,6 +384,16 @@ impl DesktopLyricsService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn locked_region_fits_text_with_small_padding_and_monitor_scale() {
+        let bounds = LyricsContentBounds { x: 320., y: 65., width: 200., height: 40. };
+        assert_eq!(content_region(bounds, 1., (840, 160)).unwrap(), (312, 57, 528, 113));
+        assert_eq!(content_region(bounds, 2., (1680, 320)).unwrap(), (624, 114, 1056, 226));
+        assert_eq!(content_region(LyricsContentBounds { x: 0., y: 0., width: 840., height: 160. }, 1., (840, 160)).unwrap(), (0, 0, 840, 160));
+        assert!(content_region(LyricsContentBounds { width: f64::NAN, ..bounds }, 1., (840, 160)).is_err());
+        assert!(content_region(LyricsContentBounds { width: 0., ..bounds }, 1., (840, 160)).is_err());
+        assert!(content_region(LyricsContentBounds { x: 900., ..bounds }, 1., (840, 160)).is_err());
+    }
     #[test]
     fn locked_anchor_survives_larger_font_near_monitor_edge() {
         // The current position remains fixed even when a larger frame exceeds the edge.

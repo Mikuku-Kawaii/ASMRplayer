@@ -33,7 +33,7 @@ use windows::{
         },
     },
     UI::Composition::{
-        CompositionEffectSourceParameter, CompositionRoundedRectangleGeometry, Compositor,
+        CompositionBorderMode, CompositionEffectSourceParameter, CompositionRoundedRectangleGeometry, Compositor,
         ContainerVisual, Desktop::DesktopWindowTarget,
     },
 };
@@ -135,6 +135,7 @@ impl Glass {
         let root = compositor.CreateContainerVisual()?;
         root.SetRelativeSizeAdjustment(Vector2 { X: 1., Y: 1. })?;
         let visual = compositor.CreateContainerVisual()?;
+        visual.SetBorderMode(CompositionBorderMode::Soft)?;
         visual.SetAnchorPoint(Vector2 { X: 0.5, Y: 0. })?;
         visual.SetRelativeOffsetAdjustment(Vector3 {
             X: 0.5,

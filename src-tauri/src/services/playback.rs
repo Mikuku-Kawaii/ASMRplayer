@@ -22,6 +22,16 @@ pub struct CachedAudioTagMeta {
     pub embedded_cover_bytes: Option<Vec<u8>>,
 }
 
+// Only the last session's observed stream facts; never load media to restore them.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedAudioInfo {
+    version_id: String,
+    source_id: String,
+    format: String,
+    byte_size: Option<i64>,
+    telemetry: AudioStreamTelemetryDto,
+}
+
 pub struct PlaybackStateInner {
     pub session_generation: u64,
     pub state: String,
@@ -226,6 +236,7 @@ impl PlaybackService {
             shutdown_signal: watch::channel(false).0,
         };
 
+        svc.restore_audio_info();
         svc.spawn_event_loop(event_rx);
         svc.spawn_sleep_timer_loop();
         svc
@@ -640,6 +651,10 @@ impl PlaybackService {
     }
 
     fn list_sources_for_version(&self, version_id: &str) -> AppResult<Vec<MediaSourceDto>> {
+        self.read_sources_for_version(version_id, true)
+    }
+
+    fn read_sources_for_version(&self, version_id: &str, check_files: bool) -> AppResult<Vec<MediaSourceDto>> {
         self.db.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, version_id, source_kind, provider, source_work_id, remote_file_id,
@@ -674,7 +689,7 @@ impl PlaybackService {
             for r in rows {
                 let mut dto = r?;
                 // Verify local file actually exists and is NEVER a .part file
-                if dto.source_kind == "local_imported" || dto.source_kind == "local_downloaded" {
+                if check_files && (dto.source_kind == "local_imported" || dto.source_kind == "local_downloaded") {
                     if let Some(ref abs) = dto.absolute_path {
                         if abs.ends_with(".part") || !Path::new(abs).is_file() {
                             dto.availability = "missing".into();
@@ -722,6 +737,28 @@ impl PlaybackService {
 }
 
 impl PlaybackService {
+    fn restore_audio_info(&self) {
+        let mut state = self.inner.lock();
+        let Some(version_id) = state.current_version_id.as_deref() else { return };
+        // Startup must only read SQLite. Probing removable/network drives here
+        // could block the UI thread; playback still validates files before use.
+        let sources = self.read_sources_for_version(version_id, false).unwrap_or_default();
+        if let Some(saved) = self.db.get_setting("last_session_audio_info").ok().flatten()
+            .and_then(|json| serde_json::from_str::<SavedAudioInfo>(&json).ok())
+            .filter(|saved| saved.version_id == version_id && sources.iter().any(|source|
+                source.id == saved.source_id && source.format == saved.format && source.byte_size == saved.byte_size))
+        {
+            state.audio_telemetry.codec = saved.telemetry.codec;
+            state.audio_telemetry.sample_rate_hz = saved.telemetry.sample_rate_hz;
+            state.audio_telemetry.sample_format = saved.telemetry.sample_format;
+            state.audio_telemetry.channels = saved.telemetry.channels;
+            state.audio_telemetry.bitrate_kbps = saved.telemetry.bitrate_kbps;
+        } else {
+            state.audio_telemetry.codec = sources.first().map(|source| source.format.to_uppercase());
+        }
+        state.alternative_sources = sources;
+    }
+
     pub fn persist_current_state(&self, mark_recent: bool) {
         if let Err(error) = self.try_persist_current_state(mark_recent) {
             self.db.append_log("ERROR", &format!("保存播放状态失败: {error}"));
@@ -746,6 +783,14 @@ impl PlaybackService {
 
         if let Some(vid) = ver_opt {
             self.db.save_playback_position(&vid, pos, completed, mark_recent)?;
+            if let Some(source) = guard.active_source.as_ref().filter(|_| guard.audio_telemetry.sample_rate_hz.is_some() || guard.audio_telemetry.codec.is_some()) {
+                let saved = SavedAudioInfo {
+                    version_id: vid, source_id: source.id.clone(), format: source.format.clone(),
+                    byte_size: source.byte_size, telemetry: guard.audio_telemetry.clone(),
+                };
+                self.db.set_setting("last_session_audio_info", &serde_json::to_string(&saved)
+                    .map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?)?;
+            }
         }
         self
             .db
@@ -1365,6 +1410,33 @@ impl PlaybackService {
         }
 
         out
+    }
+
+    /// Append selected works atomically without replacing the queue or starting playback.
+    pub async fn append_works_to_queue(&self, work_ids: Vec<String>) -> AppResult<PlaybackSnapshot> {
+        if work_ids.is_empty() || work_ids.len() > 500 {
+            return Err(AppError::new(ErrorCode::InvalidInput, "请选择 1 至 500 部作品"));
+        }
+        let mut seen_works = std::collections::HashSet::new();
+        let mut seen_versions = std::collections::HashSet::new();
+        let mut pairs = Vec::new();
+        for id in work_ids {
+            if !seen_works.insert(id.clone()) { continue; }
+            let mut detail = self.db.get_work_detail(&id)?;
+            if detail.tracks.is_empty() && !detail.online_sources.is_empty() {
+                self.provider.ensure_work_online_tracks(&id, None).await?;
+                detail = self.db.get_work_detail(&id)?;
+            }
+            let selected = Self::select_preferred_tracks_for_work(&detail);
+            if selected.is_empty() {
+                return Err(AppError::new(ErrorCode::SourceNotFound,
+                    format!("《{}》暂无可播放音轨，本次未加入队列", detail.title)));
+            }
+            pairs.extend(selected.into_iter().filter(|(id, _)| seen_versions.insert(id.clone())));
+        }
+        self.db.append_queue_items(&pairs)?;
+        self.emit_snapshot();
+        self.get_snapshot()
     }
 
     /// T1117 / R37: Enqueues all favorite works in order (preferring With-SE + WAV format) and starts playback immediately.
@@ -2770,36 +2842,37 @@ impl PlaybackService {
                     MpvEvent::AudioCodecChanged(codec) => {
                         {
                             let mut guard = this.inner.lock();
-                            guard.audio_telemetry.codec = codec;
+                            if codec.as_ref().is_some_and(|value| !value.is_empty()) { guard.audio_telemetry.codec = codec; }
                         }
                         this.emit_snapshot();
                     }
                     MpvEvent::AudioSampleRateChanged(sr) => {
                         {
                             let mut guard = this.inner.lock();
-                            guard.audio_telemetry.sample_rate_hz = sr;
+                            if sr.is_some_and(|value| value > 0) { guard.audio_telemetry.sample_rate_hz = sr; }
                         }
                         this.emit_snapshot();
                     }
                     MpvEvent::AudioFormatChanged(fmt) => {
                         {
                             let mut guard = this.inner.lock();
-                            guard.audio_telemetry.sample_format = fmt;
+                            if fmt.as_ref().is_some_and(|value| !value.is_empty()) { guard.audio_telemetry.sample_format = fmt; }
                         }
                         this.emit_snapshot();
                     }
                     MpvEvent::AudioChannelsChanged(ch) => {
                         {
                             let mut guard = this.inner.lock();
-                            guard.audio_telemetry.channels = ch;
+                            if ch.as_ref().is_some_and(|value| !value.is_empty()) { guard.audio_telemetry.channels = ch; }
                         }
                         this.emit_snapshot();
                     }
                     MpvEvent::AudioBitrateChanged(bps) => {
                         {
                             let mut guard = this.inner.lock();
-                            guard.audio_telemetry.bitrate_kbps =
-                                bps.map(|b| ((b as f64) / 1000.0).round() as i64);
+                            if let Some(bps) = bps.filter(|value| *value > 0) {
+                                guard.audio_telemetry.bitrate_kbps = Some(((bps as f64) / 1000.0).round() as i64);
+                            }
                         }
                         this.emit_snapshot();
                     }
@@ -2979,6 +3052,85 @@ fn drop_and_snap(
 mod playback_tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn bulk_queue_append_keeps_session_order_and_is_atomic_on_failure() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tests/fixtures/audio/stereo_lr_check.mp3");
+        db.with_conn(|conn| {
+            for id in ["a", "b", "empty"] {
+                conn.execute("INSERT INTO works(id,title,created_at,updated_at) VALUES(?1,?1,'now','now')", [id])?;
+            }
+            for (id, work, format) in [("a-wav", "a", "wav"), ("a-mp3", "a", "mp3"), ("b-mp3", "b", "mp3")] {
+                conn.execute("INSERT INTO tracks(id,work_id,title,logical_dir_path,sort_key,created_at) VALUES(?1,?2,?1,?3,?1,'now')", params![id, work, format])?;
+                conn.execute("INSERT INTO track_versions(id,track_id,version_label,duration_ms,created_at) VALUES(?1,?1,?1,24000,'now')", [id])?;
+                conn.execute("INSERT INTO media_sources(id,version_id,source_kind,absolute_path,format,availability,created_at,updated_at) VALUES(?1,?1,'local_imported',?2,?3,'available','now','now')", params![id, fixture.to_string_lossy(), format])?;
+            }
+            Ok(())
+        }).unwrap();
+        let original = db.append_queue_items(&[("a-mp3".into(), None)]).unwrap().remove(0);
+        let playback = PlaybackService::new(db.clone(), AsmrOneProvider::new(db.clone()));
+        {
+            let mut state = playback.inner.lock();
+            state.current_queue_item_id = Some(original.clone());
+            state.current_version_id = Some("a-mp3".into());
+            state.state = "paused".into();
+            state.position_ms = 2345;
+        }
+        let snapshot = playback.append_works_to_queue(vec!["b".into(), "a".into(), "b".into()]).await.unwrap();
+        assert_eq!(snapshot.state, "paused");
+        assert_eq!(snapshot.position_ms, 2345);
+        assert_eq!(snapshot.current_version_id.as_deref(), Some("a-mp3"));
+        let queue = db.get_queue_items().unwrap();
+        assert_eq!(queue[0].id, original);
+        assert_eq!(queue.iter().map(|item| item.version_id.as_str()).collect::<Vec<_>>(), vec!["a-mp3", "b-mp3", "a-wav"]);
+        assert!(playback.append_works_to_queue(vec!["a".into(), "empty".into()]).await.is_err());
+        assert_eq!(db.get_queue_items().unwrap().len(), 3);
+        assert!(playback.append_works_to_queue(vec![]).await.is_err());
+        assert!(playback.append_works_to_queue(vec!["a".into(); 501]).await.is_err());
+        playback.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn paused_session_restores_audio_info_without_loading_media_and_rejects_changed_sources() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('w','Work','now','now');
+                INSERT INTO tracks(id,work_id,title,sort_key,created_at) VALUES('t','w','Track','1','now');
+                INSERT INTO track_versions(id,track_id,version_label,created_at) VALUES('v','t','Original','now');
+                INSERT INTO media_sources(id,version_id,source_kind,format,byte_size,created_at,updated_at)
+                VALUES('s','v','online_provider','flac',1000,'now','now');")?;
+            Ok(())
+        }).unwrap();
+        db.append_queue_items(&[("v".into(), None)]).unwrap();
+        let player = PlaybackService::new(db.clone(), AsmrOneProvider::new(db.clone()));
+        {
+            let mut state = player.inner.lock();
+            state.active_source = state.alternative_sources.first().cloned();
+            state.audio_telemetry.codec = Some("flac".into());
+            state.audio_telemetry.sample_rate_hz = Some(96000);
+            state.audio_telemetry.channels = Some("stereo".into());
+            state.audio_telemetry.bitrate_kbps = Some(1200);
+        }
+        player.try_persist_current_state(false).unwrap();
+        player.shutdown().await;
+        let restored = PlaybackService::new(db.clone(), AsmrOneProvider::new(db.clone()));
+        let snapshot = restored.get_snapshot().unwrap();
+        assert_eq!(snapshot.state, "paused");
+        assert_eq!(snapshot.audio_telemetry.sample_rate_hz, Some(96000));
+        assert_eq!(snapshot.audio_telemetry.channels.as_deref(), Some("stereo"));
+        assert_eq!(snapshot.audio_telemetry.bitrate_kbps, Some(1200));
+        assert!(!restored.inner.lock().file_loaded_for_gen);
+        assert!(snapshot.active_source.is_none());
+        restored.shutdown().await;
+        db.with_conn(|conn| { conn.execute("UPDATE media_sources SET byte_size=2000 WHERE id='s'", [])?; Ok(()) }).unwrap();
+        let changed = PlaybackService::new(db.clone(), AsmrOneProvider::new(db.clone()));
+        assert!(changed.get_snapshot().unwrap().audio_telemetry.sample_rate_hz.is_none());
+        assert_eq!(changed.get_snapshot().unwrap().audio_telemetry.codec.as_deref(), Some("FLAC"));
+        changed.shutdown().await;
+    }
 
     #[tokio::test]
     async fn repeated_shutdown_releases_worker_owned_playback_state() {

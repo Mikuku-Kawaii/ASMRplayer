@@ -12,6 +12,8 @@ pub mod instance;
 
 #[cfg(windows)]
 mod island_glass;
+#[cfg(windows)]
+mod island_window;
 
 pub mod release_history;
 
