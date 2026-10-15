@@ -90,9 +90,9 @@ export function RemoveWorkDialog({ work, onConfirm, onClose }: {
       {error && <p className="error-banner" role="alert">{error}</p>}
       <footer className="library-remove-footer">
         <button ref={cancel} type="button" className="btn btn-ghost" disabled={pending} onClick={onClose}>取消</button>
-        <button type="button" className="btn btn-danger" disabled={pending} onClick={() => void confirm()}><Trash2 size={14} />
+        <button type="button" className="btn btn-danger" disabled={pending} onClick={() => void confirm()}><Trash2 size={14} /><span className="ui-icon-label">
           {pending ? "正在移除…" : deleteFiles ? "移除并删除下载文件" : "移除作品索引"}
-        </button>
+        </span></button>
       </footer>
     </div>
   </div>, document.body);

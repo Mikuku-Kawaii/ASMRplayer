@@ -1,4 +1,7 @@
 import { Select } from "../../components/Select";
+import { WorkContentBadges } from "../../components/WorkContentBadges";
+import { WorkRatingSelect } from "./WorkRatingSelect";
+import { ContentDialog } from "../../components/ContentDialog";
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   ArrowLeft,
@@ -17,6 +20,7 @@ import {
   RotateCcw,
   ChevronDown,
   ChevronRight,
+  X,
 } from "lucide-react";
 import {
   WorkDetailDto,
@@ -275,10 +279,10 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
     let disposed = false; let stop: (() => void) | undefined;
     let revision = 0;
     void subscribeLibraryAffinity(id => {
-      if (disposed || id !== workId) return;
+      if (disposed || (id && id !== workId)) return;
       const request = ++revision;
       void callCommand<WorkDetailDto>("get_work_detail", { workId }).then(next => {
-        if (!disposed && request === revision) setDetail(prev => prev && next && prev.id === next.id ? { ...prev, isFavorite: next.isFavorite, isCollected: next.isCollected, tracks: next.tracks } : prev);
+        if (!disposed && request === revision) setDetail(prev => prev && next && prev.id === next.id ? next : prev);
       }).catch(e => { if (!disposed) onError(normalizeAppError(e)); });
     }).then(fn => { if (disposed) fn(); else stop = fn; });
     return () => { disposed = true; stop?.(); };
@@ -428,6 +432,14 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
     finally { favoriteGate.current = false; setFavoritePending(null); }
   };
 
+  const applyOverrideField = (field: string, updated: WorkDetailDto) => {
+    setDetail(updated);
+    if (field === "title") setOvTitle(updated.title);
+    if (field === "circle_name") setOvCircle(updated.circleName);
+    if (field === "description") setOvDesc(updated.description);
+    if (field === "voice_actors") setOvVas(updated.voiceActors.join(", "));
+    if (field === "tags") setOvTags(updated.tags.join(", "));
+  };
   const handleSaveOverrideField = async (
     field: string,
     mode: "set" | "cleared",
@@ -440,7 +452,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
         overrideMode: mode,
         valueText,
       });
-      setDetail(updated);
+      applyOverrideField(field, updated);
     } catch (e) {
       onError(normalizeAppError(e));
     }
@@ -452,7 +464,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
         workId,
         field,
       });
-      setDetail(updated);
+      applyOverrideField(field, updated);
     } catch (e) {
       onError(normalizeAppError(e));
     }
@@ -646,7 +658,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
             className="btn btn-ghost btn-sm"
             disabled={syncingMeta || (!detail.rjCode && !syncRjInput.trim())}
             onClick={() => void handleSyncFromAsmrOne(true)}
-            title="从 asmr.one 同步封面、社团、CV 与标签"
+            title="从 asmr.one 同步封面、社团、CV、标签与 R18 分级"
           >
             <RefreshCw size={15} />
             <span>同步元数据</span>
@@ -700,10 +712,13 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                     "none";
                 }}
               />
+              <WorkContentBadges nsfw={detail.nsfw} hasSubtitle={detail.hasSubtitle} />
             </div>
           )}
 
           <div className="detail-hero-main">
+            <div className="detail-title-block">
+            {!detail.coverRef && <WorkContentBadges nsfw={detail.nsfw} hasSubtitle={detail.hasSubtitle} overlay={false} />}
             {detail.rjCode && (
               <div className="work-badges">
                 <CopyRjBadge key={detail.rjCode} code={detail.rjCode} />
@@ -711,6 +726,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
             )}
 
             <h2>{detail.title}</h2>
+            </div>
             {detail.description && (
               <p className="detail-desc">{detail.description}</p>
             )}
@@ -728,9 +744,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                       onClick={() => onSearchKeyword?.(va, !isLocalWork)}
                       aria-label={`搜索声优 ${va}`}
                       title={`点击寻找声优「${va}」的相关作品`}
-                    >
-                      {va}
-                    </button>
+                    ><span className="ui-tag-label">{va}</span></button>
                   ))}
                 </span>
               )}
@@ -746,9 +760,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                     onClick={() => onSearchKeyword?.(tag, !isLocalWork)}
                     aria-label={`搜索标签 ${tag}`}
                     title={`点击寻找包含标签「${tag}」的作品`}
-                  >
-                    {tag}
-                  </button>
+                  ><span className="ui-tag-label">{tag}</span></button>
                 ))}
               </div>
             )}
@@ -779,9 +791,9 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                 </button>
               ) : null}
 
-              {detail.directoryGroups.length > 0 && <button type="button" className="btn btn-secondary"
+              {detail.directoryGroups.length > 0 && <button type="button" className="btn btn-primary"
                 disabled={startingPlayback} title="从当前目录第一条音轨的开头播放"
-                onClick={() => void handlePlayWork(true)}><RotateCcw size={16} />从头播放</button>}
+                onClick={() => void handlePlayWork(true)}><RotateCcw size={16} /><span>从头播放</span></button>}
 
               {!isLocalWork && <button
                 type="button"
@@ -805,8 +817,8 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                 type="button"
                 className={
                   detail.isFavorite
-                    ? "btn btn-tonal text-accent"
-                    : "btn btn-secondary"
+                    ? "btn btn-tonal favorite-action"
+                    : "btn btn-secondary favorite-action"
                 }
                 onClick={() => void handleToggleFavorite()}
                 aria-pressed={detail.isFavorite}
@@ -840,18 +852,21 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
       </section>
 
       {editingOverrides && (
-        <section className="modal-card">
+        <ContentDialog label="编辑作品元数据" onClose={() => setEditingOverrides(false)}>
           <div className="modal-header">
             <h3>编辑作品元数据</h3>
             <button
               type="button"
               className="btn btn-ghost btn-sm"
               onClick={() => setEditingOverrides(false)}
+              aria-label="关闭元数据编辑"
+              title="关闭元数据编辑"
             >
-              收起
+              <X size={16} aria-hidden="true" />
             </button>
           </div>
           <div className="override-grid">
+            <WorkRatingSelect key={detail.id} detail={detail} onSaved={setDetail} onError={onError} />
             <div className="override-row">
               <label>标题</label>
               <input
@@ -867,6 +882,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
               >
                 保存
               </button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => void handleSaveOverrideField("title", "cleared", null)}>清空</button>
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
@@ -971,6 +987,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
               >
                 保存
               </button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => void handleSaveOverrideField("voice_actors", "cleared", null)}>清空</button>
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
@@ -1005,6 +1022,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
               >
                 保存
               </button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => void handleSaveOverrideField("tags", "cleared", null)}>清空</button>
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
@@ -1014,19 +1032,21 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
               </button>
             </div>
           </div>
-        </section>
+        </ContentDialog>
       )}
 
       {showAssocPanel && (
-        <section className="modal-card">
+        <ContentDialog label="作品与音轨版本关联" onClose={() => setShowAssocPanel(false)}>
           <div className="modal-header">
             <h3>作品与音轨版本关联</h3>
             <button
               type="button"
               className="btn btn-ghost btn-sm"
               onClick={() => setShowAssocPanel(false)}
+              aria-label="关闭关联与撤销"
+              title="关闭关联与撤销"
             >
-              收起
+              <X size={16} aria-hidden="true" />
             </button>
           </div>
 
@@ -1100,7 +1120,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
               </ul>
             </div>
           )}
-        </section>
+        </ContentDialog>
       )}
 
       {dlPreview && (
@@ -1131,7 +1151,15 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                 <ChevronDown size={14} />
               )}
             </button>
-            {!isDirCollapsed ? (
+            {activeGroup && (
+              <span className="group-collapsed-summary">
+                当前：{activeGroup.label} ({activeGroup.trackCount} 轨 ·{" "}
+                {activeGroup.formats.join("/")}) · 共{" "}
+                {detail.directoryGroups.length} 个目录
+              </span>
+            )}
+          </div>
+          {!isDirCollapsed && (
               <div className="group-tabs">
                 {detail.directoryGroups.map((g) => (
                   <button
@@ -1148,25 +1176,16 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                   </button>
                 ))}
               </div>
-            ) : (
-              activeGroup && (
-                <span className="group-collapsed-summary">
-                  当前：{activeGroup.label} ({activeGroup.trackCount} 轨 ·{" "}
-                  {activeGroup.formats.join("/")}) · 共{" "}
-                  {detail.directoryGroups.length} 个目录
-                </span>
-              )
-            )}
-          </div>
+          )}
           {selectedGroupPath !== undefined && (
             <div className="group-actions-second-row">
               <button
                 type="button"
-                className="btn btn-primary btn-sm"
+                className="btn btn-primary"
                 onClick={() => void handlePlayGroup(selectedGroupPath)}
               >
-                <Play size={14} />
-                <span>播放当前目录</span>
+                <Play size={16} />
+                <span className="ui-icon-label">播放当前目录</span>
               </button>
             </div>
           )}
@@ -1271,7 +1290,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                         </button>
                         <button
                           type="button"
-                          className="btn btn-ghost btn-sm"
+                          className="btn btn-ghost btn-sm favorite-action"
                           onClick={() => void handleFavoriteTrack(ver.id)}
                           disabled={favoritePending !== null}
                           aria-pressed={!!ver.isFavorite}

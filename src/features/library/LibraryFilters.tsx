@@ -29,7 +29,7 @@ export function matchesLibraryTags(work: WorkSummary, selected: string[]) {
 
 export function LibraryFilters({ value, onChange, scope = "all" }: { value: string[]; onChange: (value: string[]) => void; scope?: "all" | "local" | "favorites" | "recent" }) {
   const loadTags = useCallback(() => loadLibraryTags(scope), [scope]);
-  return <TagFilterPopover value={value} onChange={onChange} loadTags={loadTags} cacheTags={false}
+  return <TagFilterPopover value={value} onChange={onChange} loadTags={loadTags} cacheTags={false} placement="below-start"
     countDescription={scope === "favorites" ? "数量为喜欢列表内作品总数。" : scope === "recent" ? "数量为历史收听列表内作品总数。" : "数量为我的音频库内作品总数。"} />;
 }
 

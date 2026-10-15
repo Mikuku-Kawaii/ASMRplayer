@@ -89,8 +89,8 @@ export function SmartCollections({ filters, keyword, onChange }: Props) {
   return <section className="smart-collections" aria-label="智能集合">
     <div className="smart-collections-heading">
       <button className="btn btn-secondary btn-sm" type="button" aria-expanded={expanded} aria-controls="collection-editor" onClick={() => setExpanded(v => !v)}>
-        <SlidersHorizontal size={15} />筛选与集合
-      </button>
+        <SlidersHorizontal size={15} /><span className="ui-icon-label">筛选与集合
+      </span></button>
       <span className="text-secondary">{filters ? `${selected?.name ?? "临时筛选"}${dirty ? " · 未保存更改" : ""}` : "保存常用条件，让作品自动归类"}</span>
       {filters && <button className="btn btn-ghost btn-sm" type="button" disabled={busy} onClick={reset}>清除筛选</button>}
     </div>

@@ -1,4 +1,4 @@
-import { subscribeLibraryAffinity } from "../../lib/api";
+import { subscribeLibraryAffinity, subscribeSettingsUpdated } from "../../lib/api";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -36,6 +36,8 @@ import { DownloadTaskModal } from "../../components/DownloadTaskModal";
 import { LibraryFilters, LibraryFilterSummary, matchesLibraryTags } from "./LibraryFilters";
 import { RemoveWorkDialog, skipsLibraryRemovalConfirmation } from "./RemoveWorkDialog";
 import { BulkOrganizer } from "./BulkOrganizer";
+import { ImportDialog } from "./ImportDialog";
+import { WorkContentBadges } from "../../components/WorkContentBadges";
 
 interface LibraryViewProps {
   filterMode: "all" | "local" | "favorites" | "recent";
@@ -84,6 +86,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   });
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [playingAllFavorites, setPlayingAllFavorites] = useState(false);
+  const [clearingRecent, setClearingRecent] = useState(false);
+  const clearRecentPending = useRef(false);
 
   // Import modal state (Smart Work Root Resolution)
   const [importMode, setImportMode] = useState<
@@ -96,6 +100,12 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   const [selectedRels, setSelectedRels] = useState<Record<string, boolean>>({});
   const [previewing, setPreviewing] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [importError, setImportError] = useState("");
+  const importEpoch = useRef(0);
+  const closeImport = () => {
+    importEpoch.current++;
+    setImportMode(null); setPreview(null); setPreviewing(false); setImportError("");
+  };
 
   // Quick open online work by ID/RJ
   const [quickOnlineId, setQuickOnlineId] = useState("");
@@ -150,12 +160,25 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     setVisibleCount(PAGE_SIZE);
     setWorks([]);
     setSelectedIds(new Set());
+    setContextMenu(null);
   }, [filterMode, searchQuery, selectedTags]);
 
   useEffect(() => {
     void loadWorks();
     return () => { requestSeq.current += 1; };
   }, [loadWorks, refreshTick]);
+  useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    let previous: boolean | undefined;
+    void subscribeSettingsUpdated(settings => {
+      if (disposed || previous === (settings.nsfwEnabled ?? false)) return;
+      previous = settings.nsfwEnabled ?? false;
+      setWorks([]); setSelectedIds(new Set()); setContextMenu(null); setVisibleCount(PAGE_SIZE);
+      void loadWorks();
+    }).then(fn => { if (disposed) fn(); else stop = fn; }).catch(() => {});
+    return () => { disposed = true; stop?.(); };
+  }, [loadWorks]);
   useEffect(() => {
     let disposed = false; let stop: (() => void) | undefined;
     void subscribeLibraryAffinity(() => { if (!disposed) void loadWorks(); }).then(fn => { if (disposed) fn(); else stop = fn; });
@@ -175,22 +198,22 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   }, [contextMenu, selecting, bulkBusy]);
 
   const handleChooseFolder = async (
-    mode: "single_work" | "library_root",
-    chooseSingleFile = false
+    mode: "single_work" | "library_root"
   ) => {
+    const epoch = ++importEpoch.current;
     setImportMode(mode);
     setSmartLevelOffset(0);
     setPreview(null);
+    setImportError("");
     try {
       const picked = await open({
-        directory: !chooseSingleFile,
+        directory: true,
         multiple: false,
-        title: chooseSingleFile
-          ? "选择单个音频或字幕文件"
-          : mode === "single_work"
+        title: mode === "single_work"
           ? "选择作品文件夹导入"
           : "选择作品库根目录导入",
       });
+      if (epoch !== importEpoch.current) return;
       if (typeof picked === "string" && picked.trim()) {
         setImportPath(picked);
         await handlePreviewPath(picked, mode, 0);
@@ -206,18 +229,21 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     levelOffset = smartLevelOffset
   ) => {
     if (!pathStr.trim()) return;
+    const epoch = ++importEpoch.current;
     setPreviewing(true);
+    setImportError("");
     try {
       const prev =
         mode === "single_work"
           ? await callCommand<ImportPreviewDto>("preview_smart_import", {
               selectedPath: pathStr.trim(),
-              levelOffset,
+              shiftLevel: levelOffset,
             })
           : await callCommand<ImportPreviewDto>("preview_import", {
               rootPath: pathStr.trim(),
               rootMode: mode,
             });
+      if (epoch !== importEpoch.current) return;
       setPreview(prev);
       const titles: Record<string, string> = {};
       const sel: Record<string, boolean> = {};
@@ -228,9 +254,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       setCustomTitles(titles);
       setSelectedRels(sel);
     } catch (e) {
-      onError(normalizeAppError(e));
+      if (epoch === importEpoch.current) setImportError(normalizeAppError(e).message);
     } finally {
-      setPreviewing(false);
+      if (epoch === importEpoch.current) setPreviewing(false);
     }
   };
 
@@ -253,6 +279,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
     if (chosen.length === 0) return;
     setScanning(true);
+    setImportError("");
     try {
       await callCommand<ScanReportDto>("scan_and_import", {
         rootPath: preview.rootPath,
@@ -263,7 +290,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       setImportMode(null);
       await loadWorks();
     } catch (e) {
-      onError(normalizeAppError(e));
+      setImportError(normalizeAppError(e).message);
     } finally {
       setScanning(false);
     }
@@ -273,7 +300,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     try {
       await callCommand("cancel_scan");
     } catch (e) {
-      onError(normalizeAppError(e));
+      setImportError(normalizeAppError(e).message);
     }
   };
 
@@ -471,6 +498,17 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       ? "最近收听"
       : "我的音频库";
 
+  const clearRecent = async () => {
+    if (clearRecentPending.current) return;
+    clearRecentPending.current = true; setClearingRecent(true);
+    try {
+      await callCommand("clear_recent_works");
+      setSelectedIds(new Set()); setContextMenu(null);
+      await loadWorks();
+    } catch (error) { onError(normalizeAppError(error)); }
+    finally { clearRecentPending.current = false; setClearingRecent(false); }
+  };
+
   const visibleWorks = works.slice(0, visibleCount);
   const selectedImportCount = preview
     ? preview.candidates.filter((c) => selectedRels[c.relativeWorkPath]).length
@@ -520,7 +558,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 <button
                   type="button"
                   className="btn btn-primary btn-sm"
-                  onClick={() => void handleChooseFolder("single_work", false)}
+                  onClick={() => void handleChooseFolder("single_work")}
                 >
                   <FolderPlus size={15} />
                   <span>导入作品文件夹</span>
@@ -528,21 +566,18 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 <button
                   type="button"
                   className="btn btn-secondary btn-sm"
-                  onClick={() => void handleChooseFolder("single_work", true)}
-                >
-                  <FolderTree size={15} />
-                  <span>选单文件智能整包导入</span>
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  onClick={() => void handleChooseFolder("library_root", false)}
+                  onClick={() => void handleChooseFolder("library_root")}
                 >
                   <Library size={15} />
                   <span>导入作品库根目录</span>
                 </button>
               </>
             )}
+            {filterMode === "recent" && <button type="button" className="btn btn-ghost btn-sm"
+              disabled={clearingRecent || loading} onClick={() => void clearRecent()}
+              title="清空最近收听记录，保留音频文件、收藏与音轨播放进度">
+              <Trash2 size={15} aria-hidden="true" /><span className="ui-icon-label">{clearingRecent ? "正在删除…" : "一键删除"}</span>
+            </button>}
             <button
               type="button"
               className="btn-icon"
@@ -598,22 +633,20 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       {loading && <p className="smart-collections-message" role="status">正在查询作品…</p>}
       {queryError && <div className="smart-collections-message" role="alert">{queryError} <button className="btn btn-secondary btn-sm" type="button" disabled={loading} onClick={() => void loadWorks()}>重试查询</button></div>}
 
-      {/* 本地目录导入预览弹窗 (支持单文件/深层子目录智能回溯作品根目录) */}
+      {/* 本地目录导入预览二级弹窗 */}
       {importMode && (
-        <div className="modal-card">
+        <ImportDialog busy={scanning} onClose={closeImport}>
           <div className="modal-header">
             <h3>
               {importMode === "single_work"
-                ? "导入作品文件夹（支持单文件/深层子目录自动回溯整部作品）"
-                : "导入作品库根目录（按直接子目录分组预览）"}
+                ? "导入作品文件夹"
+                : "导入作品库根目录"}
             </h3>
             <button
               type="button"
               className="btn btn-ghost btn-sm"
-              onClick={() => {
-                setImportMode(null);
-                setPreview(null);
-              }}
+              disabled={scanning}
+              onClick={closeImport}
             >
               取消
             </button>
@@ -622,20 +655,23 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             <input
               type="text"
               className="input-text"
-              placeholder="输入或粘贴本地绝对路径（文件夹、子目录或单个音频文件），例如 D:\ASMR\RJ01705068\WAV\01.wav"
+              placeholder="输入或粘贴文件夹路径，例如 D:\ASMR\Audio"
+              aria-label="导入文件夹路径"
+              disabled={scanning}
               value={importPath}
               onChange={(e) => setImportPath(e.target.value)}
             />
             <button
               type="button"
               className="btn btn-secondary btn-sm"
-              disabled={previewing || !importPath.trim()}
+              disabled={scanning || previewing || !importPath.trim()}
               onClick={() => void handlePreviewPath(importPath, importMode, 0)}
             >
               {previewing ? "正在解析目录…" : "预览并导入"}
             </button>
           </div>
 
+          {importError && <p className="error-banner" role="alert">{importError}</p>}
           {preview && (
             <div className="preview-section">
               {importMode === "single_work" && (
@@ -655,7 +691,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     <button
                       type="button"
                       className="btn btn-secondary btn-sm"
-                      disabled={previewing}
+                      disabled={scanning || previewing}
                       onClick={() => void handleShiftSmartLevel(1)}
                       title="将作品根目录边界向父目录上移一层"
                     >
@@ -664,7 +700,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     <button
                       type="button"
                       className="btn btn-ghost btn-sm"
-                      disabled={previewing}
+                      disabled={scanning || previewing}
                       onClick={() => void handleShiftSmartLevel(-1)}
                       title="将作品根目录边界向原始选中路径下移一层"
                     >
@@ -715,6 +751,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                                 isSel ? "is-lit" : "is-dim"
                               }`}
                               aria-pressed={isSel}
+                              disabled={scanning}
                               onClick={() =>
                                 setSelectedRels((prev) => ({
                                   ...prev,
@@ -730,6 +767,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                             <input
                               type="text"
                               className="input-text input-sm"
+                              aria-label={`作品标题：${cand.proposedTitle}`}
+                              disabled={scanning}
                               value={
                                 customTitles[cand.relativeWorkPath] ??
                                 cand.proposedTitle
@@ -768,7 +807,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   <button
                     type="button"
                     className="btn btn-primary"
-                    disabled={selectedImportCount === 0}
+                    disabled={previewing || selectedImportCount === 0}
                     onClick={() => void handleExecuteImport()}
                   >
                     导入选中作品 ({selectedImportCount})
@@ -777,7 +816,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               </div>
             </div>
           )}
-        </div>
+        </ImportDialog>
       )}
 
       {/* 右键菜单触发的统一“创建下载任务”树形二级弹窗 */}
@@ -846,12 +885,14 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                         ).style.display = "none";
                       }}
                     />
+                    <WorkContentBadges nsfw={work.nsfw} hasSubtitle={work.hasSubtitle} />
                   </div>
                 )}
 
                 <div className="work-card-header">
+                  {!work.coverRef && <WorkContentBadges nsfw={work.nsfw} hasSubtitle={work.hasSubtitle} overlay={false} />}
                   <div className="work-badges">
-                    {(work.listeningStatus !== undefined || work.isListened !== undefined) && <span className="badge">{work.listeningStatus === "played" ? "听过" : work.listeningStatus === "inProgress" || (!work.listeningStatus && work.isListened) ? "在听" : "未听"}</span>}
+                    {(work.listeningStatus !== undefined || work.isListened !== undefined) && <span className={`badge badge-listening ${work.listeningStatus === "played" ? "is-played" : work.listeningStatus === "inProgress" || (!work.listeningStatus && work.isListened) ? "is-in-progress" : ""}`}><span className="ui-tag-label">{work.listeningStatus === "played" ? "听过" : work.listeningStatus === "inProgress" || (!work.listeningStatus && work.isListened) ? "在听" : "未听"}</span></span>}
                     {work.rjCode && (
                       <span className="badge badge-rj">{work.rjCode}</span>
                     )}
@@ -920,9 +961,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     <span className="cv-list">
                       CV:{" "}
                       {work.voiceActors.map((va) => (
-                        <span key={va} className="cv-pill">
-                          {va}
-                        </span>
+                        <span key={va} className="cv-pill"><span className="ui-tag-label">{va}</span></span>
                       ))}
                     </span>
                   )}
@@ -931,9 +970,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 {work.tags.length > 0 && (
                   <div className="work-tags">
                     {work.tags.slice(0, 6).map((tag) => (
-                      <span key={tag} className="tag-pill">
-                        {tag}
-                      </span>
+                      <span key={tag} className="tag-pill"><span className="ui-tag-label">{tag}</span></span>
                     ))}
                   </div>
                 )}
@@ -974,7 +1011,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       {/* 右键浮动菜单 (M3 Surface Container High) */}
       <BulkOrganizer context={contextMenu} onClose={() => setContextMenu(null)} selecting={selecting}
         onSelecting={value => { setSelecting(value); setSelectedIds(new Set(value && contextWork ? [contextWork.id] : [])); }}
-        selectedIds={[...selectedIds]} onBusy={setBulkBusy}
+        selectedIds={works.filter(work => selectedIds.has(work.id)).map(work => work.id)} onBusy={setBulkBusy} onSnapshotChange={onSnapshotChange}
         onSelectVisible={() => setSelectedIds(previous => new Set([...previous, ...visibleWorks.map(w => w.id)].slice(0, 500)))}
         visibleCount={visibleWorks.length} onChanged={() => { setSelectedIds(new Set()); void loadWorks(); }}>
         {contextWork && <>

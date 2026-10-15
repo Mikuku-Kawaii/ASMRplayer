@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
-import { BulkAction, BulkReport, callCommand, normalizeAppError } from "../../lib/api";
+import { BulkAction, BulkReport, PlaybackSnapshot, callCommand, normalizeAppError } from "../../lib/api";
 import { ContextMenu } from "../../components/ContextMenu";
 
 const statusText = { ready: "将修改", unchanged: "无需修改", failed: "未完成", applied: "已修改", undone: "已撤销", undoFailed: "撤销未完成" };
@@ -18,8 +18,9 @@ interface Props {
   selecting: boolean; onSelecting: (value: boolean) => void;
   selectedIds: string[]; onSelectVisible: () => void; visibleCount: number;
   onBusy: (value: boolean) => void; onChanged: () => void;
+  onSnapshotChange?: (snapshot: PlaybackSnapshot) => void;
 }
-export function BulkOrganizer({ context, onClose, children, selecting, onSelecting, selectedIds, onSelectVisible, visibleCount, onBusy, onChanged }: Props) {
+export function BulkOrganizer({ context, onClose, children, selecting, onSelecting, selectedIds, onSelectVisible, visibleCount, onBusy, onChanged, onSnapshotChange }: Props) {
   const [page, setPage] = useState<"actions" | "move" | "tags" | "report">("actions");
   const [tagKind, setTagKind] = useState<"addTags" | "removeTags">("addTags");
   const [tags, setTags] = useState("");
@@ -69,6 +70,16 @@ export function BulkOrganizer({ context, onClose, children, selecting, onSelecti
     finally { busy.current = false; setPending(false); onBusy(false); }
   }
   const preview = (action: BulkAction) => void run("preview_library_batch", { workIds: selectedIds, action });
+  async function addToQueue() {
+    if (busy.current || !selectedIds.length) return;
+    busy.current = true; setPending(true); onBusy(true); setError("");
+    try {
+      const snapshot = await callCommand<PlaybackSnapshot>("append_works_to_queue", { workIds: selectedIds });
+      onSnapshotChange?.(snapshot);
+      onClose();
+    } catch (e) { setError(normalizeAppError(e).message); }
+    finally { busy.current = false; setPending(false); onBusy(false); }
+  }
   const item = (label: string, onClick: () => void, disabled = false) => <button type="button" className="m3-menu-item" role="menuitem" disabled={pending || disabled} onClick={onClick}>{label}</button>;
   if (!context) return null;
   return <ContextMenu x={context.x} y={context.y} onClose={onClose}>
@@ -77,6 +88,7 @@ export function BulkOrganizer({ context, onClose, children, selecting, onSelecti
     </div>
     {page === "actions" && <>
       {selecting ? <>
+        {item("加入队列", () => void addToQueue(), !selectedIds.length)}
         {item("移动到…", () => setPage("move"), !selectedIds.length)}
         {item("移出我的音频库（保留文件）", () => preview({ kind: "collected", value: false }), !selectedIds.length)}
         {item("取消喜欢", () => preview({ kind: "favorite", value: false }), !selectedIds.length)}
