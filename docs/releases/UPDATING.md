@@ -19,7 +19,7 @@
 
 ## GitHub Actions
 
-工作流保存在 `.github/workflows/release.yml`。当前发布使用本地签名构建，未向 GitHub 上传私钥。
+工作流保存在 `.github/workflows/release.yml`。仓库已配置更新签名 Actions Secret；支持云端签名构建，同时保留本地签名发布。私钥不进入源码、构建附件或 Release。
 
 要启用云端签名构建，由仓库维护者在 Actions Secrets 中配置 `TAURI_SIGNING_PRIVATE_KEY`；若私钥加密，另配 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。这些值不得写进工作流文件。
 
@@ -33,7 +33,7 @@
 
 本地验证包括 TypeScript、ESLint、前端与 Rust 回归测试和 Windows 正式打包。单元测试覆盖版本比较、取消与并发互斥、签名拒绝、乱序状态、WAL 备份和安装前会话保存。
 
-1.1.1 发布安装包、元数据和必要源码。实际自动安装、重启和用户记录恢复需在独立 Windows 环境验收；GitHub Actions 云端构建也尚未验收。
+2026-10-15 完成 [Windows 云端签名构建验收](https://github.com/Mikuku-Kawaii/ASMRplayer/actions/runs/38722734680)：下载附件后核验 EXE/MSI 与应用公钥、签名版本、清单平台映射及 SHA-256 一致，手动触发跳过 Release 创建。自动安装、重启和用户记录恢复仍需在独立 Windows 环境验收。
 
 ### 带播放会话的冷启动回归
 
