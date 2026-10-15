@@ -2,6 +2,7 @@ import { readFile, writeFile, copyFile, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { verifyUpdaterSignature } from "./verify-updater-signature.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
@@ -26,6 +27,7 @@ for (const [type, filename] of [
   const signature = (await readFile(`${source}.sig`, "utf8")).trim();
   if (!signature) throw new Error(`Missing signature: ${source}`);
   const bytes = await readFile(source);
+  verifyUpdaterSignature(bytes, signature, config.plugins.updater.pubkey, version);
   // Use GitHub-safe names so upload normalization cannot break manifest URLs.
   const assetName = filename.replaceAll(" ", ".");
   await copyFile(source, path.join(output, assetName));
