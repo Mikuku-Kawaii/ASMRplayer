@@ -108,6 +108,13 @@ pub fn list_works(
 }
 
 #[tauri::command]
+pub fn clear_recent_works(state: State<'_, AppState>) -> AppResult<()> {
+    state.db.clear_recent_works()?;
+    state.playback.notify_affinity("");
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn preview_library_batch(state: State<'_, AppState>, work_ids: Vec<String>, action: BulkAction) -> AppResult<BulkReport> {
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || db.preview_library_batch(work_ids, action)).await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
@@ -187,6 +194,7 @@ pub fn set_work_override(
     state
         .db
         .set_work_override(&work_id, &field, &override_mode, value_text.as_deref())?;
+    state.playback.notify_affinity(&work_id);
     state.db.get_work_detail(&work_id)
 }
 
@@ -197,12 +205,25 @@ pub fn reset_work_override(
     field: String,
 ) -> AppResult<WorkDetailDto> {
     state.db.reset_work_override(&work_id, &field)?;
+    state.playback.notify_affinity(&work_id);
     state.db.get_work_detail(&work_id)
 }
 
 #[tauri::command]
 pub fn list_library_roots(state: State<'_, AppState>) -> AppResult<Vec<LibraryRootDto>> {
     state.library.list_roots()
+}
+
+#[tauri::command]
+pub async fn remove_library_root(state: State<'_, AppState>, root_id: String) -> AppResult<()> {
+    let library = state.library.clone();
+    tokio::task::spawn_blocking(move || library.remove_root(&root_id))
+        .await
+        .map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))??;
+    // One invalidation for the whole root, avoiding one list reload per work.
+    state.playback.notify_affinity("");
+    state.playback.emit_snapshot();
+    Ok(())
 }
 
 #[tauri::command]
@@ -276,14 +297,14 @@ pub async fn sync_work_from_asmr_one(
     rj_or_id: Option<String>,
     prefer_online_cover: Option<bool>,
 ) -> AppResult<WorkDetailDto> {
-    state
-        .provider
-        .sync_work_from_asmr_one(
+    let detail = state.provider.sync_work_from_asmr_one(
             &work_id,
             rj_or_id.as_deref(),
             prefer_online_cover.unwrap_or(false),
         )
-        .await
+        .await?;
+    state.playback.notify_affinity(&work_id);
+    Ok(detail)
 }
 
 #[tauri::command]
@@ -402,6 +423,11 @@ pub fn append_to_queue(
         .append_queue_items(&[(version_id, preferred_source_id)])?;
     state.playback.emit_snapshot();
     state.playback.get_snapshot()
+}
+
+#[tauri::command]
+pub async fn append_works_to_queue(state: State<'_, AppState>, work_ids: Vec<String>) -> AppResult<PlaybackSnapshot> {
+    state.playback.append_works_to_queue(work_ids).await
 }
 
 #[tauri::command]
@@ -915,8 +941,11 @@ pub async fn update_app_settings(
 }
 
 #[tauri::command]
-pub fn set_nsfw_enabled(state: State<'_, AppState>, enabled: bool) -> AppResult<bool> {
+pub fn set_nsfw_enabled(app: AppHandle, state: State<'_, AppState>, enabled: bool) -> AppResult<bool> {
     state.provider.set_nsfw_enabled(enabled)?;
+    if let Ok(settings) = state.session.get_settings() {
+        let _ = app.emit("settings:updated", settings);
+    }
     Ok(state.provider.nsfw_enabled())
 }
 
@@ -1601,5 +1630,12 @@ pub async fn desktop_lyrics_open_menu(state: State<'_, AppState>, x: f64, y: f64
 }
 #[tauri::command]
 pub fn desktop_lyrics_close_menu(state: State<'_, AppState>) -> AppResult<()> { state.desktop_lyrics.close_menu() }
+
+#[tauri::command]
+pub async fn desktop_lyrics_set_content_bounds(state: State<'_, AppState>, revision: u64, bounds: crate::services::desktop_lyrics::LyricsContentBounds) -> AppResult<()> {
+    let service = state.desktop_lyrics.clone();
+    tauri::async_runtime::spawn_blocking(move || service.set_content_bounds(revision, bounds)).await
+        .map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
+}
 #[tauri::command]
 pub fn get_active_subtitles(state: State<'_, AppState>) -> serde_json::Value { state.playback.active_subtitles() }
