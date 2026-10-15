@@ -4,7 +4,7 @@
 
 本次依据当前源码、既有验收记录及专项复跑同步状态：T1407、T1410、T1414、T1512 的功能实现已完成并勾选；它们尚欠的原生窗口检查单列为 T1514。T1411、T1412、T1415–T1417 与 T1501 保留父任务待办，并勾选已完成子项。既有 T1502–T1511 勾选保留，人工验收边界继续有效。勾选仅代表对应条目的交付范围完成，不代表应用所有验收已通过。
 
-本次专项验证：`pnpm exec vitest run --environment jsdom --globals src/features/settings/UpdateDialog.test.tsx src/features/settings/ReleaseNotes.test.tsx src/features/island/ScrollingText.test.tsx src/features/online/OnlineView.test.tsx --maxWorkers=4 --minWorkers=1`，4 个文件、21 项通过。未重跑全量前后端回归或实机验收；下方旧测试数量与版本号是历史记录。
+本次专项验证：`pnpm exec vitest run --environment jsdom --globals src/features/settings/UpdateDialog.test.tsx src/features/settings/ReleaseNotes.test.tsx src/features/island/ScrollingText.test.tsx src/features/online/OnlineView.test.tsx --maxWorkers=4 --minWorkers=1`，4 个文件、21 项通过。1.2.2 发布阶段另完成前端 202 项、Rust 164 项及实际安装包签名验证，结果见 T1516；实机待验收项继续保留，下方旧测试数量与版本号是历史记录。
 
 ### 下一阶段执行清单
 
@@ -20,14 +20,14 @@
 - [ ] **T1514 现有功能原生窗口补验收（P1）**：核验 T1407、T1410 的隐藏提醒、下载中关闭/重开，以及 T1414 长字幕/标题滚动；补验 T1502–T1512 中已实现功能的真实库、原生文件对话框、窄窗口、高 DPI、键盘及跨窗口同步。按各项既有验收记录逐项记结果；T1501 的完整功能验收须先恢复可用入口，更新异常、灵动岛首帧与单实例分别由原任务收口，不重复宣告完成。
 - [ ] **T1515 性能告警复测与定位（P1）**：按 T1511 相同设备、样本及命令，在机器空闲时复测查询/首屏告警；保留逐轮报告，必要时分析查询计划、CPU 与磁盘等待。查明并记录原因、验证修复或合理波动后再批准参考值，不放宽阈值掩盖退化。四小时播放仍由 T701 单独验收。
 
-详细需求见下方原任务和 [根目录 TODO](../../TODO.md)。每次完成任务均同步两份清单、勾选已完成项并刷新此节，规则见 [项目维护说明](../../AGENTS.md)。
+详细需求见下方原任务和 [根目录 TODO](../../TODO.md)。每次完成任务均同步两份清单、勾选并在任务标题旁写明“已完成”，同时刷新下一阶段任务，规则见 [项目维护说明](../../AGENTS.md)。
 
-## v1.2.2 发布任务（2026-10-15）
+## v1.2.2 发布任务（已完成 · 2026-10-15）
 
-- [ ] **T1516 v1.2.2 签名打包与 GitHub 发布（P1）**：将当前源码、Windows 安装包和签名更新清单发布到同一版本；完成以下子项后明确标记“已完成”。
+- [x] **T1516 v1.2.2 签名打包与 GitHub 发布（P1）**（已完成）：2026-10-15 当前源码、Windows EXE / MSI 与签名更新清单已发布至 [GitHub v1.2.2](https://github.com/Mikuku-Kawaii/ASMRplayer/releases/tag/v1.2.2)，标记为 Latest；下列子项全部完成。下一阶段继续执行页首的实机、性能、实际升级及 T1513 任务。
   - [x] **T1516.1 版本与发布检查**（已完成）：2026-10-15 统一四处版本号、更新 README 与发布说明；TypeScript、lint、前端 202 项及 Rust 164 项通过，4 项按配置忽略，其中安装包签名测试将在打包后单独执行。
   - [x] **T1516.2 Windows 签名安装包**（已完成）：2026-10-15 生成 1.2.2 EXE、MSI 与 latest.json；独立运行内置公钥安装包验证测试通过，两个真实安装包签名均有效。
-  - [ ] **T1516.3 GitHub 正式发布**：推送当前源码与 v1.2.2 标签，上传 EXE / MSI / latest.json，核对公开 Release、下载资源与更新元数据。
+  - [x] **T1516.3 GitHub 正式发布**（已完成）：2026-10-15 源码提交 7dda6dd 与 v1.2.2 标签一致，EXE / MSI / latest.json 均已公开上传；已核对 Latest、附件状态/大小及公开更新清单的 1.2.2 版本、平台 URL 和签名。
 
 ## 历史开发记录（截至 2026-10-14）
 
