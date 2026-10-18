@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+pub mod asr;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,6 +59,8 @@ pub enum ErrorCode {
     DiskFull,
     FileLocked,
     MediaDecodeFailed,
+    AudioDeviceBusy,
+    AudioOutputFailed,
     MpvMissing,
     MpvIpcError,
     EncodingUnsupported,
@@ -83,6 +86,8 @@ impl AppError {
                 | ErrorCode::RateLimited
                 | ErrorCode::MpvIpcError
                 | ErrorCode::FileLocked
+                | ErrorCode::AudioDeviceBusy
+                | ErrorCode::AudioOutputFailed
         );
         let msg = redact_sensitive(&message.into());
         let hint = default_hint(code);
@@ -113,6 +118,8 @@ fn default_hint(code: ErrorCode) -> Option<String> {
         ErrorCode::DiskOffline => Some("所属磁盘或目录当前不可访问，可在设置或根目录管理中重新定位。".into()),
         ErrorCode::DiskFull => Some("目标磁盘空间不足，请清理空间或更换下载目录后恢复任务。".into()),
         ErrorCode::FileLocked => Some("文件正被其他程序占用，请关闭占用程序后重试。".into()),
+        ErrorCode::AudioDeviceBusy => Some("请停止其他播放器或另一个 ASMR Player 实例的播放，关闭占用方的独占模式后重试；也可在音频输出中选择其他设备。".into()),
+        ErrorCode::AudioOutputFailed => Some("请检查音频设备连接和 Windows 默认输出，在音频输出中重新选择设备后重试；若开启了独占模式，可先关闭。".into()),
         ErrorCode::MpvMissing => Some("未找到 mpv 播放引擎或依赖 DLL，请检查 src-tauri/binaries 目录或重新安装。".into()),
         ErrorCode::MpvIpcError => Some("mpv 播放进程通信中断，可点击重启播放引擎恢复。".into()),
         ErrorCode::EncodingUnsupported => Some("字幕文件非 UTF-8 编码，请先转换为 UTF-8 SRT/VTT 后重新绑定。".into()),
@@ -177,6 +184,8 @@ pub enum ListeningStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkSummary {
+    #[serde(default)]
+    pub has_recognized_subtitle: bool,
     #[serde(default)]
     pub nsfw: bool,
     #[serde(default)]
@@ -303,6 +312,8 @@ pub struct DirectoryGroupOption {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkDetailDto {
+    #[serde(default)]
+    pub has_recognized_subtitle: bool,
     #[serde(default)]
     pub nsfw: bool,
     #[serde(default)]
@@ -487,6 +498,8 @@ pub struct PeqBandDto {
 #[serde(rename_all = "camelCase")]
 pub struct DspConfigDto {
     pub master_bypass: bool,
+    #[serde(default)]
+    pub loudness_normalization: bool,
     // Stage 1: Preamp & Headroom Compensation (-15.0 ~ +6.0 dB)
     pub user_preamp_db: f64,
     pub autoeq_preamp_db: f64,
@@ -524,6 +537,7 @@ impl Default for DspConfigDto {
         // Default to "asmr_pure_guard": 50Hz HPF + -1.0 dBFS 4ms Lookahead Soft Limiter
         Self {
             master_bypass: false,
+            loudness_normalization: false,
             user_preamp_db: 0.0,
             autoeq_preamp_db: 0.0,
             hpf_enabled: true,
@@ -565,6 +579,12 @@ pub struct AudioStreamTelemetryDto {
     pub codec: Option<String>,
     pub sample_rate_hz: Option<i64>,
     pub sample_format: Option<String>,
+    #[serde(default)]
+    pub source_bit_depth: Option<u16>,
+    #[serde(default)]
+    pub source_sample_rate_hz: Option<i64>,
+    #[serde(default)]
+    pub source_bitrate_kbps: Option<i64>,
     pub channels: Option<String>,
     pub bitrate_kbps: Option<i64>,
     pub active_dsp_summary: String,
@@ -980,6 +1000,12 @@ pub fn build_lavfi_graph(cfg: &DspConfigDto) -> String {
 
     let mut stages: Vec<String> = Vec::new();
 
+    // Explicit opt-in: measure decoded audio, never the legacy estimated LUFS cache.
+    // Shared-channel R128 gain precedes tone controls; the final limiter stays last.
+    if cfg.loudness_normalization {
+        stages.push("loudnorm=I=-23:LRA=20:TP=-2:linear=false,aresample=48000".into());
+    }
+
     // Stage 1: Preamp & Headroom Compensation
     let effective_preamp = compute_effective_preamp_db(cfg);
     if effective_preamp.abs() >= 0.01 {
@@ -1083,6 +1109,9 @@ pub fn summarize_dsp_chain(cfg: &DspConfigDto) -> String {
         return "原声直通 (Bit-Perfect)".into();
     }
     let mut parts = Vec::new();
+    if cfg.loudness_normalization {
+        parts.push("响度均衡 -23 LUFS".into());
+    }
     if cfg.hpf_enabled {
         parts.push(format!("HPF {:.0}Hz", cfg.hpf_cutoff_hz));
     }
@@ -1273,7 +1302,8 @@ pub struct PlaybackTickDto {
 #[serde(rename_all = "camelCase")]
 pub struct DownloadPreviewItemDto {
     pub source_id: String,
-    pub version_id: String,
+    pub version_id: Option<String>,
+    pub attachment_id: Option<String>,
     pub track_title: String,
     pub format: String,
     pub byte_size: Option<i64>,
@@ -1300,7 +1330,7 @@ pub struct DownloadTaskDto {
     pub id: String,
     pub work_id: String,
     pub work_title: String,
-    pub version_id: String,
+    pub version_id: Option<String>,
     pub track_title: String,
     pub source_id: String,
     pub status: String,
@@ -1462,6 +1492,8 @@ pub struct BackupVersionFavorite {
 #[serde(rename_all = "camelCase")]
 pub struct UserBackupBundleDto {
     #[serde(default)]
+    pub subtitle_documents: Vec<crate::db::subtitles::SubtitleBackupRecord>,
+    #[serde(default)]
     pub favorite_versions: Vec<BackupVersionFavorite>,
     pub schema_version: u32,
     pub exported_at: String,
@@ -1479,6 +1511,10 @@ pub struct UserBackupBundleDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupRestoreReportDto {
+    #[serde(default)]
+    pub subtitles_restored: usize,
+    #[serde(default)]
+    pub subtitles_skipped: usize,
     pub favorites_restored: usize,
     pub positions_restored: usize,
     pub bookmarks_restored: usize,
@@ -1731,8 +1767,8 @@ pub fn is_valid_normal_window_bounds(
 /// Guarantees:
 /// 1. If the window was closed on a secondary monitor (`副屏`, whether at positive coordinates to the right
 ///    or negative coordinates to the left/top), it restores onto that exact secondary monitor.
-/// 2. If the window was maximized on the secondary monitor, `x` and `y` are clamped inside the secondary
-///    monitor's interior so `set_position` followed by `maximize()` maximizes on the secondary monitor.
+/// 2. The normal rectangle stays within its monitor, so restoring it before maximizing
+///    preserves both the target monitor and the position used when returning to normal mode.
 /// 3. If the secondary monitor was unplugged since last close, safely falls back and centers on the
 ///    primary/first available monitor so the window is never stranded off-screen.
 pub fn resolve_window_restore_placement(
@@ -1768,7 +1804,7 @@ pub fn resolve_window_restore_placement(
             && saved.monitor_y == Some(m.y)
     });
 
-    // 2. Monitor containing the saved window's center point
+    // Geometric fallback for old records without a stable monitor name.
     let by_center = monitors.iter().find(|m| {
         let right = m.x.saturating_add(m.width as i32);
         let bottom = m.y.saturating_add(m.height as i32);
@@ -1780,15 +1816,15 @@ pub fn resolve_window_restore_placement(
         saved.monitor_x == Some(m.x) && saved.monitor_y == Some(m.y)
     });
 
-    // 4. Monitor matching saved monitor name even if virtual desktop coordinates shifted
+    // Prefer monitor identity even if its virtual desktop coordinates shifted.
     let by_name_only = monitors.iter().find(|m| {
         saved.monitor_name.is_some() && m.name == saved.monitor_name
     });
 
     let matched_monitor = by_name_and_origin
+        .or(by_name_only)
         .or(by_center)
-        .or(by_origin)
-        .or(by_name_only);
+        .or(by_origin);
 
     let (target_mon, is_matched) = match matched_monitor {
         Some(m) => (m, true),
@@ -1820,17 +1856,10 @@ pub fn resolve_window_restore_placement(
             .y
             .saturating_add((mon_h as i32).saturating_sub(height as i32).max(0));
 
-        // If maximized, ensure the anchor point is strictly inside the target monitor's interior
-        // so Windows `MonitorFromWindow` / `maximize()` targets the secondary monitor accurately.
+        // Keep the normal rectangle on the target screen, including positions at its edge.
         let clamped_x = raw_x.clamp(target_mon.x, max_x);
         let clamped_y = raw_y.clamp(target_mon.y, max_y);
-        if saved.maximized {
-            let inner_x = clamped_x.max(target_mon.x.saturating_add(24)).min(max_x);
-            let inner_y = clamped_y.max(target_mon.y.saturating_add(24)).min(max_y);
-            (inner_x, inner_y)
-        } else {
-            (clamped_x, clamped_y)
-        }
+        (clamped_x, clamped_y)
     } else {
         // Secondary monitor was disconnected -> center cleanly on primary fallback monitor
         let centered_x = target_mon
@@ -1906,6 +1935,7 @@ mod tests {
         // 3. Full 8-stage ASMR DSP chain construction (R18 + R19 + T1102 Swap L/R & BS2B)
         let mut full_cfg = DspConfigDto {
             master_bypass: false,
+            loudness_normalization: false,
             user_preamp_db: 0.0,
             autoeq_preamp_db: preamp,
             hpf_enabled: true,
@@ -1949,8 +1979,28 @@ mod tests {
     }
 
     #[test]
+    fn loudness_normalization_is_opt_in_serialized_and_bypassed() {
+        let mut cfg = DspConfigDto::default();
+        assert!(!build_lavfi_graph(&cfg).contains("loudnorm"));
+        let mut legacy = serde_json::to_value(&cfg).unwrap();
+        legacy.as_object_mut().unwrap().remove("loudnessNormalization");
+        assert!(!serde_json::from_value::<DspConfigDto>(legacy).unwrap().loudness_normalization);
+        cfg.loudness_normalization = true;
+        let graph = build_lavfi_graph(&cfg);
+        assert!(graph.starts_with("lavfi=[loudnorm=I=-23:LRA=20:TP=-2:linear=false,aresample=48000,"));
+        assert!(graph.find("loudnorm").unwrap() < graph.find("alimiter").unwrap());
+        assert!(graph.contains("level=0"));
+        assert!(summarize_dsp_chain(&cfg).contains("响度均衡 -23 LUFS"));
+        assert!(serde_json::from_str::<DspConfigDto>(&serde_json::to_string(&cfg).unwrap()).unwrap().loudness_normalization);
+        cfg.master_bypass = true;
+        assert_eq!(build_lavfi_graph(&cfg), "");
+        assert!(!summarize_dsp_chain(&cfg).contains("响度均衡"));
+    }
+
+    #[test]
     fn test_encrypted_sync_bundle_roundtrip_and_tamper_rejection_t1203() {
         let bundle = UserBackupBundleDto {
+            subtitle_documents: vec![],
             favorite_versions: vec![],
             schema_version: 1,
             exported_at: "2026-10-12T12:00:00Z".into(),

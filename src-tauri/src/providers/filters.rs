@@ -7,6 +7,7 @@ pub enum OnlineFilterKind {
     VoiceActor,
     Circle,
     Tag,
+    Age,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -75,6 +76,10 @@ pub fn build_filter_query(keyword: &str, filters: &[OnlineFilter]) -> AppResult<
             OnlineFilterKind::VoiceActor => "va",
             OnlineFilterKind::Circle => "circle",
             OnlineFilterKind::Tag => "tag",
+            OnlineFilterKind::Age => {
+                if value != "adult" { return Err(invalid()); }
+                "age"
+            },
         };
         let sign = if filter.exclude { "-" } else { "" };
         let term = format!("${sign}{namespace}:{value}$");
@@ -108,6 +113,42 @@ mod tests {
         let filters: Vec<_> = (0..6).map(|n| OnlineFilter { kind: OnlineFilterKind::Tag, value: n.to_string(), exclude: false }).collect();
         assert!(build_filter_query("", &filters[..5]).is_ok());
         assert!(build_filter_query("", &filters).is_err());
+    }
+
+    #[tokio::test]
+    async fn r18_uses_age_query_and_respects_global_visibility() {
+        let server = MockServer::start().await;
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        let provider = AsmrOneProvider::new(db);
+        provider.set_api_base(&server.uri()).unwrap();
+        let filters = vec![
+            OnlineFilter { kind: OnlineFilterKind::Age, value: "adult".into(), exclude: false },
+            OnlineFilter { kind: OnlineFilterKind::Tag, value: "耳かき".into(), exclude: false },
+        ];
+        assert_eq!(build_filter_query("睡眠", &filters).unwrap(), "睡眠 $age:adult$ $tag:耳かき$");
+        assert!(build_filter_query("", &[OnlineFilter { kind: OnlineFilterKind::Age, value: "invalid".into(), exclude: false }]).is_err());
+        let mut too_many: Vec<_> = (0..5).map(|index| OnlineFilter {
+            kind: OnlineFilterKind::Tag, value: format!("标签{index}"), exclude: false,
+        }).collect();
+        too_many.push(filters[0].clone());
+        assert!(build_filter_query("", &too_many).is_ok());
+        too_many.push(filters[1].clone());
+        assert!(build_filter_query("", &too_many).is_err());
+        let hidden = provider.search_filtered_works("睡眠", &filters, 1, "release", "desc", false).await.unwrap();
+        assert!(hidden.items.is_empty());
+        assert_eq!(hidden.total_count, 0);
+        assert!(server.received_requests().await.unwrap().is_empty());
+        provider.set_nsfw_enabled(true).unwrap();
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "works": [{"id": 1, "title": "测试", "nsfw": true, "vas": [], "tags": [], "circle": {"name":"测试"}}],
+            "pagination": {"currentPage": 1, "pageSize": 20, "totalCount": 1}
+        }))).mount(&server).await;
+        let visible = provider.search_filtered_works("睡眠", &filters, 1, "release", "desc", true).await.unwrap();
+        assert_eq!(visible.items.len(), 1);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(urlencoding::decode(requests[0].url.path()).unwrap(), "/api/search/睡眠 $age:adult$ $tag:耳かき$");
+        assert!(requests[0].url.query_pairs().any(|(key, value)| key == "subtitle" && value == "1"));
     }
 
     #[test]

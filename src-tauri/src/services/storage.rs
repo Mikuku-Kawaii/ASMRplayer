@@ -265,7 +265,8 @@ impl StorageService {
         // Walk only application cache, without following any link. Directory junctions are
         // rejected again by LockedFile, including ancestors outside the cache root.
         if self.db.cache_dir.exists() {
-            for item in walkdir::WalkDir::new(&self.db.cache_dir).follow_links(false) {
+            for item in walkdir::WalkDir::new(&self.db.cache_dir).follow_links(false).into_iter()
+                .filter_entry(|item| item.depth() == 0 || !item.file_name().to_string_lossy().eq_ignore_ascii_case("EBWebView")) {
                 match item {
                     Ok(item) if item.file_type().is_file() => {
                         let rel = item
@@ -290,12 +291,13 @@ impl StorageService {
                             "covers" | "thumbnails" | "waveforms" | "subtitles" | "smtc_lrc"
                         ) || (rel.components().count() == 1
                             && rel.extension().is_some_and(|e| e == "cache"));
+                        if !known { continue; }
                         c.entries.push(entry(
                             format!("cache:{}", key(item.path())),
                             category,
                             &self.db.cache_dir,
                             item.path().into(),
-                            (!known).then(|| "未识别的缓存文件，保留".into()),
+                            None,
                         ));
                     }
                     Ok(item) if item.file_type().is_symlink() => {
@@ -544,6 +546,23 @@ mod tests {
         }).unwrap();
         path
     }
+    #[test]
+    fn playback_cache_excludes_webview_and_unknown_files() {
+        let f = fixture();
+        let browser = cache(&f, "EBWebView/Default/Cache/data.cache", b"browser data");
+        let manifest = cache(&f, "EBWebView/AutoLaunch/manifest.json", b"{}");
+        let unknown = cache(&f, "other/session.bin", b"unknown");
+        let stream = cache(&f, "stream.cache", b"audio");
+        let overview = f.storage.overview().unwrap();
+        assert_eq!(overview.entries.len(), 1);
+        let preview = f.storage.preview(Category::Playback, vec![]).unwrap();
+        assert_eq!(preview.reclaimable_bytes, 5);
+        let result = f.storage.execute(&preview.token).unwrap();
+        assert_eq!(result.deleted_count, 1);
+        assert!(!stream.exists());
+        assert!(browser.exists() && manifest.exists() && unknown.exists());
+    }
+
     #[test]
     fn inventory_counts_four_categories_and_preview_does_not_mutate() {
         let f = fixture();

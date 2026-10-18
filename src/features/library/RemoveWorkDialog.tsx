@@ -1,3 +1,4 @@
+import { ErrorNotice } from "../../components/ErrorNotice";
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Trash2, X } from "lucide-react";
@@ -87,8 +88,8 @@ export function RemoveWorkDialog({ work, onConfirm, onClose }: {
           <span>下次不再提醒<small>之后直接移除作品索引，保留音频文件。</small></span>
         </label>
       </div>
-      {error && <p className="error-banner" role="alert">{error}</p>}
-      <footer className="library-remove-footer">
+      {error && <ErrorNotice message={error} />}
+      <footer className="library-remove-footer dialog-actions">
         <button ref={cancel} type="button" className="btn btn-ghost" disabled={pending} onClick={onClose}>取消</button>
         <button type="button" className="btn btn-danger" disabled={pending} onClick={() => void confirm()}><Trash2 size={14} /><span className="ui-icon-label">
           {pending ? "正在移除…" : deleteFiles ? "移除并删除下载文件" : "移除作品索引"}

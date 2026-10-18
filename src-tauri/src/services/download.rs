@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 pub mod scheduling;
+mod batch;
 #[cfg(test)]
 mod scheduling_tests;
 use scheduling::{DownloadPolicy, RateBudget};
@@ -104,7 +105,7 @@ pub fn ensure_safe_parent_dir(download_root: &Path, rel_path: &str) -> AppResult
         })?;
     }
     let root_meta = fs::symlink_metadata(download_root)?;
-    if root_meta.file_type().is_symlink() {
+    if root_meta.file_type().is_symlink() || !root_meta.is_dir() {
         return Err(AppError::new(
             ErrorCode::PathSecurityViolation,
             "下载根目录不允许为符号链接或目录联接",
@@ -125,16 +126,19 @@ pub fn ensure_safe_parent_dir(download_root: &Path, rel_path: &str) -> AppResult
             ));
         }
         cur.push(dir_part);
-        if cur.exists() {
-            let meta = fs::symlink_metadata(&cur)?;
-            if meta.file_type().is_symlink() {
-                return Err(AppError::new(
-                    ErrorCode::PathSecurityViolation,
-                    format!("目标路径包含符号链接或目录联接，拒绝写入: {}", cur.display()),
-                ));
-            }
-        } else {
-            fs::create_dir(&cur)?;
+        // Another transfer can create the shared work directory concurrently.
+        // AlreadyExists is acceptable only after checking what actually exists.
+        match fs::create_dir(&cur) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e.into()),
+        }
+        let meta = fs::symlink_metadata(&cur)?;
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            return Err(AppError::new(
+                ErrorCode::PathSecurityViolation,
+                format!("目标父路径不是普通目录或包含链接，拒绝写入: {}", cur.display()),
+            ));
         }
     }
 
@@ -175,16 +179,23 @@ pub fn verify_downloaded_part_file(
     expected_bytes: Option<i64>,
     remote_sha256: Option<&str>,
 ) -> AppResult<(i64, String, String)> {
+    verify_downloaded_file(part_path,expected_bytes,remote_sha256,false,false)
+}
+
+fn verify_downloaded_file(
+    part_path: &Path, expected_bytes: Option<i64>, remote_sha256: Option<&str>,
+    attachment: bool, html_document: bool,
+) -> AppResult<(i64, String, String)> {
     let mut file = OpenOptions::new().read(true).open(part_path)?;
     let actual_len = file.metadata()?.len() as i64;
-    if actual_len <= 0 {
+    if actual_len == 0 && !(attachment && expected_bytes == Some(0)) {
         return Err(AppError::new(
             ErrorCode::MediaDecodeFailed,
             "下载文件长度为 0，校验失败",
         ));
     }
     if let Some(exp) = expected_bytes {
-        if exp > 0 && actual_len != exp {
+        if exp >= 0 && actual_len != exp {
             return Err(AppError::new(
                 ErrorCode::MediaDecodeFailed,
                 format!("文件字节数不匹配：期望 {} 字节，实际 {} 字节", exp, actual_len),
@@ -196,9 +207,9 @@ pub fn verify_downloaded_part_file(
     let n = file.read(&mut head_buf)?;
     let head_ascii = String::from_utf8_lossy(&head_buf[..n]).to_ascii_lowercase();
     let trimmed_head = head_ascii.trim_start();
-    if trimmed_head.starts_with("<!doctype html")
+    if (!html_document && (trimmed_head.starts_with("<!doctype html")
         || trimmed_head.starts_with("<html")
-        || trimmed_head.starts_with("<head")
+        || trimmed_head.starts_with("<head")))
         || trimmed_head.starts_with("{\"error\"")
     {
         return Err(AppError::new(
@@ -378,7 +389,7 @@ impl DownloadService {
         let pending_rows: Vec<(String, String, String, String, String, String, Option<i64>, i64)> =
             self.db.with_conn(|conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT id, version_id, source_id, status, temp_relative_path, target_relative_path, total_bytes, final_renamed
+                    "SELECT id, COALESCE(version_id,''), COALESCE(source_id,attachment_id), status, temp_relative_path, target_relative_path, total_bytes, final_renamed
                      FROM downloads WHERE status NOT IN ('completed', 'canceled')",
                 )?;
                 let rows = stmt.query_map([], |r| {
@@ -408,7 +419,7 @@ impl DownloadService {
                 if let Ok(meta) = fs::metadata(&target_full) {
                     let len = meta.len() as i64;
                     let matches_expected = match total_bytes {
-                        Some(exp) if exp > 0 => len == exp,
+                        Some(exp) if exp >= 0 => len == exp,
                         _ => len > 0 && final_renamed == 1,
                     };
                     if matches_expected {
@@ -477,6 +488,13 @@ impl DownloadService {
         self.db.with_conn(|conn| {
             let tx = conn.transaction()?;
 
+            let attachment: Option<String> = tx.query_row(
+                "SELECT attachment_id FROM downloads WHERE id=?1", [task_id], |r| r.get(0))?;
+            if let Some(id) = attachment {
+                // Keep documents out of the playable version/source graph.
+                tx.execute("UPDATE attachments SET absolute_path=?1,byte_size=?2,availability='available' WHERE id=?3",
+                    params![abs_clean,actual_bytes,id])?;
+            } else {
             // Check if local_downloaded media_source already exists for this version_id & relative_path
             let existing_local: Option<String> = tx
                 .query_row(
@@ -527,12 +545,13 @@ impl DownloadService {
                 )?;
                 let _ = remote_file_id;
             }
+            }
 
             tx.execute(
                 "UPDATE downloads
                  SET status = 'completed', downloaded_bytes = ?1, total_bytes = ?1,
                      content_sha256 = COALESCE(?2, content_sha256), integrity_mode = ?3,
-                     final_renamed = 1, error_code = NULL, error_message = NULL, updated_at = ?4
+                     final_renamed = 1, error_code = NULL, error_message = NULL, next_retry_at = NULL, updated_at = ?4
                  WHERE id = ?5",
                 params![actual_bytes, sha256, integrity_mode, now_str, task_id],
             )?;
@@ -546,13 +565,17 @@ impl DownloadService {
         let speeds_map = self.speeds.lock().clone();
         self.db.with_conn(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT d.id, d.work_id, w.title, d.version_id, t.title, d.source_id,
+                "SELECT d.id, d.work_id, w.title, d.version_id, COALESCE(a.title,t.title), COALESCE(d.source_id,d.attachment_id),
                         d.status, d.target_relative_path, d.downloaded_bytes, d.total_bytes,
                         d.integrity_mode, d.retry_count, d.error_code, d.error_message, d.updated_at, d.priority, d.next_retry_at
                  FROM downloads d
                  JOIN works w ON w.id = d.work_id
-                 JOIN track_versions tv ON tv.id = d.version_id
-                 JOIN tracks t ON t.id = tv.track_id
+                 LEFT JOIN track_versions tv ON tv.id = d.version_id
+                 LEFT JOIN tracks t ON t.id = tv.track_id
+                 LEFT JOIN attachments a ON a.id = d.attachment_id
+                 WHERE d.status != 'completed' OR NOT EXISTS (
+                     SELECT 1 FROM download_task_dismissals cleared WHERE cleared.task_id = d.id
+                 )
                  ORDER BY d.priority DESC, d.created_at ASC, d.rowid ASC",
             )?;
             let rows = stmt.query_map([], |r| {
@@ -667,7 +690,8 @@ impl DownloadService {
 
                     items.push(DownloadPreviewItemDto {
                         source_id: src.id.clone(),
-                        version_id: ver.id.clone(),
+                        version_id: Some(ver.id.clone()),
+                        attachment_id: None,
                         track_title: track.title.clone(),
                         format: src.format.clone(),
                         byte_size: src.byte_size,
@@ -677,6 +701,34 @@ impl DownloadService {
                     });
                 }
             }
+        }
+
+        let attachments: Vec<(String,String,Option<String>,Option<i64>,bool,Option<String>)> = self.db.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT a.id,a.title,a.relative_path,a.byte_size,
+                    EXISTS(SELECT 1 FROM downloads d WHERE d.attachment_id=a.id AND d.status NOT IN ('completed','failed','canceled')),
+                    (SELECT target_relative_path FROM downloads d WHERE d.attachment_id=a.id AND d.status='completed' ORDER BY created_at DESC LIMIT 1)
+                 FROM attachments a WHERE a.work_id=?1 AND a.provider IS NOT NULL AND a.remote_file_id IS NOT NULL
+                 ORDER BY a.relative_path,a.id")?;
+            let rows = stmt.query_map([work_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
+            Ok(rows.collect::<Result<_,_>>()?)
+        })?;
+        for (id,title,relative,bytes,queued,completed) in attachments {
+            if source_ids.as_ref().is_some_and(|ids| !ids.contains(&id)) { continue; }
+            let remote_rel = relative.as_deref().unwrap_or(&title);
+            let format = Path::new(remote_rel).extension().and_then(|s|s.to_str()).unwrap_or("bin").to_ascii_lowercase();
+            let mut target = build_safe_target_relative_path(&detail.title,detail.rj_code.as_deref(),remote_rel,&id);
+            if !used_rel_paths_lower.insert(target.to_lowercase()) {
+                let path = Path::new(&target);
+                let stem = path.file_stem().and_then(|s|s.to_str()).unwrap_or("file");
+                let leaf = if format == "bin" && path.extension().is_none() { format!("{stem}_{id}") } else { format!("{stem}_{id}.{format}") };
+                target = path.with_file_name(leaf).to_string_lossy().replace('\\',"/");
+                used_rel_paths_lower.insert(target.to_lowercase());
+            }
+            total_bytes += bytes.unwrap_or(0);
+            let already_downloaded = completed.is_some_and(|rel| self.get_download_root().join(rel.replace('/',"\\")).is_file());
+            items.push(DownloadPreviewItemDto {source_id:id.clone(),version_id:None,attachment_id:Some(id),
+                track_title:title,format,byte_size:bytes,target_relative_path:target,already_downloaded,already_queued:queued});
         }
 
         Ok(DownloadPreviewDto {
@@ -708,7 +760,7 @@ impl DownloadService {
                 }
                 let existing: Option<(String, String)> = tx
                     .query_row(
-                        "SELECT id, status FROM downloads WHERE source_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                        "SELECT id, status FROM downloads WHERE COALESCE(source_id,attachment_id) = ?1 ORDER BY created_at DESC LIMIT 1",
                         params![item.source_id],
                         |r| Ok((r.get(0)?, r.get(1)?)),
                     )
@@ -732,7 +784,7 @@ impl DownloadService {
                 let mut target_rel = item.target_relative_path.clone();
                 let collision: Option<i64> = tx
                     .query_row(
-                        "SELECT 1 FROM downloads WHERE LOWER(target_relative_path) = LOWER(?1) AND source_id != ?2",
+                        "SELECT 1 FROM downloads WHERE LOWER(target_relative_path) = LOWER(?1) AND COALESCE(source_id,attachment_id) != ?2",
                         params![target_rel, item.source_id],
                         |r| r.get(0),
                     )
@@ -757,18 +809,19 @@ impl DownloadService {
                 let temp_rel = format!("{}.part", target_rel);
                 let tid = Uuid::new_v4().to_string();
                 tx.execute(
-                    "INSERT INTO downloads (id, work_id, version_id, source_id, status, temp_relative_path, target_relative_path, downloaded_bytes, total_bytes, integrity_mode, retry_count, final_renamed, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, 0, ?7, 'limited_size_and_header', 0, 0, ?8, ?9)",
+                    "INSERT INTO downloads (id, work_id, version_id, source_id, status, temp_relative_path, target_relative_path, downloaded_bytes, total_bytes, integrity_mode, retry_count, final_renamed, created_at, updated_at,attachment_id)
+                     VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, 0, ?7, 'limited_size_and_header', 0, 0, ?8, ?9,?10)",
                     params![
                         tid,
                         work_id,
                         item.version_id,
-                        item.source_id,
+                        if item.attachment_id.is_none() { Some(&item.source_id) } else { None },
                         temp_rel,
                         target_rel,
                         item.byte_size,
                         now_str,
-                        now_str
+                        now_str,
+                        item.attachment_id
                     ],
                 )?;
                 to_spawn.push(tid);
@@ -893,6 +946,7 @@ impl DownloadService {
 
         self.db.with_conn(|conn| {
             let tx = conn.transaction()?;
+            tx.execute("UPDATE attachments SET absolute_path=NULL WHERE id IN (SELECT attachment_id FROM downloads WHERE work_id=?1 AND attachment_id IS NOT NULL)",params![work_id])?;
             tx.execute("DELETE FROM downloads WHERE work_id = ?1", params![work_id])?;
             tx.execute(
                 "DELETE FROM media_sources
@@ -980,7 +1034,7 @@ impl DownloadService {
             Option<String>,
         )> = self.db.with_conn(|conn| {
             conn.query_row(
-                "SELECT version_id, source_id, status, temp_relative_path, target_relative_path,
+                "SELECT COALESCE(version_id,''), COALESCE(source_id,attachment_id), status, temp_relative_path, target_relative_path,
                         total_bytes, etag, last_modified
                  FROM downloads WHERE id = ?1",
                 params![task_id],
@@ -1039,13 +1093,45 @@ impl DownloadService {
             conn.query_row(
                 "SELECT COALESCE(provider, 'asmr_one'), COALESCE(source_work_id, ''),
                         COALESCE(remote_file_id, ''), COALESCE(remote_relative_path, ''), content_sha256
-                 FROM media_sources WHERE id = ?1",
+                 FROM media_sources WHERE id = ?1
+                 UNION ALL SELECT COALESCE(provider,'asmr_one'),COALESCE(source_work_id,''),
+                     COALESCE(remote_file_id,''),COALESCE(relative_path,''),NULL FROM attachments WHERE id=?1",
                 params![source_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .optional()?
             .ok_or_else(|| AppError::new(ErrorCode::SourceNotFound, "未找到关联的媒体源"))
         })?;
+
+        let download_root = self.get_download_root();
+        let target_full = ensure_safe_parent_dir(&download_root, &target_rel)?;
+        let temp_full = ensure_safe_parent_dir(&download_root, &temp_rel)?;
+        // A prior attempt may have published the file but failed to register it.
+        // Resume that task's verified output before resolving/downloading again.
+        let (final_renamed, saved_sha): (bool, Option<String>) = self.db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT final_renamed, content_sha256 FROM downloads WHERE id=?1",
+                [task_id], |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })?;
+        if final_renamed && target_full.is_file() && !temp_full.exists() {
+            if fs::symlink_metadata(&target_full)?.file_type().is_symlink() {
+                return Err(AppError::new(ErrorCode::PathSecurityViolation, "已下载文件被替换为链接，拒绝恢复"));
+            }
+            let (len, sha, integrity) = verify_downloaded_file(
+                &target_full, saved_total_bytes,
+                expected_sha256.as_deref().or(saved_sha.as_deref()),
+                version_id.is_empty(),
+                version_id.is_empty() && target_full.extension().and_then(|s| s.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm")),
+            )?;
+            let _operation = self.operation.lock();
+            if cancel_flag.load(Ordering::SeqCst) { return Ok(()) }
+            self.complete_task_in_db(task_id, &version_id, &source_id, &target_rel,
+                &target_full, len, Some(&sha), &integrity)?;
+            self.emit_tasks_updated();
+            return Ok(());
+        }
 
         let resolved = if remote_file_id.starts_with("http://") || remote_file_id.starts_with("https://")
         {
@@ -1070,10 +1156,6 @@ impl DownloadService {
         if cancel_flag.load(Ordering::SeqCst) {
             return Ok(());
         }
-
-        let download_root = self.get_download_root();
-        let target_full = ensure_safe_parent_dir(&download_root, &target_rel)?;
-        let temp_full = ensure_safe_parent_dir(&download_root, &temp_rel)?;
 
         let existing_part_len = if temp_full.is_file() {
             fs::metadata(&temp_full).map(|m| m.len()).unwrap_or(0)
@@ -1339,10 +1421,13 @@ impl DownloadService {
 
         drop(operation);
         // T506: Verify length, non-HTML header, and SHA-256
-        let (actual_len, calc_sha, integrity_mode) = verify_downloaded_part_file(
+        let (actual_len, calc_sha, integrity_mode) = verify_downloaded_file(
             &temp_full,
             final_expected_bytes,
             expected_sha256.as_deref(),
+            version_id.is_empty(),
+            version_id.is_empty() && target_full.extension().and_then(|s|s.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm")),
         )?;
 
         // Pause/cancel and final rename+registration are serialized.
@@ -1358,8 +1443,8 @@ impl DownloadService {
 
         let _ = self.db.with_conn(|conn| {
             conn.execute(
-                "UPDATE downloads SET final_renamed = 1 WHERE id = ?1",
-                params![task_id],
+                "UPDATE downloads SET final_renamed = 1, content_sha256 = ?2, total_bytes = ?3 WHERE id = ?1",
+                params![task_id, calc_sha, actual_len],
             )?;
             Ok(())
         });
@@ -1657,3 +1742,6 @@ mod download_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod all_files_tests;

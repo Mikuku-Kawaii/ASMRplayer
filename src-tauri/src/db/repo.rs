@@ -35,6 +35,8 @@ struct LruCoverCache {
     map: HashMap<String, Option<String>>,
     order: VecDeque<String>,
     capacity: usize,
+    bytes: usize,
+    max_bytes: usize,
 }
 
 impl LruCoverCache {
@@ -43,6 +45,8 @@ impl LruCoverCache {
             map: HashMap::with_capacity(capacity),
             order: VecDeque::with_capacity(capacity),
             capacity,
+            bytes: 0,
+            max_bytes: 64 * 1024 * 1024,
         }
     }
 
@@ -56,17 +60,58 @@ impl LruCoverCache {
     }
 
     fn insert(&mut self, key: String, val: Option<String>) {
-        if self.map.contains_key(&key) {
+        if let Some(previous) = self.map.remove(&key) {
+            self.bytes = self.bytes.saturating_sub(Self::entry_bytes(&key, &previous));
             if let Some(pos) = self.order.iter().position(|k| k == &key) {
                 self.order.remove(pos);
             }
-        } else if self.map.len() >= self.capacity {
-            if let Some(oldest) = self.order.pop_front() {
-                self.map.remove(&oldest);
-            }
         }
+        let bytes = Self::entry_bytes(&key, &val);
+        // Entry count alone allowed 512 x 20 MiB base64 covers to stay resident.
+        // Oversized covers still render, but do not evict the entire useful cache.
+        if bytes > self.max_bytes || self.capacity == 0 { return; }
+        while self.map.len() >= self.capacity || self.bytes + bytes > self.max_bytes {
+            if let Some(oldest) = self.order.pop_front() {
+                if let Some(old) = self.map.remove(&oldest) {
+                    self.bytes = self.bytes.saturating_sub(Self::entry_bytes(&oldest, &old));
+                }
+            } else { break; }
+        }
+        self.bytes += bytes;
         self.order.push_back(key.clone());
         self.map.insert(key, val);
+    }
+
+    fn entry_bytes(key: &str, val: &Option<String>) -> usize {
+        key.len() * 2 + val.as_ref().map_or(0, String::capacity)
+    }
+}
+
+#[cfg(test)]
+mod cover_budget_tests {
+    use super::*;
+
+    #[test]
+    fn long_runtime_cover_cache_is_bounded_by_bytes_and_evicts_least_recent() {
+        let mut cache = LruCoverCache::new(512);
+        cache.max_bytes = 32;
+        cache.insert("a".into(), Some("1234567890".into()));
+        cache.insert("b".into(), Some("1234567890".into()));
+        assert!(cache.get("a").is_some());
+        cache.insert("c".into(), Some("1234567890".into()));
+        assert!(cache.get("b").is_none());
+        assert!(cache.get("a").is_some());
+        for i in 0..10_000 {
+            cache.insert(i.to_string(), Some("1234567890".into()));
+            assert!(cache.bytes <= 32);
+        }
+        let before = cache.bytes;
+        cache.insert("oversized".into(), Some("x".repeat(33)));
+        assert_eq!(cache.bytes, before);
+        assert!(cache.get("oversized").is_none());
+        cache.insert("same".into(), Some("1234567890".into()));
+        cache.insert("same".into(), None);
+        assert_eq!(cache.bytes, cache.map.iter().map(|(k,v)| LruCoverCache::entry_bytes(k,v)).sum::<usize>());
     }
 }
 
@@ -584,9 +629,9 @@ impl Database {
     }
 
     pub fn list_works(&self, filter: &str, search: Option<&str>) -> AppResult<Vec<WorkSummary>> {
+        let recognized_works = self.recognized_subtitle_works(None)?;
         self.with_conn(|conn| {
-            let listening_states = super::bulk_library::listening_states(conn)?;
-            let listening_statuses = super::listening::statuses(conn)?;
+            let (listening_states, listening_statuses) = super::listening::library_states(conn)?;
             // 1. Preload all user overrides in a single query (T901: eliminates N queries)
             let mut all_overrides: HashMap<String, BTreeMap<String, (String, Option<String>)>> =
                 HashMap::new();
@@ -664,19 +709,24 @@ impl Database {
             }
 
             // 3. Single CTE query aggregating media_sources & latest work_sources (T901: eliminates 2N queries)
+            // T1515: Covering scans avoid per-source table lookups. Deduplicate
+            // kind/availability pairs before computing six flags for each work.
             let mut stmt = conn.prepare_cached(
-                "WITH src_agg AS (
-                    SELECT t.work_id,
+                "WITH source_kinds AS (
+                    SELECT DISTINCT t.work_id, ms.source_kind, ms.availability
+                    FROM tracks t
+                    CROSS JOIN track_versions tv ON tv.track_id = t.id
+                    CROSS JOIN media_sources ms ON ms.version_id = tv.id
+                 ), src_agg AS (
+                    SELECT ms.work_id,
                            MAX(CASE WHEN ms.source_kind IN ('local_imported', 'local_downloaded') THEN 1 ELSE 0 END) AS has_local,
                            MAX(CASE WHEN ms.source_kind = 'local_imported' THEN 1 ELSE 0 END) AS has_local_imported,
                            MAX(CASE WHEN ms.source_kind = 'local_downloaded' THEN 1 ELSE 0 END) AS has_downloaded,
                            MAX(CASE WHEN ms.source_kind = 'online_provider' THEN 1 ELSE 0 END) AS has_online_src,
                            MAX(CASE WHEN ms.availability = 'available' THEN 1 ELSE 0 END) AS any_available,
                            MAX(CASE WHEN ms.availability = 'offline_disk' THEN 1 ELSE 0 END) AS any_offline_disk
-                    FROM tracks t
-                    JOIN track_versions tv ON tv.track_id = t.id
-                    JOIN media_sources ms ON ms.version_id = tv.id
-                    GROUP BY t.work_id
+                    FROM source_kinds ms
+                    GROUP BY ms.work_id
                  ),
                  latest_ws AS (
                     SELECT ws.work_id, ws.source_work_id, ws.raw_metadata_json
@@ -821,7 +871,8 @@ impl Database {
                 let manual = ov_map.and_then(|m| m.get("nsfw")).filter(|v| v.0 == "set").and_then(|v| v.1.as_deref());
                 let nsfw = manual.and_then(|v| v.parse::<bool>().ok()).unwrap_or_else(|| nsfw_detected || content_is_nsfw(None, online_meta.as_ref(), &tags, &title));
                 if !nsfw_enabled && nsfw { continue; }
-                let has_subtitle = has_subtitle_metadata || subtitle_works.contains(&id) || metadata_has_subtitle(online_meta.as_ref());
+                let has_recognized_subtitle = recognized_works.contains(&id);
+                let has_subtitle = has_recognized_subtitle || has_subtitle_metadata || subtitle_works.contains(&id) || metadata_has_subtitle(online_meta.as_ref());
 
                 if !q_lower.is_empty() {
                     let matched = fts_matched_work_ids.contains(&id)
@@ -849,6 +900,7 @@ impl Database {
                 };
 
                 results.push(WorkSummary {
+                    has_recognized_subtitle,
                     nsfw,
                     has_subtitle,
                     listening_status: listening_statuses.get(&id).copied().unwrap_or_default(),
@@ -1060,6 +1112,7 @@ impl Database {
     }
 
     pub fn get_work_detail(&self, work_id: &str) -> AppResult<WorkDetailDto> {
+        let has_recognized_subtitle = self.recognized_subtitle_works(Some(work_id))?.contains(work_id);
         self.with_conn(|conn| {
             let row = conn
                 .query_row(
@@ -1328,8 +1381,9 @@ impl Database {
             let manual = overrides.iter().find(|o| o.field == "nsfw" && o.override_mode == "set").and_then(|o| o.value_text.as_deref());
             let (detected, subtitle_metadata): (bool, bool) = conn.query_row("SELECT nsfw_detected,has_subtitle_metadata FROM works WHERE id=?1", [work_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
             let nsfw = manual.and_then(|v| v.parse::<bool>().ok()).unwrap_or_else(|| detected || content_is_nsfw(None, meta.as_ref(), &tags, &title));
-            let has_subtitle = subtitle_metadata || metadata_has_subtitle(meta.as_ref()) || attachments.iter().any(|a| a.attachment_type == "subtitle" && a.availability == "available");
+            let has_subtitle = has_recognized_subtitle || subtitle_metadata || metadata_has_subtitle(meta.as_ref()) || attachments.iter().any(|a| a.attachment_type == "subtitle" && a.availability == "available");
             Ok(WorkDetailDto {
+                has_recognized_subtitle,
                 nsfw,
                 has_subtitle,
                 id,
@@ -2469,6 +2523,17 @@ impl Database {
             };
 
             Ok(UserBackupBundleDto {
+                subtitle_documents: {
+                    let mut stmt = conn.prepare("SELECT document_json,updated_at FROM subtitle_documents ORDER BY version_id,source_key")?;
+                    let rows = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?;
+                    let mut records = Vec::new();
+                    for row in rows {
+                        let (raw, updated_at) = row?;
+                        let document = serde_json::from_str(&raw).map_err(|_| AppError::new(ErrorCode::DatabaseError,"字幕文档损坏，未生成备份"))?;
+                        records.push(super::subtitles::SubtitleBackupRecord { document, updated_at });
+                    }
+                    records
+                },
                 favorite_versions: {
                     let mut stmt = conn.prepare("SELECT version_id,created_at FROM favorite_versions ORDER BY created_at")?;
                     let rows = stmt.query_map([], |r| Ok(BackupVersionFavorite { version_id: r.get(0)?, created_at: r.get(1)? }))?;
@@ -2498,6 +2563,8 @@ impl Database {
     pub(crate) fn restore_user_backup_on_conn(conn: &mut Connection, bundle: &UserBackupBundleDto, apply: bool, restore_dsp: bool, exact_versions: bool) -> AppResult<BackupRestoreReportDto> {
         if bundle.schema_version != 1 { return Err(AppError::new(ErrorCode::InvalidInput,"不支持此备份版本")); }
         let mut report = BackupRestoreReportDto {
+            subtitles_restored: 0,
+            subtitles_skipped: 0,
             favorites_restored: 0,
             positions_restored: 0,
             bookmarks_restored: 0,
@@ -2713,6 +2780,16 @@ impl Database {
                 }
             }
 
+            for record in &bundle.subtitle_documents {
+                record.document.validate()?;
+                let doc = &record.document;
+                let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM track_versions WHERE id=?1)",[&doc.version_id],|r|r.get(0))?;
+                if !exists { report.subtitles_skipped += 1; continue; }
+                let raw = serde_json::to_string(doc).map_err(|_| AppError::new(ErrorCode::InvalidInput,"字幕文档无法编码"))?;
+                let inserted = tx.execute("INSERT OR IGNORE INTO subtitle_documents(version_id,source_key,document_json,updated_at) VALUES(?1,?2,?3,?4)",params![doc.version_id,doc.source_key,raw,record.updated_at])?;
+                report.subtitles_restored += inserted;
+                report.subtitles_skipped += usize::from(inserted == 0);
+            }
             if apply { tx.commit()?; } else { tx.rollback()?; }
             Ok(report)
     }

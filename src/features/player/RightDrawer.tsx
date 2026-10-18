@@ -1,14 +1,20 @@
+import { open } from "@tauri-apps/plugin-dialog";
+import { useActiveSubtitles } from "../lyrics/useActiveSubtitles";
+import { SubtitleTaskPanel } from "./SubtitleTaskPanel";
+import { ScriptAlignmentDialog } from "./ScriptAlignmentDialog";
+import { ContextMenu } from "../../components/ContextMenu";
+import { useSubtitleDocumentEditor } from "./useSubtitleDocumentEditor";
 import { AudioOutputPanel } from "./AudioOutputPanel";
 import { BookmarkNotes } from "./BookmarkNotes";
 import { QueuePlans } from "./QueuePlans";
-import { Select } from "../../components/Select";
 import { subtitleWindows } from "../../lib/subtitleWindow";
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import {
   Play,
   Trash2,
   ArrowUp,
   ArrowDown,
+  ChevronDown,
   Plus,
   Clock,
   X,
@@ -17,21 +23,17 @@ import {
   Sparkles,
   RotateCcw,
   Upload,
+  Pencil,
 } from "lucide-react";
 import {
   PlaybackSnapshot,
   AbLoopDto,
-  SubtitleCueDto,
-  AutoMatchedSubtitleDto,
-  AttachmentDto,
-  WorkDetailDto,
   DspConfigDto,
   DspPresetDto,
   DspStateDto,
   defaultDspConfig,
   builtinDspPresets,
   computeFrequencyResponseCurve,
-  findBestSubtitleInAttachments,
   callCommand,
   formatDurationMs,
   normalizeAppError,
@@ -44,6 +46,7 @@ interface RightDrawerProps {
   snapshot: PlaybackSnapshot;
   onSnapshotChange: (snap: PlaybackSnapshot) => void;
   onSubtitlesChanged?: () => void;
+  onOpenRecognitionSettings?: () => void;
   onOpenWorkDetail?: (workId: string, versionId?: string) => void;
   onError: (err: AppError) => void;
 }
@@ -59,21 +62,37 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
   snapshot,
   onSnapshotChange,
   onSubtitlesChanged,
+  onOpenRecognitionSettings,
   onOpenWorkDetail,
   onError,
 }) => {
+  // React capture also includes menus/dialogs rendered through this drawer's portals.
+  const insidePointerEvents = useRef(new WeakSet<Event>());
+  useEffect(() => {
+    if (activeTab === "none") return;
+    const dismissOutside = (event: PointerEvent) => {
+      if (insidePointerEvents.current.has(event)) return;
+      // The entry buttons handle closing/switching themselves on click.
+      if (event.target instanceof Element && event.target.closest("[data-drawer-trigger]")) return;
+      onClose();
+    };
+    window.addEventListener("pointerdown", dismissOutside);
+    return () => window.removeEventListener("pointerdown", dismissOutside);
+  }, [activeTab, onClose]);
+
   const [savedLoops, setSavedLoops] = useState<AbLoopDto[]>([]);
   const [sleepMinutesInput, setSleepMinutesInput] = useState(30);
   const [sleepFadeOutSec, setSleepFadeOutSec] = useState<number>(
     snapshot.sleepTimer?.fadeOutSeconds ?? 30
   );
 
-  const [subtitles, setSubtitles] = useState<AttachmentDto[]>([]);
-  const [selectedSubId, setSelectedSubId] = useState<string>("");
-  const [subtitleOffsetMs, setSubtitleOffsetMs] = useState<number>(0);
-  const [cues, setCues] = useState<SubtitleCueDto[]>([]);
+  const cues = useActiveSubtitles(snapshot.currentVersionId);
+  const subtitleEditor = useSubtitleDocumentEditor(snapshot.currentVersionId);
   const [subtitleKeyword, setSubtitleKeyword] = useState<string>("");
-  const [fetchingCloudSubs, setFetchingCloudSubs] = useState<boolean>(false);
+  const [selectingSubtitle, setSelectingSubtitle] = useState(false);
+  const [scriptVersion, setScriptVersion] = useState<string | null>(null);
+  const [localScriptMenu, setLocalScriptMenu] = useState<{ x: number; y: number } | null>(null);
+  useEffect(() => { setLocalScriptMenu(null); setScriptVersion(null); }, [snapshot.currentVersionId, activeTab]);
   // Windowed rendering limits for huge queues and 1,000+ line subtitle files
   const [visibleQueueLimit, setVisibleQueueLimit] = useState<number>(100);
   const [visibleCueLimit, setVisibleCueLimit] = useState<number>(150);
@@ -133,74 +152,14 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
     }
   }, [snapshot.currentVersionId, onError]);
 
-  const loadWorkSubtitles = useCallback(async () => {
-    if (!snapshot.currentWorkId) {
-      setSubtitles([]);
-      setCues([]);
-      return;
-    }
-    try {
-      let autoMatched: AutoMatchedSubtitleDto | null = null;
-      if (snapshot.currentVersionId) {
-        try {
-          autoMatched = await callCommand<AutoMatchedSubtitleDto | null>(
-            "auto_match_subtitle_for_version",
-            { versionId: snapshot.currentVersionId }
-          );
-        } catch {
-          autoMatched = null;
-        }
-      }
-
-      const detail = await callCommand<WorkDetailDto>("get_work_detail", {
-        workId: snapshot.currentWorkId,
-      });
-      const subs = detail.attachments.filter((a) => a.attachmentType === "subtitle");
-      setSubtitles(subs);
-
-      if (autoMatched && Array.isArray(autoMatched.cues)) {
-        setSelectedSubId(autoMatched.attachment.id);
-        setSubtitleOffsetMs(autoMatched.attachment.subtitleOffsetMs);
-        setCues(autoMatched.cues);
-        return;
-      }
-
-      const bound =
-        findBestSubtitleInAttachments(
-          subs,
-          snapshot.currentVersionId,
-          snapshot.currentTrackTitle
-        ) ?? subs[0];
-      if (bound) {
-        setSelectedSubId(bound.id);
-        setSubtitleOffsetMs(bound.subtitleOffsetMs);
-        const loadedCues = await callCommand<SubtitleCueDto[]>("load_subtitle_cues", {
-          attachmentId: bound.id,
-        });
-        setCues(loadedCues);
-      } else {
-        setSelectedSubId("");
-        setCues([]);
-      }
-    } catch (e) {
-      onError(normalizeAppError(e));
-    }
-  }, [
-    snapshot.currentWorkId,
-    snapshot.currentVersionId,
-    snapshot.currentTrackTitle,
-    onError,
-  ]);
-
   useEffect(() => {
     if (activeTab === "bookmarks") {
       void loadBookmarksAndLoops();
-    } else if (activeTab === "subtitles") {
-      void loadWorkSubtitles();
+
     } else if (activeTab === "dsp") {
       void loadDspState();
     }
-  }, [activeTab, loadBookmarksAndLoops, loadWorkSubtitles, loadDspState]);
+  }, [activeTab, loadBookmarksAndLoops, loadDspState]);
 
   const freqCurveDb = useMemo(
     () => computeFrequencyResponseCurve(dspConfig, LOG_FREQS_HZ),
@@ -282,45 +241,17 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
     }
   };
 
-  const handleSelectSubtitle = async (attId: string, offset: number) => {
-    setSelectedSubId(attId);
-    setSubtitleOffsetMs(offset);
-    if (!attId) {
-      setCues([]);
-      onSubtitlesChanged?.();
-      return;
-    }
+  const handleChooseLocalSubtitle = async () => {
+    if (!snapshot.currentVersionId || selectingSubtitle) return;
+    const versionId = snapshot.currentVersionId;
+    setSelectingSubtitle(true);
     try {
-      await callCommand("bind_subtitle_to_version", {
-        attachmentId: attId,
-        versionId: snapshot.currentVersionId ?? null,
-        offsetMs: offset,
-      });
-      const loaded = await callCommand<SubtitleCueDto[]>("load_subtitle_cues", {
-        attachmentId: attId,
-      });
-      setCues(loaded);
+      const path = await open({ multiple: false, directory: false, title: "选择本地字幕", filters: [{ name: "字幕文件", extensions: ["lrc", "srt", "vtt"] }] });
+      if (typeof path !== "string") return;
+      await callCommand("import_local_subtitle", { versionId, path });
       onSubtitlesChanged?.();
-    } catch (err) {
-      onError(normalizeAppError(err));
-    }
-  };
-
-  const handleFetchCloudSubtitles = async () => {
-    if (!snapshot.currentWorkId) return;
-    setFetchingCloudSubs(true);
-    try {
-      await callCommand<WorkDetailDto>("fetch_online_subtitles_for_work", {
-        workId: snapshot.currentWorkId,
-        rjOrId: null,
-      });
-      await loadWorkSubtitles();
-      onSubtitlesChanged?.();
-    } catch (err) {
-      onError(normalizeAppError(err));
-    } finally {
-      setFetchingCloudSubs(false);
-    }
+    } catch (err) { onError(normalizeAppError(err)); }
+    finally { setSelectingSubtitle(false); }
   };
 
   const activeCueIndex = cues.findIndex(
@@ -629,7 +560,8 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
   };
 
   return (
-    <aside className="right-drawer player-glass-panel" aria-label="右侧辅助抽屉">
+    <aside className="right-drawer player-glass-panel" aria-label="右侧辅助抽屉"
+      onPointerDownCapture={event => insidePointerEvents.current.add(event.nativeEvent)}>
       <div className="drawer-header">
         <h3 className="drawer-header-title">
           {activeTab === "queue"
@@ -892,75 +824,31 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
 
       {activeTab === "subtitles" && (
         <div className="drawer-body">
-          <div className="subtitle-toolbar">
-            <div className="subtitle-select-row">
-              <Select
-                aria-label="字幕附件"
-                value={selectedSubId}
-                onValueChange={value => void handleSelectSubtitle(value, subtitleOffsetMs)}
-                options={[{ value: "", label: "选择 LRC / SRT / VTT 字幕附件..." }, ...subtitles.map(s => ({ value: s.id, label: s.title }))]}
-              />
-              {snapshot.currentWorkId && (
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  disabled={fetchingCloudSubs}
-                  onClick={() => void handleFetchCloudSubtitles()}
-                  title="从 asmr.one 自动检索并配对同名字幕 (.lrc/.srt/.vtt)"
-                >
-                  <span>{fetchingCloudSubs ? "检索中..." : "抓取云端字幕"}</span>
-                </button>
-              )}
-            </div>
-
-            <div className="offset-row">
-              <span>时间轴偏移: {subtitleOffsetMs} ms</span>
-              <div className="offset-btns">
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm"
-                  disabled={!selectedSubId}
-                  onClick={() =>
-                    void handleSelectSubtitle(selectedSubId, subtitleOffsetMs - 500)
-                  }
-                >
-                  -500ms
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm"
-                  disabled={!selectedSubId}
-                  onClick={() => void handleSelectSubtitle(selectedSubId, 0)}
-                >
-                  重置
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm"
-                  disabled={!selectedSubId}
-                  onClick={() =>
-                    void handleSelectSubtitle(selectedSubId, subtitleOffsetMs + 500)
-                  }
-                >
-                  +500ms
-                </button>
-              </div>
-            </div>
-
-            {cues.length > 0 && (
+          <SubtitleTaskPanel versionId={snapshot.currentVersionId} onOpenSettings={onOpenRecognitionSettings} />
+          {subtitleEditor.feedback}
+          {subtitleEditor.dialog}
+          {scriptVersion && <ScriptAlignmentDialog versionId={scriptVersion} onClose={() => setScriptVersion(null)} />}
+          {localScriptMenu && <ContextMenu {...localScriptMenu} label="作品台本" onClose={() => setLocalScriptMenu(null)}>
+            <button type="button" role="menuitem" className="m3-menu-item" onClick={() => { setLocalScriptMenu(null); setScriptVersion(snapshot.currentVersionId ?? null); }}>无时间戳台本</button>
+            <button type="button" role="menuitem" className="m3-menu-item" onClick={() => { setLocalScriptMenu(null); void handleChooseLocalSubtitle(); }}>有时间戳台本</button>
+          </ContextMenu>}
+          <div className="subtitle-search-row">
               <input
                 type="search"
                 className="input-text subtitle-search-input"
+                aria-label="搜索字幕"
+                disabled={!cues.length}
                 placeholder="搜索台词关键字定位时间轴..."
                 value={subtitleKeyword}
                 onChange={(e) => setSubtitleKeyword(e.target.value)}
               />
-            )}
+            <button type="button" className="btn btn-secondary btn-sm" title="选择本地或在线作品台本" aria-haspopup="menu" aria-expanded={!!localScriptMenu} disabled={!snapshot.currentVersionId || selectingSubtitle} onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); setLocalScriptMenu({ x: rect.left, y: rect.bottom + 4 }); }}>{selectingSubtitle ? "加载中…" : "作品台本"}</button>
+            <button type="button" className="btn btn-secondary btn-sm" disabled={subtitleEditor.busy || !snapshot.currentVersionId} onClick={subtitleEditor.openExport}>导出字幕</button>
           </div>
 
           {cues.length === 0 ? (
             <div className="empty-box">
-              当前未绑定或未找到本地 LRC / SRT / VTT 字幕文件，可点击上方「抓取云端字幕」自动匹配。
+              暂无字幕。可选择字幕附件、抓取云端字幕，或点击「识别原文」从当前音轨生成。
             </div>
           ) : (
             <>
@@ -987,20 +875,22 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
                           <span className="cue-time">{formatDurationMs(cue.startMs)}</span>
                           <span className="cue-text">{cue.text}</span>
                         </button>
+                        <button type="button" className="btn-icon subtitle-edit-button" disabled={subtitleEditor.busy} aria-label={`编辑字幕 ${formatDurationMs(cue.startMs)}`} title="编辑本句原文与译文" onClick={() => subtitleEditor.openEdit(cue.index)}><Pencil size={14} /></button>
                         </li>
                       </React.Fragment>
                     );
                   })}
               </ul>
               {filteredCues.length > visibleCues.length && (
-                <div className="pagination-row">
+                <div className="pagination-row subtitle-expand-row">
                   <button
                     type="button"
-                    className="btn btn-secondary btn-sm"
+                    className="btn-icon subtitle-expand-button"
+                    aria-label="展开更多字幕行"
+                    title={`展开更多字幕行（${visibleCues.length} / ${filteredCues.length}）`}
                     onClick={() => setVisibleCueLimit((n) => n + 200)}
                   >
-                    展开更多字幕行 (
-                    {visibleCues.length} / {filteredCues.length})
+                    <ChevronDown size={22} aria-hidden="true" />
                   </button>
                 </div>
               )}

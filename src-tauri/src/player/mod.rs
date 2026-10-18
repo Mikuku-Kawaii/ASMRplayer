@@ -14,6 +14,7 @@ pub use amll::AmllBroadcastHub;
 pub use smtc::NativeSmtcController;
 
 use libmpv_ffi::{
+    mpv_event_log_message, MPV_EVENT_LOG_MESSAGE, MPV_ERROR_AO_INIT_FAILED,
     get_libmpv_api, mpv_event_end_file, mpv_event_property, mpv_event_start_file, mpv_handle,
     property_event_to_json, resolve_libmpv_library, MPV_END_FILE_REASON_EOF,
     MPV_END_FILE_REASON_ERROR, MPV_END_FILE_REASON_QUIT, MPV_END_FILE_REASON_REDIRECT,
@@ -33,6 +34,7 @@ pub enum MpvEvent {
     EndFile {
         reason: String,
         error: Option<String>,
+        audio_output_error: Option<AppError>,
         playlist_entry_id: Option<i64>,
     },
     TimePosChanged(f64),
@@ -51,6 +53,21 @@ pub enum MpvEvent {
 /// Resolves the pinned `libmpv` (`mpv-2.dll`) dynamic library path and verifies its companion `vulkan-1.dll`.
 pub fn resolve_mpv_binary() -> AppResult<PathBuf> {
     resolve_libmpv_library()
+}
+
+// Keep only the known WASAPI status, never raw engine logs (paths, URLs, device names).
+fn wasapi_device_busy(prefix: &str, text: &str) -> bool {
+    prefix == "ao/wasapi" && text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|token| token == "AUDCLNT_E_DEVICE_IN_USE")
+}
+
+fn audio_output_failure(error: i32, device_busy: bool) -> Option<AppError> {
+    if error != MPV_ERROR_AO_INIT_FAILED { return None; }
+    Some(if device_busy {
+        AppError::new(ErrorCode::AudioDeviceBusy, "音频设备被占用，无法开始播放（AUDCLNT_E_DEVICE_IN_USE）。")
+    } else {
+        AppError::new(ErrorCode::AudioOutputFailed, "无法初始化音频输出，请检查输出设备。")
+    })
 }
 
 struct ActiveLibMpv {
@@ -91,6 +108,8 @@ pub struct MpvController {
     hardware_acceleration: Arc<Mutex<bool>>,
     audio_exclusive: Arc<Mutex<bool>>,
     audio_device: Arc<Mutex<String>>,
+    #[cfg(test)]
+    use_wasapi_for_test: bool,
 }
 
 impl MpvController {
@@ -103,6 +122,8 @@ impl MpvController {
             hardware_acceleration: Arc::new(Mutex::new(true)),
             audio_exclusive: Arc::new(Mutex::new(false)),
             audio_device: Arc::new(Mutex::new("auto".into())),
+            #[cfg(test)]
+            use_wasapi_for_test: false,
         }
     }
 
@@ -206,6 +227,9 @@ impl MpvController {
             "--cache=yes".to_string(),
             "--demuxer-max-bytes=64MiB".to_string(),
             "--demuxer-max-back-bytes=32MiB".to_string(),
+            "--network-timeout=15".to_string(),
+            "--curl-enabled=no".to_string(),
+            "--cache-pause-wait=5".to_string(),
             // T911: Hardware decode & multi-core lavc audio decode vs software fallback
             if hw_accel {
                 "--hwdec=auto-safe".to_string()
@@ -234,7 +258,9 @@ impl MpvController {
             if active.alive_flag.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            *guard = None;
+            let retired = guard.take();
+            // Joining the event thread and destroying libmpv can wait on I/O.
+            let _ = tokio::task::spawn_blocking(move || drop(retired)).await;
         }
 
         let api = get_libmpv_api()?;
@@ -243,6 +269,12 @@ impl MpvController {
         let exclusive = *self.audio_exclusive.lock();
         let current_af = self.af_graph.lock().clone();
         let device = self.audio_device.lock().clone();
+        #[cfg(not(test))]
+        let output_driver = "wasapi";
+        // Automated decoding must not create a Windows audio session or contend
+        // with the user's player. Hardware checks explicitly opt in and are ignored.
+        #[cfg(test)]
+        let output_driver = if self.use_wasapi_for_test { "wasapi" } else { "null" };
 
         let ctx = unsafe { (api.mpv_create)() };
         if ctx.is_null() {
@@ -262,7 +294,7 @@ impl MpvController {
             let _ = api.set_option_str(ctx, "vd", "no");
             let _ = api.set_option_str(ctx, "sub", "no");
             let _ = api.set_option_str(ctx, "audio-display", "no");
-            let _ = api.set_option_str(ctx, "ao", "wasapi");
+            api.set_option_str(ctx, "ao", output_driver)?;
             api.set_option_str(ctx, "audio-device", &device)?;
             let _ = api.set_option_str(
                 ctx,
@@ -278,6 +310,17 @@ impl MpvController {
             let _ = api.set_option_str(ctx, "cache", "yes");
             let _ = api.set_option_str(ctx, "demuxer-max-bytes", "64MiB");
             let _ = api.set_option_str(ctx, "demuxer-max-back-bytes", "32MiB");
+            // Bound dead HTTP reads after idle periods; refill enough audio to avoid
+            // alternating one second of playback with another buffering pause.
+            api.set_option_str(ctx, "network-timeout", "15")?;
+            // Keep libmpv's default networking backend: the bundled curl backend can
+            // validate HTTPS with Windows trust, whereas its FFmpeg/OpenSSL fallback
+            // has no system CA bundle and rejects valid CDN certificates (T304).
+            // PlaybackService bounds stalled loads, including builds whose curl
+            // backend does not enforce network-timeout before response headers.
+            let _ = api.set_option_str(ctx, "curl-max-retries", "0");
+            let _ = api.set_option_str(ctx, "curl-connect-timeout", "15");
+            api.set_option_str(ctx, "cache-pause-wait", "5")?;
             let _ = api.set_option_str(
                 ctx,
                 "hwdec",
@@ -302,6 +345,8 @@ impl MpvController {
                     format!("初始化 libmpv 失败: {}", api.error_str(init_rc)),
                 ))
             } else {
+                // Request warnings independently of terminal output; discard all raw text.
+                let _ = (api.mpv_request_log_messages)(ctx, c"warn".as_ptr());
                 let _ = api.observe_property(ctx, 1, "time-pos", MPV_FORMAT_DOUBLE);
                 let _ = api.observe_property(ctx, 2, "duration", MPV_FORMAT_DOUBLE);
                 let _ = api.observe_property(ctx, 3, "pause", MPV_FORMAT_FLAG);
@@ -337,6 +382,7 @@ impl MpvController {
                 let ctx_ptr = ctx_raw as *mut mpv_handle;
                 let mut last_audio_device_count: Option<usize> = None;
                 let mut current_playlist_entry_id: Option<i64> = None;
+                let mut device_busy = false;
 
                 while !stop_for_thread.load(Ordering::SeqCst) {
                     let ev_ptr = unsafe { (api.mpv_wait_event)(ctx_ptr, 0.25) };
@@ -346,12 +392,23 @@ impl MpvController {
                     let ev = unsafe { &*ev_ptr };
                     match ev.event_id {
                         MPV_EVENT_NONE => continue,
+                        MPV_EVENT_LOG_MESSAGE => {
+                            if !ev.data.is_null() {
+                                let log = unsafe { &*(ev.data as *const mpv_event_log_message) };
+                                if !log.prefix.is_null() && !log.text.is_null() {
+                                    let prefix = unsafe { std::ffi::CStr::from_ptr(log.prefix) }.to_string_lossy();
+                                    let text = unsafe { std::ffi::CStr::from_ptr(log.text) }.to_string_lossy();
+                                    device_busy |= wasapi_device_busy(&prefix, &text);
+                                }
+                            }
+                        }
                         MPV_EVENT_SHUTDOWN => {
                             alive_for_thread.store(false, Ordering::SeqCst);
                             let _ = event_tx.send(MpvEvent::ProcessExited("libmpv 已关闭".into()));
                             break;
                         }
                         MPV_EVENT_START_FILE => {
+                            device_busy = false;
                             if !ev.data.is_null() {
                                 let sf = unsafe { &*(ev.data as *const mpv_event_start_file) };
                                 current_playlist_entry_id = Some(sf.playlist_entry_id);
@@ -382,8 +439,10 @@ impl MpvController {
                                 let _ = event_tx.send(MpvEvent::EndFile {
                                     reason,
                                     error,
+                                    audio_output_error: audio_output_failure(ef.error, device_busy),
                                     playlist_entry_id: Some(ef.playlist_entry_id),
                                 });
+                                device_busy = false;
                             }
                         }
                         MPV_EVENT_PROPERTY_CHANGE => {
@@ -430,11 +489,11 @@ impl MpvController {
                                         let _ = event_tx.send(MpvEvent::AudioChannelsChanged(val));
                                     }
                                     "audio-bitrate" => {
-                                        let kbps = data
+                                        let bps = data
                                             .as_f64()
-                                            .map(|bps| (bps / 1000.0).round() as i64)
+                                            .map(|bps| bps.round() as i64)
                                             .filter(|&k| k > 0);
-                                        let _ = event_tx.send(MpvEvent::AudioBitrateChanged(kbps));
+                                        let _ = event_tx.send(MpvEvent::AudioBitrateChanged(bps));
                                     }
                                     "audio-device-list" => {
                                         if let Some(arr) = data.as_array() {
@@ -480,15 +539,12 @@ impl MpvController {
         Ok(())
     }
 
+    pub async fn is_running(&self) -> bool {
+        self.inner.lock().await.as_ref().is_some_and(|a| a.alive_flag.load(Ordering::SeqCst))
+    }
+
     async fn send_command_raw(&self, cmd: Value) -> AppResult<Value> {
-        let guard = self.inner.lock().await;
-        let active = guard
-            .as_ref()
-            .filter(|a| a.alive_flag.load(Ordering::SeqCst))
-            .ok_or_else(|| AppError::new(ErrorCode::MpvIpcError, "libmpv 未运行"))?;
-        let api = get_libmpv_api()?;
-        let ctx = active.ctx_raw as *mut mpv_handle;
-        unsafe { api.execute_json_command(ctx, &cmd) }
+        Ok(self.send_commands_pipelined(vec![cmd]).await?.remove(0))
     }
 
     /// T910: Executes multiple libmpv commands in a single locked batch in-process.
@@ -496,24 +552,47 @@ impl MpvController {
         if cmds.is_empty() {
             return Ok(Vec::new());
         }
-        let guard = self.inner.lock().await;
-        let active = guard
-            .as_ref()
-            .filter(|a| a.alive_flag.load(Ordering::SeqCst))
-            .ok_or_else(|| AppError::new(ErrorCode::MpvIpcError, "libmpv 未运行"))?;
-        let api = get_libmpv_api()?;
-        let ctx = active.ctx_raw as *mut mpv_handle;
-        let mut results = Vec::with_capacity(cmds.len());
-        for cmd in cmds {
-            let res = unsafe { api.execute_json_command(ctx, &cmd)? };
-            results.push(res);
-        }
-        Ok(results)
+        // The C API is synchronous (device changes/loadfile can wait for drivers
+        // or a demuxer). Keep it off Tokio's scheduler, with the owned lock held
+        // until it returns so shutdown cannot destroy a live command's context.
+        let guard = self.inner.clone().lock_owned().await;
+        tokio::task::spawn_blocking(move || {
+            let active = guard
+                .as_ref()
+                .filter(|a| a.alive_flag.load(Ordering::SeqCst))
+                .ok_or_else(|| AppError::new(ErrorCode::MpvIpcError, "libmpv 未运行"))?;
+            let api = get_libmpv_api()?;
+            let ctx = active.ctx_raw as *mut mpv_handle;
+            let mut results = Vec::with_capacity(cmds.len());
+            for cmd in cmds {
+                let res = unsafe { api.execute_json_command(ctx, &cmd)? };
+                results.push(res);
+            }
+            Ok(results)
+        }).await.map_err(|e| AppError::new(ErrorCode::MpvIpcError, format!("音频命令执行失败: {e}")))?
     }
 
     pub async fn command(&self, cmd: Value) -> AppResult<Value> {
         self.ensure_started().await?;
         self.send_command_raw(cmd).await
+    }
+
+    /// Container facts for the file that emitted FileLoaded. Never use decoder/output parameters.
+    pub async fn source_audio_rates(&self, entry_id: Option<i64>) -> Option<(Option<i64>, Option<i64>)> {
+        let entry_id = entry_id?;
+        let guard = self.inner.lock().await;
+        let active = guard.as_ref()?;
+        let api = get_libmpv_api().ok()?;
+        let ctx = active.ctx_raw as *mut mpv_handle;
+        // Hold the controller lock across reads so another load command cannot mix sources.
+        let playlist = unsafe { api.get_property_json(ctx, "playlist").ok()? };
+        if !playlist.as_array()?.iter().any(|item| item["playing"].as_bool() == Some(true) && item["id"].as_i64() == Some(entry_id)) {
+            return None;
+        }
+        let tracks = unsafe { api.get_property_json(ctx, "track-list").ok()? };
+        let size = unsafe { api.get_property_json(ctx, "file-size").ok().and_then(|v| v.as_f64()) };
+        let duration = unsafe { api.get_property_json(ctx, "current-tracks/audio/demux-duration").ok().and_then(|v| v.as_f64()) };
+        Some(source_audio_rates_from_tracks(&tracks, size, duration))
     }
 
     pub async fn load_file(&self, target: &str, headers: &[(String, String)], paused: bool) -> AppResult<()> {
@@ -559,7 +638,6 @@ impl MpvController {
 
     /// T802: Hot-reloads the `af` lavfi filter graph in-place without restarting `libmpv` or dropping playback position.
     pub async fn set_audio_filters(&self, af_graph: &str) -> AppResult<()> {
-        *self.af_graph.lock() = af_graph.to_string();
         let is_running = {
             let guard = self.inner.lock().await;
             guard
@@ -571,6 +649,7 @@ impl MpvController {
             self.send_command_raw(json!(["set_property", "af", af_graph]))
                 .await?;
         }
+        *self.af_graph.lock() = af_graph.to_string();
         Ok(())
     }
 
@@ -694,9 +773,102 @@ pub fn normalize_cross_platform_media_path(raw: &str, target_os: &str) -> String
     trimmed.trim_start_matches(r"\\?\").replace('\\', "/")
 }
 
+fn source_audio_rates_from_tracks(tracks: &Value, file_size: Option<f64>, duration: Option<f64>) -> (Option<i64>, Option<i64>) {
+    let Some(tracks) = tracks.as_array() else { return (None, None) };
+    let Some(audio) = tracks.iter().find(|track| track["type"] == "audio" && track["selected"] == true && track["external"] != true) else { return (None, None) };
+    let rate = audio["demux-samplerate"].as_i64().filter(|v| *v > 0);
+    let bitrate = audio["demux-bitrate"].as_f64().filter(|v| v.is_finite() && *v > 0.0).or_else(|| {
+        // For single-stream audio (e.g. FLAC), use file bytes / source duration when
+        // the container has no bitrate. Do not mistake decoded PCM throughput for bitrate.
+        if tracks.iter().filter(|t| t["type"] == "audio").count() != 1 || tracks.iter().any(|t| t["type"] == "video" && t["albumart"] != true) { return None; }
+        let size = file_size.filter(|v| v.is_finite() && *v > 0.0)?;
+        let seconds = duration.filter(|v| v.is_finite() && *v > 0.0)?;
+        Some(size * 8.0 / seconds)
+    }).filter(|v| v.is_finite() && *v > 0.0).map(|bps| (bps / 1000.0).round() as i64).filter(|v| *v > 0);
+    (rate, bitrate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_output_failure_distinguishes_busy_device_from_decode_errors() {
+        assert!(wasapi_device_busy("ao/wasapi", "Error initializing device: AUDCLNT_E_DEVICE_IN_USE (0x8889000a)"));
+        assert!(!wasapi_device_busy("ffmpeg/demuxer", "AUDCLNT_E_DEVICE_IN_USE"));
+        assert!(!wasapi_device_busy("ao/wasapi", "AUDCLNT_E_DEVICE_IN_USE_OTHER"));
+        let busy = audio_output_failure(MPV_ERROR_AO_INIT_FAILED, true).unwrap();
+        assert_eq!(busy.code, ErrorCode::AudioDeviceBusy);
+        assert!(busy.retryable);
+        assert!(busy.hint.unwrap().contains("占用方"));
+        assert_eq!(audio_output_failure(MPV_ERROR_AO_INIT_FAILED, false).unwrap().code, ErrorCode::AudioOutputFailed);
+        assert!(audio_output_failure(-13, true).is_none());
+        assert!(audio_output_failure(0, true).is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "manual WASAPI endpoint validation; automated tests use null audio output"]
+    async fn audio_output_failure_from_libmpv_invalid_device_is_structured() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut ctrl = MpvController::new(tx);
+        ctrl.use_wasapi_for_test = true;
+        ctrl.set_initial_audio_device("wasapi/asmr-player-nonexistent-test-device".into());
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("tests/fixtures/audio/stereo_lr_check.mp3");
+        // Invalid endpoint, paused load and zero volume: this test must never emit sound.
+        ctrl.load_file_pipelined(&fixture.to_string_lossy(), &[], true, 0.0, "").await.unwrap();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(MpvEvent::EndFile { reason, audio_output_error, .. }) = rx.recv().await {
+                    assert_eq!(reason, "error");
+                    break audio_output_error.unwrap();
+                }
+            }
+        }).await;
+        ctrl.shutdown().await;
+        assert_eq!(error.unwrap().code, ErrorCode::AudioOutputFailed);
+    }
+
+    #[tokio::test]
+    async fn automated_players_decode_with_null_output_without_windows_audio_sessions() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let ctrl = MpvController::new(tx);
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("tests/fixtures/audio/stereo_lr_check.mp3");
+        ctrl.load_file_pipelined(&fixture.to_string_lossy(), &[], true, 0.0, "").await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !matches!(rx.recv().await, Some(MpvEvent::FileLoaded { .. })) {}
+        }).await.unwrap();
+        ctrl.command(json!(["set_property", "pause", false])).await.unwrap();
+        // FileLoaded precedes output initialization; wait for decoded playback,
+        // not an arbitrary delay, before checking the actual selected backend.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !matches!(rx.recv().await, Some(MpvEvent::TimePosChanged(pos)) if pos > 0.0) {}
+        }).await.unwrap();
+        assert_eq!(ctrl.command(json!(["get_property", "current-ao"])).await.unwrap(), "null");
+        assert!(ctrl.command(json!(["get_property", "duration"])).await.unwrap().as_f64().unwrap() > 0.0);
+        ctrl.shutdown().await;
+    }
+
+    #[test]
+    fn source_rates_use_selected_container_facts_and_convert_bps_only_once() {
+        let tracks = json!([
+            {"type":"audio", "selected":false, "demux-samplerate":22050, "demux-bitrate":64000},
+            {"type":"audio", "selected":true, "demux-samplerate":96000, "demux-bitrate":1200000,
+             "samplerate":48000, "bitrate":3072000}
+        ]);
+        assert_eq!(source_audio_rates_from_tracks(&tracks, Some(1e8), Some(1.0)), (Some(96000), Some(1200)));
+        let flac = json!([{"type":"audio", "selected":true, "demux-samplerate":44100}]);
+        assert_eq!(source_audio_rates_from_tracks(&flac, Some(15_000_000.0), Some(100.0)), (Some(44100), Some(1200)));
+        assert_eq!(source_audio_rates_from_tracks(&flac, None, Some(100.0)), (Some(44100), None));
+        assert_eq!(source_audio_rates_from_tracks(&flac, Some(15_000_000.0), Some(0.0)), (Some(44100), None));
+        let unknown = json!([{"type":"audio", "selected":true, "demux-samplerate":0, "demux-bitrate":0}]);
+        assert_eq!(source_audio_rates_from_tracks(&unknown, None, None), (None, None));
+        let video = json!([{"type":"audio", "selected":true}, {"type":"video"}]);
+        assert_eq!(source_audio_rates_from_tracks(&video, Some(1e8), Some(100.0)), (None, None));
+        let external = json!([{"type":"audio", "selected":true, "external":true, "demux-samplerate":48000}]);
+        assert_eq!(source_audio_rates_from_tracks(&external, Some(1e8), Some(100.0)), (None, None));
+    }
 
     #[test]
     fn test_cross_platform_ipc_endpoint_and_sidecar_resolution_t1202_r33() {
@@ -737,6 +909,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stalled_http_can_be_stopped_and_engine_accepts_another_track() {
+        use std::time::Duration;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::path("/stalled.mp3"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60)))
+            .mount(&server).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let ctrl = MpvController::new(tx);
+        ctrl.load_file_pipelined(&format!("{}/stalled.mp3", server.uri()), &[], true, 0.0, "").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while server.received_requests().await.unwrap().is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        // The service owns the deadline. It must be able to stop a native request
+        // that is waiting for headers, without disabling the HTTPS-capable backend.
+        tokio::time::timeout(Duration::from_secs(3), ctrl.stop()).await.unwrap().unwrap();
+        let audio = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
+            .join("tests/fixtures/audio/stereo_lr_check.mp3");
+        ctrl.load_file_pipelined(&audio.to_string_lossy(), &[], true, 0.0, "").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = rx.recv().await {
+                if matches!(event, MpvEvent::FileLoaded { .. }) { return; }
+            }
+            panic!("libmpv event stream ended before loading the replacement track");
+        }).await.expect("Switching tracks after a timeout must work without restarting the app");
+        ctrl.set_pause(true).await.unwrap();
+        assert_eq!(ctrl.command(json!(["get_property", "pause"])).await.unwrap(), true);
+        // Also permit manual switching while a read is still blocked, before its timeout.
+        ctrl.load_file_pipelined(&format!("{}/stalled.mp3", server.uri()), &[], true, 0.0, "").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while server.received_requests().await.unwrap().len() < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            ctrl.set_pause(true).await.unwrap();
+            ctrl.load_file_pipelined(&audio.to_string_lossy(), &[], true, 0.0, "").await.unwrap();
+            while let Some(event) = rx.recv().await {
+                if matches!(event, MpvEvent::FileLoaded { .. }) { return; }
+            }
+            panic!("Replacement track did not load");
+        }).await.expect("Manual switching must interrupt a blocked HTTP read");
+        ctrl.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn test_in_process_libmpv_ffi_and_volume_max_200() {
         let dll_path = resolve_mpv_binary().expect("mpv-2.dll must resolve cleanly");
         assert!(
@@ -763,6 +983,10 @@ mod tests {
             .await
             .expect("Must query volume-max from libmpv");
         assert_eq!(vol_max.as_f64(), Some(200.0));
+        for (option, expected) in [("network-timeout", 15.0), ("cache-pause-wait", 5.0)] {
+            let actual = ctrl.command(json!(["get_property", option])).await.unwrap();
+            assert_eq!(actual.as_f64(), Some(expected), "{option}");
+        }
 
         ctrl.set_volume(150.0)
             .await

@@ -1,3 +1,5 @@
+import { HelpHint } from "../../components/HelpHint";
+import { ErrorNotice } from "../../components/ErrorNotice";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -39,14 +41,12 @@ export function DiagnosticSettings() {
     <div className="settings-group-header">
       <div className="settings-group-title-wrap">
         <span className="settings-group-icon"><FileSearch size={16} aria-hidden="true" /></span>
-        <div><h3>诊断包</h3><p className="settings-group-desc">遇到播放或下载问题时，可先预览诊断信息，再保存到本地，方便排查原因。</p></div>
+        <div className="setting-label-help"><h3>诊断包</h3><HelpHint label={"诊断包"} text={<>遇到播放或下载问题时，可先预览诊断信息，再保存到本地，方便排查原因。包含应用版本、系统信息、匿名音频设备、下载状态统计和近期错误类别。点击预览后才会收集，不会自动上传。不包含令牌、网址、文件路径、作品标题、设备名称、媒体或数据库；日志只保留时间、级别和错误类别，不导出原始消息。</>} /></div>
       </div>
       <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void generate()}>{busy && !preview ? "正在生成…" : "预览诊断包"}</button>
     </div>
     <div className="settings-group-body diagnostic-settings-body">
-    <p className="settings-field-hint">包含应用版本、系统信息、匿名音频设备、下载状态统计和近期错误类别。点击预览后才会收集，不会自动上传。</p>
-    <p className="settings-field-hint">不包含令牌、网址、文件路径、作品标题、设备名称、媒体或数据库；日志只保留时间、级别和错误类别，不导出原始消息。</p>
-    {error && !preview && <p className="error-banner" role="alert">{error}</p>}
+    {error && !preview && <ErrorNotice message={error} />}
     {notice && <p className="settings-field-hint" role="status">{notice}</p>}
     </div>
     {preview && <DiagnosticDialog preview={preview} busy={busy} error={error} onClose={() => { if (!busy) { setPreview(null); setError(""); } }} onRefresh={() => void generate()} onExport={() => void exportPreview()} />}
@@ -74,14 +74,12 @@ function DiagnosticDialog({ preview, busy, error, onClose, onRefresh, onExport }
       if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
     }}>
-    <header className="storage-heading"><h2 id="diagnostic-title">诊断包预览</h2><button type="button" className="btn-icon" aria-label="关闭诊断预览" title="关闭诊断预览" disabled={busy} onClick={onClose}><X size={18} /></button></header>
-    <p id="diagnostic-description" className="settings-field-hint">以下是将保存的完整内容（{formatBytes(preview.bytes)}）。预览有效期为 15 分钟；刷新会重新收集，导出使用当前预览。</p>
-    <ul className="diagnostic-scope"><li>版本、系统与匿名音频设备信息</li><li>播放状态与下载任务数量，不含作品或文件信息</li><li>最近最多 100 条警告 / 错误的时间、级别和类别</li></ul>
-    <p className="settings-field-hint">生成于 {new Date(preview.generatedAt).toLocaleString()}。设备读取失败、日志读取不完整会在内容中标明。选择新的 JSON 文件名，不覆盖已有文件，不自动上传。</p>
+    <header className="storage-heading"><div className="setting-label-help"><h2 id="diagnostic-title">诊断包预览</h2><HelpHint label="诊断包预览" text="包含版本、系统与匿名音频设备信息，播放状态与下载任务数量（不含作品或文件信息），以及最近最多 100 条警告 / 错误的时间、级别和类别。预览有效期为 15 分钟；刷新会重新收集，导出使用当前预览。设备读取失败、日志读取不完整会在内容中标明。选择新的 JSON 文件名，不覆盖已有文件，不自动上传。" /></div><button type="button" className="btn-icon" aria-label="关闭诊断预览" title="关闭诊断预览" disabled={busy} onClick={onClose}><X size={18} /></button></header>
+    <p id="diagnostic-description" className="settings-field-hint">完整内容 · {formatBytes(preview.bytes)} · 生成于 {new Date(preview.generatedAt).toLocaleString()}</p>
     <pre className="diagnostic-content" tabIndex={0} aria-label="诊断包完整内容">{preview.content}</pre>
     <p className="diagnostic-digest">SHA-256：{preview.sha256}</p>
-    {error && <p className="error-banner" role="alert">{error}</p>}
-    <footer className="storage-actions"><button ref={cancel} type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button>
+    {error && <ErrorNotice message={error} />}
+    <footer className="storage-actions dialog-actions"><button ref={cancel} type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button>
       <button type="button" className="btn btn-secondary" disabled={busy} onClick={onRefresh}>刷新预览</button>
       <button type="button" className="btn btn-primary" disabled={busy} onClick={onExport}><Download size={16} /><span className="ui-icon-label">{busy ? "正在处理…" : "保存诊断包"}</span></button></footer>
   </dialog>, document.body);

@@ -2,28 +2,44 @@ use crate::domain::{AppResult, ListeningStatus};
 use rusqlite::Connection;
 use std::collections::HashMap;
 
-pub(super) fn statuses(conn: &Connection) -> AppResult<HashMap<String, ListeningStatus>> {
+pub(super) fn library_states(conn: &Connection) -> AppResult<(HashMap<String, bool>, HashMap<String, ListeningStatus>)> {
+    let mut listened = HashMap::new();
     let mut result = HashMap::new();
-    let mut stmt = conn.prepare("SELECT work_id FROM work_playback_state UNION SELECT t.work_id FROM tracks t JOIN track_versions v ON v.track_id=t.id JOIN playback_positions p ON p.version_id=v.id WHERE p.position_ms>0 OR p.completed=1 OR p.ever_completed=1")?;
-    for row in stmt.query_map([], |r| r.get::<_, String>(0))? {
-        result.insert(row?, ListeningStatus::InProgress);
-    }
     // A complete directory is one listening edition; do not require duplicate
     // WAV/MP3 or alternate edits to be played as well.
-    let mut stmt = conn.prepare("WITH track_completion AS (
-        SELECT t.work_id,t.logical_dir_path,t.id,MAX(COALESCE(p.ever_completed,0)) AS heard
-        FROM tracks t LEFT JOIN track_versions v ON v.track_id=t.id
-        LEFT JOIN playback_positions p ON p.version_id=v.id GROUP BY t.id
-    ) SELECT DISTINCT work_id FROM track_completion GROUP BY work_id,logical_dir_path HAVING MIN(heard)=1")?;
+    // T1515: Join history once for both UI flags. Collapse alternate versions per
+    // track before counting completion; unheard/versionless tracks stay in the denominator.
+    let mut stmt = conn.prepare("WITH track_history AS (
+        SELECT t.work_id,t.logical_dir_path,t.id,
+               MAX(p.position_ms>0 OR p.completed=1) AS listened,
+               MAX(p.ever_completed) AS heard
+        FROM playback_positions p CROSS JOIN track_versions v ON v.id=p.version_id
+        CROSS JOIN tracks t ON t.id=v.track_id GROUP BY t.id
+    ) SELECT c.work_id,MAX(c.listened),MAX(c.listened OR c.heard),
+             SUM(c.heard)=(SELECT COUNT(*) FROM tracks t
+                          WHERE t.work_id=c.work_id AND t.logical_dir_path=c.logical_dir_path)
+      FROM track_history c
+      GROUP BY c.work_id,c.logical_dir_path
+    ")?;
+    for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?, r.get::<_, bool>(2)?, r.get::<_, bool>(3)?)))? {
+        let (id, has_listened, started, complete) = row?;
+        if has_listened { listened.insert(id.clone(), true); }
+        if complete { result.insert(id, ListeningStatus::Played); }
+        else if started { result.entry(id).or_insert(ListeningStatus::InProgress); }
+    }
+    let mut stmt = conn.prepare("SELECT work_id FROM work_playback_state")?;
     for row in stmt.query_map([], |r| r.get::<_, String>(0))? {
-        result.insert(row?, ListeningStatus::Played);
+        let id = row?;
+        listened.insert(id.clone(), true);
+        result.entry(id).or_insert(ListeningStatus::InProgress);
     }
     let mut stmt = conn.prepare("SELECT work_id,listened FROM work_listening_marks")?;
     for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))? {
-        let (id, listened) = row?;
-        result.insert(id, if listened { ListeningStatus::Played } else { ListeningStatus::Unplayed });
+        let (id, value) = row?;
+        listened.insert(id.clone(), value);
+        result.insert(id, if value { ListeningStatus::Played } else { ListeningStatus::Unplayed });
     }
-    Ok(result)
+    Ok((listened, result))
 }
 
 #[cfg(test)]
@@ -43,6 +59,42 @@ mod tests {
     }
     fn status(db: &Database) -> ListeningStatus {
         db.list_works("all", None).unwrap()[0].listening_status
+    }
+    #[test]
+    fn t1515_completed_versions_do_not_replace_unheard_or_versionless_tracks() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        db.with_conn(|c| {
+            seed(c);
+            c.execute_batch("INSERT INTO track_versions(id,track_id,version_label,created_at) VALUES('v1-alt','t1','Alternate','now');")?;
+            Ok(())
+        }).unwrap();
+        db.save_playback_position("v1", 9000, true, true).unwrap();
+        db.save_playback_position("v1-alt", 9000, true, true).unwrap();
+        assert_eq!(status(&db), ListeningStatus::InProgress);
+        db.save_playback_position("v2", 9000, true, true).unwrap();
+        assert_eq!(status(&db), ListeningStatus::Played);
+        db.with_conn(|c| {
+            c.execute_batch("INSERT INTO tracks(id,work_id,title,logical_dir_path,sort_key,created_at) VALUES('t4','w','No version','WAV','4','now');")?;
+            Ok(())
+        }).unwrap();
+        assert_eq!(status(&db), ListeningStatus::InProgress);
+        db.save_playback_position("v3", 9000, true, true).unwrap();
+        assert_eq!(status(&db), ListeningStatus::Played); // the alternate MP3 directory is complete
+        db.with_conn(|c| {
+            c.execute_batch("INSERT INTO work_listening_marks(work_id,listened,updated_at) VALUES('w',0,'now');")?;
+            Ok(())
+        }).unwrap();
+        assert_eq!(status(&db), ListeningStatus::Unplayed); // explicit user mark wins
+        assert!(!db.list_works("all", None).unwrap()[0].is_listened);
+        db.with_conn(|c| {
+            c.execute_batch("DELETE FROM work_listening_marks; DELETE FROM work_playback_state;
+                UPDATE playback_positions SET position_ms=0,completed=0;")?;
+            Ok(())
+        }).unwrap();
+        let summary = db.list_works("all", None).unwrap().remove(0);
+        assert_eq!(summary.listening_status, ListeningStatus::Played);
+        assert!(!summary.is_listened); // legacy progress flag differs from durable completion
     }
     #[test]
     fn partial_complete_replay_restart_and_backup_keep_distinct_listening_states() {

@@ -69,6 +69,73 @@ fn read_scales(db: &Database) -> AppResult<IslandScales> {
     let legacy = db.get_setting("island_size")?.and_then(|s| serde_json::from_str::<IslandSize>(&s).ok());
     legacy.map(IslandScales::from).unwrap_or_default().with_changes(None, None)
 }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IslandTypography {
+    pub font_size: u8,
+    pub font_weight: u16,
+}
+impl Default for IslandTypography {
+    fn default() -> Self { Self { font_size: 20, font_weight: 700 } }
+}
+impl IslandTypography {
+    fn with_changes(self, size: Option<u8>, weight: Option<u16>) -> AppResult<Self> {
+        let next = Self { font_size: size.unwrap_or(self.font_size), font_weight: weight.unwrap_or(self.font_weight) };
+        if !(16..=24).contains(&next.font_size) || ![400, 500, 600, 700, 800].contains(&next.font_weight) {
+            return Err(AppError::new(ErrorCode::InvalidInput, "灵动岛字号须为 16–24，字重须为 400、500、600、700 或 800"));
+        }
+        Ok(next)
+    }
+}
+fn read_typography(db: &Database) -> AppResult<IslandTypography> {
+    Ok(db.get_setting("island_typography")?
+        .and_then(|raw| serde_json::from_str::<IslandTypography>(&raw).ok())
+        .and_then(|value| value.with_changes(None, None).ok()).unwrap_or_default())
+}
+
+// T1518: keep disconnected displays in storage; global values are migration defaults only.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+struct DisplayAppearance {
+    scales: IslandScales,
+    typography: IslandTypography,
+}
+fn display_appearance(db: &Database, id: &str) -> AppResult<DisplayAppearance> {
+    let key = format!("island_display_appearance:{id}");
+    if let Some(raw) = db.get_setting(&key)? {
+        if let Ok(value) = serde_json::from_str::<DisplayAppearance>(&raw) {
+            if value.scales.with_changes(None, None).is_ok() && value.typography.with_changes(None, None).is_ok() {
+                return Ok(value);
+            }
+        }
+    }
+    let value = DisplayAppearance { scales: read_scales(db)?, typography: read_typography(db)? };
+    save_display_appearance(db, id, value)?;
+    Ok(value)
+}
+fn save_display_appearance(db: &Database, id: &str, value: DisplayAppearance) -> AppResult<()> {
+    db.set_setting(&format!("island_display_appearance:{id}"), &serde_json::to_string(&value).map_err(error)?)
+}
+
+// DISPLAY2 can refer to different monitors at work and at home. Use the device
+// interface registered per monitor, independent of resolution, DPI and desktop position.
+fn monitor_identity(name: &str) -> String {
+    #[cfg(windows)]
+    unsafe {
+        use windows::{core::PCWSTR, Win32::{Graphics::Gdi::{EnumDisplayDevicesW, DISPLAY_DEVICEW}, UI::WindowsAndMessaging::EDD_GET_DEVICE_INTERFACE_NAME}};
+        let name_wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        let mut device = DISPLAY_DEVICEW { cb: size_of::<DISPLAY_DEVICEW>() as u32, ..Default::default() };
+        if EnumDisplayDevicesW(PCWSTR(name_wide.as_ptr()), 0, &mut device, EDD_GET_DEVICE_INTERFACE_NAME).as_bool() {
+            let len = device.DeviceID.iter().position(|c| *c == 0).unwrap_or(device.DeviceID.len());
+            if len > 0 { return format!("device:{}", String::from_utf16_lossy(&device.DeviceID[..len]).to_lowercase()); }
+        }
+    }
+    name.to_owned()
+}
+
+fn active_monitor<'a>(monitors: &'a [IslandMonitor], preferred: &str) -> Option<&'a IslandMonitor> {
+    monitors.iter().find(|m| m.id == preferred || m.name == preferred)
+        .or_else(|| monitors.iter().find(|m| m.primary)).or(monitors.first())
+}
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum IslandForm {
@@ -100,9 +167,36 @@ pub struct IslandMonitor {
     pub scale_factor: f64,
     pub primary: bool,
 }
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum IslandSubtitlePreference { Chinese, #[default] Original }
+
+fn read_subtitle_preference(db: &Database) -> AppResult<IslandSubtitlePreference> {
+    Ok(db.get_setting("island_subtitle_preference")?
+        .and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default())
+}
+
+#[test]
+fn island_subtitle_preference_defaults_and_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let cache = dir.path().join("cache");
+    let db = Database::open_and_migrate(&data, &cache).unwrap();
+    assert_eq!(read_subtitle_preference(&db).unwrap(), IslandSubtitlePreference::Original);
+    for mode in [IslandSubtitlePreference::Chinese, IslandSubtitlePreference::Original] {
+        db.set_setting("island_subtitle_preference", &serde_json::to_string(&mode).unwrap()).unwrap();
+        let reopened = Database::open_and_migrate(&data, &cache).unwrap();
+        assert_eq!(read_subtitle_preference(&reopened).unwrap(), mode);
+    }
+    assert!(serde_json::from_str::<IslandSubtitlePreference>("\"bilingual\"").is_err());
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IslandLayout {
+    pub subtitle_preference: IslandSubtitlePreference,
+    #[serde(flatten)]
+    pub typography: IslandTypography,
     pub revision: u64,
     pub form: IslandForm,
     pub scale: f64,
@@ -111,6 +205,14 @@ pub struct IslandLayout {
     pub radius: f64,
     pub animate: bool,
     pub native_glass: bool,
+    pub viewport: Option<IslandViewport>,
+}
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IslandViewport {
+    pub width: u32,
+    pub height: u32,
+    pub device_scale: f64,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -344,6 +446,8 @@ impl IslandService {
             operation: Arc::new(Mutex::new(())),
             state: Arc::new(Mutex::new(State {
                 layout: IslandLayout {
+                    subtitle_preference: IslandSubtitlePreference::default(),
+                    typography: IslandTypography::default(),
                     revision: 0,
                     form: IslandForm::Compact,
                     scale: 1.,
@@ -352,6 +456,7 @@ impl IslandService {
                     radius: 21.,
                     animate: false,
                     native_glass: false,
+                    viewport: None,
                 },
                 monitors: vec![],
                 position: PhysicalPosition::new(0, 0),
@@ -383,7 +488,7 @@ impl IslandService {
                     .cloned()
                     .unwrap_or_else(|| format!("屏幕 {},{}", m.position().x, m.position().y));
                 IslandMonitor {
-                    id: name.clone(),
+                    id: monitor_identity(&name),
                     name,
                     x: m.position().x,
                     y: m.position().y,
@@ -405,18 +510,26 @@ impl IslandService {
     }
     pub fn preferences(&self) -> AppResult<IslandPreferences> {
         let monitors = self.monitors()?;
-        let monitor_id = self.db.get_setting("island_monitor")?.unwrap_or_default();
-        let active = monitors
-            .iter()
-            .find(|m| m.id == monitor_id)
-            .or_else(|| monitors.iter().find(|m| m.primary))
-            .or(monitors.first());
+        let mut monitor_id = self.db.get_setting("island_monitor")?.unwrap_or_default();
+        // Bind an old DISPLAYn preference once, then never resolve it by ordinal again.
+        if let Some(mon) = monitors.iter().find(|m| m.name == monitor_id && m.id != monitor_id) {
+            monitor_id = mon.id.clone();
+            self.db.set_setting("island_monitor", &monitor_id)?;
+            if let Some(mut anchor) = self.anchor()?.filter(|a| a.monitor_id == mon.name) {
+                anchor.monitor_id = mon.id.clone();
+                self.db.set_setting("island_anchor_v2", &serde_json::to_string(&anchor).map_err(error)?)?;
+            }
+        }
+        let active = active_monitor(&monitors, &monitor_id).ok_or_else(|| error("没有可用屏幕"))?;
+        let appearance = display_appearance(&self.db, &active.id)?;
         Ok(IslandPreferences {
-            scales: read_scales(&self.db)?,
+            scales: appearance.scales,
             monitor_id,
-            active_monitor_id: active.map(|m| m.id.clone()).unwrap_or_default(),
+            active_monitor_id: active.id.clone(),
             monitors,
             layout: IslandLayout {
+                subtitle_preference: read_subtitle_preference(&self.db)?,
+                typography: appearance.typography,
                 native_glass: native_glass_ready(),
                 ..self.state.lock().layout.clone()
             },
@@ -427,20 +540,34 @@ impl IslandService {
         compact_scale: Option<f64>,
         expanded_scale: Option<f64>,
         monitor_id: Option<String>,
+        font_size: Option<u8>,
+        font_weight: Option<u16>,
+        subtitle_preference: Option<IslandSubtitlePreference>,
     ) -> AppResult<IslandPreferences> {
-        let scales = read_scales(&self.db)?.with_changes(compact_scale, expanded_scale)?;
+        let _operation = self.operation.lock();
+        let current = self.preferences()?;
+        let selected = monitor_id.as_deref().unwrap_or(&current.monitor_id);
+        if !selected.is_empty() && monitor_id.is_some() && !current.monitors.iter().any(|m| m.id == selected) {
+            return Err(error("所选屏幕已断开，请刷新屏幕列表"));
+        }
+        let active = active_monitor(&current.monitors, selected).ok_or_else(|| error("没有可用屏幕"))?;
+        let appearance = display_appearance(&self.db, &active.id)?;
+        let next = DisplayAppearance {
+            scales: appearance.scales.with_changes(compact_scale, expanded_scale)?,
+            typography: appearance.typography.with_changes(font_size, font_weight)?,
+        };
+        if let Some(preference) = subtitle_preference {
+            self.db.set_setting("island_subtitle_preference", &serde_json::to_string(&preference).map_err(error)?)?;
+        }
         if let Some(id) = monitor_id {
-            if !id.is_empty() && !self.monitors()?.iter().any(|m| m.id == id) {
-                return Err(error("所选屏幕已断开，请刷新屏幕列表"));
-            }
             self.db.set_setting("island_monitor", &id)?;
             self.db.set_setting("island_anchor_v2", "")?;
         }
-        if compact_scale.is_some() || expanded_scale.is_some() {
-            self.db.set_setting("island_scales", &serde_json::to_string(&scales).map_err(error)?)?;
+        if next != appearance {
+            save_display_appearance(&self.db, &active.id, next)?;
         }
         let form = self.state.lock().layout.form;
-        self.set_form(form)?;
+        self.layout_form_locked(form, false, None, false)?;
         self.preferences()
     }
     pub fn set_form(&self, form: IslandForm) -> AppResult<IslandLayout> {
@@ -450,7 +577,7 @@ impl IslandService {
         let _operation = self.operation.lock();
         self.db.set_setting("island_anchor_v2", "")?;
         let form = self.state.lock().layout.form;
-        self.layout_form_locked(form, false, None)
+        self.layout_form_locked(form, false, None, false)
     }
     pub fn layout_form(
         &self,
@@ -459,13 +586,14 @@ impl IslandService {
         compact_width: Option<f64>,
     ) -> AppResult<IslandLayout> {
         let _operation = self.operation.lock();
-        self.layout_form_locked(form, animate, compact_width)
+        self.layout_form_locked(form, animate, compact_width, false)
     }
     fn layout_form_locked(
         &self,
         form: IslandForm,
         animate: bool,
         compact_width: Option<f64>,
+        refresh_viewport: bool,
     ) -> AppResult<IslandLayout> {
         if let Some(width) = compact_width {
             if !width.is_finite() {
@@ -492,7 +620,9 @@ impl IslandService {
         };
         {
             let state = self.state.lock();
-            if state.layout.form == form
+            if !refresh_viewport && state.layout.form == form
+                && state.layout.typography == preferences.layout.typography
+                && state.layout.subtitle_preference == preferences.layout.subtitle_preference
                 && state.layout.width == requested_width
                 && state.layout.height == form.dimensions().1
                 && (state.layout.scale - scale).abs() < 0.000001
@@ -515,6 +645,8 @@ impl IslandService {
             state.canvas = canvas;
             state.moved = false;
             state.layout = IslandLayout {
+                subtitle_preference: preferences.layout.subtitle_preference,
+                typography: preferences.layout.typography,
                 revision: state.layout.revision + 1,
                 form,
                 scale,
@@ -531,6 +663,7 @@ impl IslandService {
                 },
                 animate: animated,
                 native_glass: native_glass_ready(),
+                viewport: Some(IslandViewport { width: canvas.width, height: canvas.height, device_scale: dpi }),
             };
             state.pending = if animated {
                 Some((
@@ -550,6 +683,15 @@ impl IslandService {
         {
             apply_bounds(&win, position, canvas)?;
         }
+        // SetWindowPos and a monitor DPI change can leave the child WebView on
+        // its old bounds until a later resize message. Queue explicit physical
+        // bounds after the host move, before asking React to acknowledge it.
+        let webview: &tauri::Webview = win.as_ref();
+        webview.set_bounds(tauri::Rect {
+            position: PhysicalPosition::new(0, 0).into(),
+            size: canvas.into(),
+        }).map_err(error)?;
+        if refresh_viewport { win.set_zoom(1.).map_err(error)?; }
         apply_region(
             &win,
             canvas,
@@ -620,6 +762,15 @@ impl IslandService {
         }
         Ok(())
     }
+    pub fn refresh_viewport(&self) -> AppResult<()> {
+        // A drag can change DPI before the periodic position capture. Preserve
+        // that destination instead of moving the island back to its old monitor.
+        self.save_position()?;
+        let _operation = self.operation.lock();
+        let form = self.state.lock().layout.form;
+        self.layout_form_locked(form, false, None, true)?;
+        Ok(())
+    }
     pub fn moved(&self, position: PhysicalPosition<i32>) {
         let mut state = self.state.lock();
         if state.pending.is_none() && position != state.position {
@@ -628,6 +779,18 @@ impl IslandService {
     }
     pub fn save_position(&self) -> AppResult<()> {
         let _operation = self.operation.lock();
+        // Windows may relocate the window before our display poll after unplugging.
+        // That system move must not replace the user's preferred display with the fallback.
+        let monitors = self.monitors()?;
+        let topology_changed = {
+            let state = self.state.lock();
+            !state.monitors.is_empty() && state.monitors != monitors
+        };
+        if topology_changed {
+            let form = self.state.lock().layout.form;
+            self.layout_form_locked(form, false, None, false)?;
+            return Ok(());
+        }
         let win = self.window()?;
         let Some(current) = win.current_monitor().map_err(error)? else {
             return Ok(());
@@ -641,7 +804,7 @@ impl IslandService {
             }
         }
         let size = win.outer_size().map_err(error)?;
-        let name = current.name().cloned().unwrap_or_default();
+        let name = monitor_identity(current.name().map(String::as_str).unwrap_or_default());
         let mut top = (pos.y - current.position().y) as f64 / current.scale_factor();
         if self.db.get_setting("island_edge_snap")?.as_deref() != Some("false") && top < 30. {
             top = 2.;
@@ -658,7 +821,7 @@ impl IslandService {
         )?;
         self.db.set_setting("island_monitor", &name)?;
         let form = self.state.lock().layout.form;
-        self.layout_form_locked(form, false, None)?;
+        self.layout_form_locked(form, false, None, false)?;
         Ok(())
     }
     pub fn show(&self, open: bool) -> AppResult<bool> {
@@ -700,7 +863,17 @@ impl IslandService {
     // Do not acquire the layout-operation lock or query monitors here.
     pub fn prepare_window(&self, win: &WebviewWindow) -> AppResult<()> {
         #[cfg(windows)]
-        super::island_window::prepare(win.hwnd().map_err(error)?).map_err(error)?;
+        {
+            let app = self.app.clone();
+            super::island_window::prepare(win.hwnd().map_err(error)?, move |action| {
+                if let Some(state) = app.try_state::<crate::commands::AppState>() {
+                    let playback = state.playback.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = playback.handle_smtc_action(action, None).await;
+                    });
+                }
+            }).map_err(error)?;
+        }
         // Native clipping uses monitor DPI × island scale; browser zoom must
         // stay neutral rather than adding a third, independently restored scale.
         if let Err(e) = win.set_zoom(1.) {
@@ -770,6 +943,54 @@ impl IslandService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn t1518_three_displays_restore_independent_appearance_after_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("d");
+        let cache = dir.path().join("c");
+        let db = Database::open_and_migrate(&db_path, &cache).unwrap();
+        db.set_setting("island_scales", r#"{"compactScale":0.8,"expandedScale":1.4}"#).unwrap();
+        db.set_setting("island_typography", r#"{"fontSize":22,"fontWeight":600}"#).unwrap();
+        let legacy = display_appearance(&db, "laptop").unwrap();
+        assert_eq!(legacy.scales.compact_scale, 0.8);
+        assert_eq!(legacy.typography.font_size, 22);
+        let office = DisplayAppearance {
+            scales: IslandScales { compact_scale: 1.3, expanded_scale: 1.6 },
+            typography: IslandTypography { font_size: 24, font_weight: 800 },
+        };
+        let dorm = DisplayAppearance {
+            scales: IslandScales { compact_scale: 0.7, expanded_scale: 0.9 },
+            typography: IslandTypography { font_size: 18, font_weight: 400 },
+        };
+        assert_eq!(display_appearance(&db, "office").unwrap(), legacy);
+        save_display_appearance(&db, "office", office).unwrap();
+        // A new screen inherits the old settings, not the last adjusted display.
+        assert_eq!(display_appearance(&db, "dorm").unwrap(), legacy);
+        save_display_appearance(&db, "dorm", dorm).unwrap();
+        drop(db);
+        let db = Database::open_and_migrate(&db_path, &cache).unwrap();
+        for _ in 0..3 {
+            assert_eq!(display_appearance(&db, "laptop").unwrap(), legacy);
+            assert_eq!(display_appearance(&db, "office").unwrap(), office);
+            assert_eq!(display_appearance(&db, "dorm").unwrap(), dorm);
+        }
+    }
+
+    #[test]
+    fn t1518_display_identity_survives_reordering_and_unplugging() {
+        let laptop = IslandMonitor { id: "device:laptop".into(), name: "DISPLAY1".into(), primary: true, ..monitor() };
+        let office = IslandMonitor { id: "device:office".into(), name: "DISPLAY2".into(), ..monitor() };
+        let dorm = IslandMonitor { id: "device:dorm".into(), name: "DISPLAY2".into(), ..monitor() };
+        let preferred = office.id.clone();
+        let at_work = vec![laptop.clone(), office.clone()];
+        assert_eq!(active_monitor(&at_work, &preferred).unwrap().id, office.id);
+        let at_home = vec![laptop.clone(), dorm];
+        assert_eq!(active_monitor(&at_home, &preferred).unwrap().id, laptop.id);
+        assert_eq!(active_monitor(&at_home, "").unwrap().id, laptop.id);
+        let reconnected = vec![IslandMonitor { name: "DISPLAY3".into(), x: 1920, scale_factor: 2., ..office }, laptop];
+        assert_eq!(active_monitor(&reconnected, &preferred).unwrap().id, preferred);
+    }
+
     fn monitor() -> IslandMonitor {
         IslandMonitor {
             id: "secondary".into(),
@@ -860,6 +1081,23 @@ mod tests {
         drop(db);
         let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
         assert_eq!(read_scales(&db).unwrap(), scales);
+    }
+
+    #[test]
+    fn typography_defaults_validates_and_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        assert_eq!(read_typography(&db).unwrap(), IslandTypography::default());
+        let typography = IslandTypography::default().with_changes(Some(24), Some(500)).unwrap();
+        assert_eq!(typography.with_changes(Some(16), None).unwrap().font_weight, 500);
+        for size in [0, 15, 25, 255] { assert!(typography.with_changes(Some(size), None).is_err()); }
+        for weight in [0, 450, 900] { assert!(typography.with_changes(None, Some(weight)).is_err()); }
+        db.set_setting("island_typography", &serde_json::to_string(&typography).unwrap()).unwrap();
+        drop(db);
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        assert_eq!(read_typography(&db).unwrap(), typography);
+        db.set_setting("island_typography", "{}").unwrap();
+        assert_eq!(read_typography(&db).unwrap(), IslandTypography::default());
     }
 
     #[test]

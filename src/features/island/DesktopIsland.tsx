@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ScrollingText } from "./ScrollingText";
+import { preferredSubtitleLines } from "../lyrics/subtitleDisplay";
 import { PlayerLibraryActions } from "../player/PlayerLibraryActions";
 import { Play, Pause, SkipBack, SkipForward, Volume2, Volume1, Disc3, ExternalLink, EyeOff, Eye, X, ChevronUp, ChevronLeft, MoreHorizontal, RotateCcw } from "lucide-react";
 import {
-  PlaybackSnapshot, SubtitleCueDto, WorkDetailDto, AutoMatchedSubtitleDto, AppSettingsDto, AppError,
+  PlaybackSnapshot, SubtitleCueDto, WorkDetailDto, AppSettingsDto, AppError,
   IslandForm, IslandLayout, IslandPreferences, formatDurationMs, callCommand,
   subscribePlaybackSnapshot, subscribePlaybackTick, subscribeIslandFullscreen,
   subscribeIslandLayout, subscribeIslandGlass, subscribeSettingsUpdated, subscribeActiveSubtitles, defaultSnapshot, isTauriRuntime, normalizeAppError,
@@ -18,9 +19,10 @@ export function DesktopIsland() {
   const [snapshot, setSnapshot] = useState(defaultSnapshot);
   const [nativeGlass, setNativeGlass] = useState(false);
   const [layout, setLayout] = useState(initialLayout);
+  const [viewportRevision, setViewportRevision] = useState(-1);
   const [settings, setSettings] = useState<Partial<AppSettingsDto>>({});
   const [cues, setCues] = useState<SubtitleCueDto[]>([]);
-  const [cover, setCover] = useState<string | null>(null);
+  const [cover, setCover] = useState<{ workId: string; url: string | null } | null>(null);
   const [error, setError] = useState("");
   const reportLibraryError = useCallback((next: AppError) => setError(next.message), []);
   const [avoided, setAvoided] = useState(false);
@@ -104,13 +106,23 @@ export function DesktopIsland() {
 
   useEffect(() => {
     let disposed = false;
-    setCover(null); setCues([]); setSeekPreview(null);
+    const workId = snapshot.currentWorkId;
+    setCover(null);
+    // Covers belong to the work; changing tracks must keep the loaded image mounted.
+    if (workId && !privacy) {
+      void callCommand<WorkDetailDto | null>("get_work_detail", { workId })
+        .then(detail => { if (!disposed) setCover({ workId, url: detail?.coverRef ?? null }); }).catch(() => {});
+    }
+    return () => { disposed = true; };
+  }, [snapshot.currentWorkId, privacy]);
+
+  useEffect(() => {
+    let disposed = false;
+    setCues([]); setSeekPreview(null);
     let stop: (() => void) | undefined;
     let subtitleSequence = -1;
    
     if (snapshot.currentWorkId && !privacy) {
-      void callCommand<WorkDetailDto | null>("get_work_detail", { workId: snapshot.currentWorkId })
-        .then(detail => { if (!disposed) setCover(detail?.coverRef ?? null); }).catch(() => {});
       if (snapshot.currentVersionId) void subscribeActiveSubtitles(next => {
         if (!disposed && next.versionId === snapshot.currentVersionId && next.eventSeq >= subtitleSequence) {
           subtitleSequence = next.eventSeq; setCues(next.cues);
@@ -118,8 +130,8 @@ export function DesktopIsland() {
       }).then(unlisten => {
         if (disposed) { unlisten(); return null; }
         stop = unlisten;
-        return callCommand<AutoMatchedSubtitleDto | null>("auto_match_subtitle_for_version", { versionId: snapshot.currentVersionId });
-      }).then(result => { if (!disposed && subtitleSequence < 0) setCues(result?.cues ?? []); }).catch(() => {});
+        return callCommand<{ versionId: string; eventSeq: number; cues: SubtitleCueDto[] }>("get_active_subtitles");
+      }).then(result => { if (!disposed && result && result.versionId === snapshot.currentVersionId && result.eventSeq >= subtitleSequence) { subtitleSequence = result.eventSeq; setCues(result.cues); } }).catch(() => {});
     }
     return () => { disposed = true; stop?.(); };
   }, [snapshot.currentWorkId, snapshot.currentVersionId, privacy]);
@@ -154,7 +166,7 @@ export function DesktopIsland() {
   // position so seeking backwards also restores the correct cue (or title).
   const cue = cues.reduce<SubtitleCueDto | undefined>((latest, candidate) =>
     candidate.startMs <= position && (!latest || candidate.startMs > latest.startMs) ? candidate : latest, undefined);
-  const lines = privacy ? [] : (cue?.text ?? "").split(/\n| \/\/ /).map(s => s.trim()).filter(Boolean);
+  const lines = privacy ? [] : preferredSubtitleLines(cue?.text ?? "", layout.subtitlePreference ?? "original");
   const subtitleText = lines[0] || "";
   const hasSubtitles = !privacy && cues.length > 0;
   const source = snapshot.activeSource ?? snapshot.alternativeSources[0];
@@ -170,15 +182,34 @@ export function DesktopIsland() {
     : workTitle && fileName !== workTitle ? fileName : "";
   const textIdentity = `${snapshot.currentVersionId}:${hasSubtitles ? cue?.index ?? "gap" : "title"}:${privacy}`;
   const [compactText, setCompactText] = useState({ text: primaryText, identity: textIdentity });
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (layout.revision <= 0) return;
-    // Acknowledge only after React has committed the exact host layout. Hidden
-    // WebViews can throttle RAF indefinitely, so use a post-commit task instead.
-    const timer = setTimeout(() => {
-      void callCommand("island_layout_ready", { revision: layout.revision }).catch(e => setError(normalizeAppError(e).message));
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [layout.revision]);
+    // React can commit before WebView2 receives the new host bounds/DPI. Keep
+    // cover and text together, and reveal only when the actual viewport agrees.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const acknowledge = () => {
+      clearTimeout(timer);
+      const target = layout.viewport;
+      const dpi = window.devicePixelRatio || 1;
+      const tolerance = Math.max(2, dpi);
+      const ready = !target || (Math.abs(dpi - target.deviceScale) < .01
+        && Math.abs(window.innerWidth * dpi - target.width) <= tolerance
+        && Math.abs(window.innerHeight * dpi - target.height) <= tolerance);
+      setViewportRevision(ready ? layout.revision : -1);
+      // Hidden WebViews may throttle RAF; a post-commit task remains usable.
+      if (ready) timer = setTimeout(() => {
+        void callCommand("island_layout_ready", { revision: layout.revision }).catch(e => setError(normalizeAppError(e).message));
+      }, 0);
+    };
+    acknowledge();
+    window.addEventListener("resize", acknowledge);
+    window.visualViewport?.addEventListener("resize", acknowledge);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("resize", acknowledge);
+      window.visualViewport?.removeEventListener("resize", acknowledge);
+    };
+  }, [layout.revision, layout.viewport]);
   useLayoutEffect(() => {
     // Measure only when the cue changes, never on each playback tick.
     if (textMeasure.current) textMeasure.current.textContent = subtitleText;
@@ -188,7 +219,7 @@ export function DesktopIsland() {
     if (compactWidth.current === width) return;
     compactWidth.current = width;
     if (form === "compact" && requestedForm.current === "compact") changeForm("compact", width);
-  }, [subtitleText, hasSubtitles, form, changeForm]);
+  }, [subtitleText, hasSubtitles, form, changeForm, layout.fontSize, layout.fontWeight]);
   useLayoutEffect(() => {
     // Wait for the matching host width so text entry and capsule spring start in
     // the same React commit. Privacy masking must never wait for the host.
@@ -237,8 +268,10 @@ export function DesktopIsland() {
       setSettings(prev => ({ ...prev, islandPrivacyMode: value })); changeForm("compact");
     }
   }
-  const coverImage = !privacy && cover ? <img src={cover} alt="作品封面" draggable={false} /> : <Disc3 size={20} />;
-  return <div className={`desktop-island-container form-${form} ${nativeGlass ? "has-native-glass" : ""} ${avoided ? "is-fullscreen-avoided" : ""}`}
+  const coverUrl = cover && cover.workId === snapshot.currentWorkId ? cover.url : null;
+  const coverImage = !privacy && coverUrl ? <img src={coverUrl} alt="作品封面" draggable={false} /> : <Disc3 size={20} />;
+  return <div className={`desktop-island-container form-${form} ${layout.viewport && viewportRevision !== layout.revision ? "is-viewport-pending" : ""} ${nativeGlass ? "has-native-glass" : ""} ${avoided ? "is-fullscreen-avoided" : ""}`}
+    style={{ "--island-text-size": `${layout.fontSize ?? 20}px`, "--island-text-weight": layout.fontWeight ?? 700 } as React.CSSProperties}
     onContextMenu={e => { e.preventDefault(); changeForm("menu"); }}
     onKeyDown={e => { if (e.key === "Escape") { changeForm("compact"); } }}>
     <span ref={textMeasure} className="island-text-measure" aria-hidden="true" />
@@ -298,7 +331,7 @@ export function DesktopIsland() {
         <div className="island-menu-heading"><span>灵动岛</span><button type="button" className="island-btn-icon" aria-description="返回播放控制" aria-label="返回播放控制" onClick={() => changeForm("expanded")}><ChevronLeft size={16} /></button></div>
         <div className="island-menu-columns">
         <div className="island-menu-column">
-        <PlayerLibraryActions versionId={snapshot.currentVersionId} onError={reportLibraryError} variant="island-menu" />
+        <PlayerLibraryActions versionId={snapshot.currentVersionId} localPlayback={snapshot.activeSource?.sourceKind === "local_imported" || snapshot.activeSource?.sourceKind === "local_downloaded"} onError={reportLibraryError} variant="island-menu" />
         <button type="button" className="island-menu-item" aria-pressed={privacy} onClick={() => void togglePrivacy()}>{privacy ? <Eye size={14} /> : <EyeOff size={14} />}<span className="ui-icon-label">{privacy ? "关闭脱敏模式" : "脱敏模式"}</span></button>
         </div>
         <div className="island-menu-column" role="group" aria-label="灵动岛与音量">

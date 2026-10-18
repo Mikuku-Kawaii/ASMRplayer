@@ -1335,6 +1335,7 @@ impl LibraryService {
         &self,
         version_id: &str,
     ) -> AppResult<Option<AttachmentDto>> {
+        let preferred = self.db.get_setting(&format!("subtitle_attachment:{version_id}"))?;
         self.db.with_conn(|conn| {
             let track_row: Option<(String, String, String)> = conn
                 .query_row(
@@ -1386,6 +1387,9 @@ impl LibraryService {
                 return Ok(None);
             }
 
+            if let Some(selected) = subs.iter().find(|att| Some(&att.id) == preferred.as_ref() && att.version_id.as_deref() == Some(version_id)) {
+                return Ok(Some(selected.clone()));
+            }
             // 3. If an attachment is already explicitly bound to this exact version_id, return it immediately
             if let Some(exact) = subs
                 .iter()
@@ -2342,6 +2346,9 @@ pub fn parse_subtitle_bytes(bytes: &[u8], offset_ms: i64) -> AppResult<Vec<Subti
                     (parse_timestamp_ms(start_raw), parse_timestamp_ms(end_raw))
                 {
                     let cue_text = lines[t_idx + 1..].join("\n");
+                    let cue_text = if clean.starts_with("WEBVTT") {
+                        cue_text.replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", "\u{a0}").replace("&lrm;", "\u{200e}").replace("&rlm;", "\u{200f}").replace("&amp;", "&")
+                    } else { cue_text };
                     if !cue_text.is_empty() {
                         cues.push(SubtitleCueDto {
                             index: cues.len() + 1,

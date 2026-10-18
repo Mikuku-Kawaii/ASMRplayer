@@ -1,3 +1,7 @@
+import { ErrorNotice } from "../../components/ErrorNotice";
+import { ContextMenu } from "../../components/ContextMenu";
+import { SubtitleActionButtons, useSubtitleActions } from "../player/useSubtitleActions";
+import { SubtitleSyncDialog } from "../player/SubtitleSyncDialog";
 import { Select } from "../../components/Select";
 import { WorkContentBadges } from "../../components/WorkContentBadges";
 import { WorkRatingSelect } from "./WorkRatingSelect";
@@ -182,7 +186,7 @@ interface WorkDetailViewProps {
   onBack: () => void;
   onSnapshotChange: (snap: PlaybackSnapshot) => void;
   onOpenDownloads: () => void;
-  onSearchKeyword?: (keyword: string, preferOnline?: boolean) => void;
+  onSearchKeyword?: (keyword: string) => void;
   onError: (err: AppError) => void;
 }
 
@@ -197,6 +201,10 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
 }) => {
   const [detail, setDetail] = useState<WorkDetailDto | null>(null);
   const [loading, setLoading] = useState(false);
+  const subtitleActions = useSubtitleActions(detail?.tracks.flatMap(track => track.versions.map(version => version.id)) ?? []);
+  const [syncVersions, setSyncVersions] = useState<string[] | null>(null);
+  const [trackMenu, setTrackMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  useEffect(() => { setTrackMenu(null); setSyncVersions(null); }, [workId]);
   const [selectedGroupPath, setSelectedGroupPath] = useState<string>("");
   const [startingPlayback, setStartingPlayback] = useState(false);
   const [isDirCollapsed, setIsDirCollapsed] = useState<boolean>(true);
@@ -601,7 +609,9 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
     ? detail.tracks.filter((t) => t.logicalDirPath === selectedGroupPath)
     : detail.tracks;
 
-  // 本地导入作品或所有音轨均已落地本地时，不展示下载按钮
+  const groupVersionIds = [...new Set(filteredTracks.flatMap(track => track.versions.map(version => version.id)))];
+
+  // 在线作品即使音频已下载，仍可下载封面、字幕和文档。
   const isLocalWork = detail.tracks.some((t) =>
     t.versions.some((v) =>
       v.sources.some((s) => s.sourceKind === "local_imported")
@@ -611,13 +621,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
   const hasDownloadableOnline = detail.tracks.some((t) =>
     t.versions.some(
       (v) =>
-        v.sources.some((s) => s.sourceKind === "online_provider") &&
-        !v.sources.some(
-          (s) =>
-            (s.sourceKind === "local_imported" ||
-              s.sourceKind === "local_downloaded") &&
-            s.availability === "available"
-        )
+        v.sources.some((s) => s.sourceKind === "online_provider")
     )
   );
 
@@ -658,7 +662,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
             className="btn btn-ghost btn-sm"
             disabled={syncingMeta || (!detail.rjCode && !syncRjInput.trim())}
             onClick={() => void handleSyncFromAsmrOne(true)}
-            title="从 asmr.one 同步封面、社团、CV、标签与 R18 分级"
+            title="从 asmr.one 同步标题、封面、社团、CV、标签与 R18 分级"
           >
             <RefreshCw size={15} />
             <span>同步元数据</span>
@@ -712,13 +716,13 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                     "none";
                 }}
               />
-              <WorkContentBadges nsfw={detail.nsfw} hasSubtitle={detail.hasSubtitle} />
+              <WorkContentBadges nsfw={detail.nsfw} hasSubtitle={detail.hasSubtitle} hasRecognizedSubtitle={detail.hasRecognizedSubtitle} />
             </div>
           )}
 
           <div className="detail-hero-main">
             <div className="detail-title-block">
-            {!detail.coverRef && <WorkContentBadges nsfw={detail.nsfw} hasSubtitle={detail.hasSubtitle} overlay={false} />}
+            {!detail.coverRef && <WorkContentBadges nsfw={detail.nsfw} hasSubtitle={detail.hasSubtitle} hasRecognizedSubtitle={detail.hasRecognizedSubtitle} overlay={false} />}
             {detail.rjCode && (
               <div className="work-badges">
                 <CopyRjBadge key={detail.rjCode} code={detail.rjCode} />
@@ -741,7 +745,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                       key={va}
                       type="button"
                       className="cv-pill cv-pill-btn"
-                      onClick={() => onSearchKeyword?.(va, !isLocalWork)}
+                      onClick={() => onSearchKeyword?.(va)}
                       aria-label={`搜索声优 ${va}`}
                       title={`点击寻找声优「${va}」的相关作品`}
                     ><span className="ui-tag-label">{va}</span></button>
@@ -757,7 +761,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                     key={tag}
                     type="button"
                     className="tag-pill tag-pill-btn"
-                    onClick={() => onSearchKeyword?.(tag, !isLocalWork)}
+                    onClick={() => onSearchKeyword?.(tag)}
                     aria-label={`搜索标签 ${tag}`}
                     title={`点击寻找包含标签「${tag}」的作品`}
                   ><span className="ui-tag-label">{tag}</span></button>
@@ -840,6 +844,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                   type="button"
                   className="btn btn-secondary"
                   disabled={preparingDownload}
+                  title="下载作品全部文件（音频、封面、字幕和文档）"
                   onClick={() => void handleOpenDownloadPreview()}
                 >
                   <Download size={16} />
@@ -852,7 +857,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
       </section>
 
       {editingOverrides && (
-        <ContentDialog label="编辑作品元数据" onClose={() => setEditingOverrides(false)}>
+        <ContentDialog size="wide" label="编辑作品元数据" onClose={() => setEditingOverrides(false)}>
           <div className="modal-header">
             <h3>编辑作品元数据</h3>
             <button
@@ -1036,7 +1041,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
       )}
 
       {showAssocPanel && (
-        <ContentDialog label="作品与音轨版本关联" onClose={() => setShowAssocPanel(false)}>
+        <ContentDialog size="wide" label="作品与音轨版本关联" onClose={() => setShowAssocPanel(false)}>
           <div className="modal-header">
             <h3>作品与音轨版本关联</h3>
             <button
@@ -1187,27 +1192,44 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                 <Play size={16} />
                 <span className="ui-icon-label">播放当前目录</span>
               </button>
+              <SubtitleActionButtons actions={subtitleActions} versionIds={groupVersionIds} />
+              <button type="button" className="btn btn-secondary btn-sm" disabled={subtitleActions.running || groupVersionIds.length === 0} onClick={() => setSyncVersions(groupVersionIds)}>同步字幕</button>
             </div>
           )}
         </section>
       )}
 
+      {subtitleActions.dialog}
+      {syncVersions && <SubtitleSyncDialog key={workId} versionIds={syncVersions} onClose={() => setSyncVersions(null)} />}
+      {subtitleActions.error && <ErrorNotice message={subtitleActions.error} />}
+      {subtitleActions.notice && <p role="status" className="settings-field-hint">{subtitleActions.notice}</p>}
+      {trackMenu && <ContextMenu x={trackMenu.x} y={trackMenu.y} label="音轨操作菜单" onClose={() => setTrackMenu(null)}>
+        <button type="button" role="menuitem" disabled={!subtitleActions.can([trackMenu.id], false)} onClick={() => { void subtitleActions.request([trackMenu.id], false); setTrackMenu(null); }}>识别</button>
+        <button type="button" role="menuitem" disabled={!subtitleActions.can([trackMenu.id], true)} onClick={() => { void subtitleActions.request([trackMenu.id], true); setTrackMenu(null); }}>翻译</button>
+        <button type="button" role="menuitem" disabled={subtitleActions.running} onClick={() => { setSyncVersions([trackMenu.id]); setTrackMenu(null); }}>同步识别字幕</button>
+      </ContextMenu>}
       <section className="tracks-section">
-        <table className="tracks-table">
+        <table className="tracks-table detail-tracks-table">
+          <colgroup><col span={5} /></colgroup>
           <thead>
             <tr>
-              <th>音轨</th>
-              <th>目录</th>
-              <th>来源</th>
-              <th>时长</th>
-              <th>操作</th>
+              <th scope="col">音轨</th>
+              <th scope="col">目录</th>
+              <th scope="col">来源</th>
+              <th scope="col">时长</th>
+              <th scope="col">操作</th>
             </tr>
           </thead>
           <tbody>
             {filteredTracks.slice(0, visibleTrackLimit).map((track) =>
               track.versions.map((ver) => {
                 return (
-                  <tr key={ver.id} id={`bookmark-version-${ver.id}`} tabIndex={-1} className={`track-row ${focusVersionId === ver.id ? "bookmark-version-target" : ""}`}>
+                  <tr key={ver.id} id={`bookmark-version-${ver.id}`} tabIndex={-1} className={`track-row ${focusVersionId === ver.id ? "bookmark-version-target" : ""}`}
+                    onContextMenu={event => { event.preventDefault(); setTrackMenu({ x: event.clientX, y: event.clientY, id: ver.id }); }}
+                    onDoubleClick={event => {
+                      if ((event.target as Element).closest("button, a, input, select, textarea, [role='button']")) return;
+                      void handlePlayGroup(track.logicalDirPath, ver.id);
+                    }}>
                     <td>
                       <div className="track-title-cell">
                         <span className="track-main-name">{track.title}</span>

@@ -490,7 +490,7 @@ export const DownloadTaskModal: React.FC<DownloadTaskModalProps> = ({
         </div>
 
         {/* 底部操作栏 */}
-        <footer className="dl-task-footer">
+        <footer className="dl-task-footer dialog-actions">
           <button
             type="button"
             className="btn btn-ghost btn-sm"

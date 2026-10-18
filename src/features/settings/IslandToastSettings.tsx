@@ -1,3 +1,4 @@
+import { HelpHint } from "../../components/HelpHint";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 interface Props {
@@ -17,15 +18,12 @@ export function IslandToastSettings({ enabled, duration, onToggle, onDurationCom
     onDurationCommit(draft);
   };
   return <div className="settings-row island-notification-setting">
-    <div className="settings-label-block">
-      <span id="island-toast-label">切歌与音量通知</span>
-      <span className="settings-field-hint" id="island-toast-hint">短暂显示曲目信息或音量，随后恢复字幕。</span>
-    </div>
+    <span className="setting-label-help"><span id="island-toast-label">切歌与音量通知</span><HelpHint label={"切歌与音量通知"} text={<>短暂显示曲目信息或音量，随后恢复字幕。</>} /></span>
     <div className="island-notification-controls">
       <div className="island-notification-heading">
         <label htmlFor="setting-island-toast-sec">停留时长</label>
         <button type="button" className="settings-switch" role="switch" aria-checked={enabled}
-          aria-labelledby="island-toast-label" aria-describedby="island-toast-hint"
+          aria-labelledby="island-toast-label"
           title={enabled ? "关闭切歌与音量通知" : "开启切歌与音量通知"} onClick={() => onToggle(!enabled)}>
           <span aria-hidden="true" />
         </button>

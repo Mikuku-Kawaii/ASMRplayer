@@ -1,0 +1,65 @@
+[
+  {
+    "sha256": "659b8232d627a5460d74fd3c96947ae83db6d03f035ac633e20cd69cfa029227",
+    "size": 14530453,
+    "name": "onnx-1.17.0-cp312-cp312-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/35/55/c4d11bee1fdb0c4bd84b4e3562ff811a19b63266816870ae1f95567aa6e1/onnx-1.17.0-cp312-cp312-win_amd64.whl",
+    "kind": "python"
+  },
+  {
+    "sha256": "c1f9540be57940698ed329904db803cf7a402f3fc200bfe599334c9bd84a40b2",
+    "size": 12614190,
+    "name": "numpy-2.2.6-cp312-cp312-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/36/fa/8c9210162ca1b88529ab76b41ba02d433fd54fecaf6feb70ef9f124683f1/numpy-2.2.6-cp312-cp312-win_amd64.whl",
+    "kind": "python"
+  },
+  {
+    "sha256": "3f76e3a3675b4a4d867b52e4a5f5b78a2ef9565549d4037e06cf7b0942b1d3fc",
+    "size": 434818,
+    "name": "protobuf-5.29.5-cp310-abi3-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/81/7f/73cefb093e1a2a7c3ffd839e6f9fcafb7a427d300c7f8aef9c64405d8ac6/protobuf-5.29.5-cp310-abi3-win_amd64.whl",
+    "kind": "python"
+  },
+  {
+    "sha256": "29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484",
+    "size": 66469,
+    "name": "packaging-25.0-py3-none-any.whl",
+    "url": "https://files.pythonhosted.org/packages/20/12/38679034af332785aac8774540895e234f4d07f7545804097de4b666afd8/packaging-25.0-py3-none-any.whl",
+    "kind": "python"
+  },
+  {
+    "sha256": "c0c6027f01505bfed6c3b21ec546f69c687689aad5f1a377554bc6ca4aa993a8",
+    "size": 944318,
+    "name": "nvidia_cuda_runtime_cu12-12.8.90-py3-none-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/30/a5/a515b7600ad361ea14bfa13fb4d6687abf500adc270f19e89849c0590492/nvidia_cuda_runtime_cu12-12.8.90-py3-none-win_amd64.whl",
+    "kind": "cuda"
+  },
+  {
+    "sha256": "47e9b82132fa8d2b4944e708049229601448aaad7e6f296f630f2d1a32de35af",
+    "size": 567544208,
+    "name": "nvidia_cublas_cu12-12.8.4.1-py3-none-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/70/61/7d7b3c70186fb651d0fbd35b01dbfc8e755f69fd58f817f3d0f642df20c3/nvidia_cublas_cu12-12.8.4.1-py3-none-win_amd64.whl",
+    "kind": "cuda"
+  },
+  {
+    "sha256": "7b805b9a4cf9f3da7c5f4ea4a9dff7baf62d1a612d6154a7e0d2ea51ed296241",
+    "size": 715962100,
+    "name": "nvidia_cudnn_cu12-9.7.1.26-py3-none-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/d0/ea/636cda41b3865caa0d43c34f558167304acde3d2c5f6c54c00a550e69ecd/nvidia_cudnn_cu12-9.7.1.26-py3-none-win_amd64.whl",
+    "kind": "cuda"
+  },
+  {
+    "url": "https://files.pythonhosted.org/packages/7d/ec/ce1629f1e478bb5ccd208986b5f9e0316a78538dd6ab1d0484f012f8e2a1/nvidia_cufft_cu12-11.3.3.83-py3-none-win_amd64.whl",
+    "kind": "cuda",
+    "name": "nvidia_cufft_cu12-11.3.3.83-py3-none-win_amd64.whl",
+    "sha256": "7a64a98ef2a7c47f905aaf8931b69a3a43f27c55530c698bb2ed7c75c0b42cb7",
+    "size": 192216559
+  },
+  {
+    "url": "https://files.pythonhosted.org/packages/ed/d7/34f02dad2e30c31b10a51f6b04e025e5dd60e5f936af9045a9b858a05383/nvidia_nvjitlink_cu12-12.8.93-py3-none-win_amd64.whl",
+    "kind": "cuda",
+    "name": "nvidia_nvjitlink_cu12-12.8.93-py3-none-win_amd64.whl",
+    "sha256": "bd93fbeeee850917903583587f4fc3a4eafa022e34572251368238ab5e6bd67f",
+    "size": 268553710
+  }
+]

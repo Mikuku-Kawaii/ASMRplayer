@@ -25,7 +25,7 @@ import {
   SlidersHorizontal,
   MoreHorizontal,
   ChevronUp,
-  AppWindow,
+  AudioLines,
 } from "lucide-react";
 import {
   PlaybackSnapshot,
@@ -63,9 +63,6 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
   onOpenWorkDetail,
   isImmersiveOpen = false,
   onToggleImmersive,
-  onToggleMiniMode,
-  isIslandOpen = false,
-  onToggleIsland,
   onError,
 }) => {
   const { bindings } = useShortcuts();
@@ -79,8 +76,8 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
   const [waveformPeaks, setWaveformPeaks] = useState<number[]>(
     DEFAULT_WAVEFORM_PEAKS
   );
-  const [trackMetrics, setTrackMetrics] =
-    useState<TrackAcousticMetricsDto | null>(null);
+  const [loudnessBusy, setLoudnessBusy] = useState(false);
+  const loudnessPending = useRef(false);
   const moreMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -108,12 +105,11 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
     };
   }, [snapshot.currentWorkId]);
 
-  // Load 64-point waveform envelope & EBU R128 loudness when version changes
+  // Legacy waveform preview only; its byte estimates are not measured LUFS/true peak.
   useEffect(() => {
     let cancelled = false;
     if (!snapshot.currentVersionId) {
       setWaveformPeaks(DEFAULT_WAVEFORM_PEAKS);
-      setTrackMetrics(null);
       return;
     }
     void callCommand<TrackAcousticMetricsDto | null>(
@@ -129,7 +125,6 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
               ? metrics.waveformPeaks
               : DEFAULT_WAVEFORM_PEAKS
           );
-          setTrackMetrics(metrics);
         }
       })
       .catch(() => {
@@ -328,26 +323,32 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
 
   const audioInfo = () => {
     const tel = snapshot.audioTelemetry;
-    const parts: { kind: string; label: string }[] = [];
-    if (tel?.sampleRateHz && Number.isFinite(tel.sampleRateHz) && tel.sampleRateHz > 0) {
-      parts.push({ kind: "sample-rate", label: `${(tel.sampleRateHz / 1000).toLocaleString("en-US", { maximumFractionDigits: 3 })} kHz` });
+    const parts: { kind: string; label: string; title?: string }[] = [];
+    if (tel?.sourceSampleRateHz && Number.isFinite(tel.sourceSampleRateHz) && tel.sourceSampleRateHz > 0) {
+      parts.push({ kind: "sample-rate", label: `${(tel.sourceSampleRateHz / 1000).toLocaleString("en-US", { maximumFractionDigits: 3 })} kHz`, title: "原文件采样率" });
     }
-    const codec = tel?.codec || snapshot.activeSource?.format;
-    if (codec) parts.push({ kind: "codec", label: codec.toUpperCase() });
-    if (tel?.channels) parts.push({ kind: "channels", label: tel.channels });
-    if (tel?.bitrateKbps && Number.isFinite(tel.bitrateKbps) && tel.bitrateKbps > 0) {
-      parts.push({ kind: "bitrate", label: `${Math.round(tel.bitrateKbps)} kbps` });
+    const bitDepth = tel?.sourceBitDepth;
+    if (bitDepth && Number.isInteger(bitDepth) && bitDepth > 0 && bitDepth <= 64) {
+      parts.push({ kind: "bit-depth", label: `${bitDepth}-bit`, title: `原文件位深：${bitDepth}-bit` });
     }
-    if (trackMetrics) parts.push({ kind: "loudness", label: `${trackMetrics.integratedLufs.toFixed(1)} LUFS` });
+    if (tel?.sourceBitrateKbps && Number.isFinite(tel.sourceBitrateKbps) && tel.sourceBitrateKbps > 0) {
+      parts.push({ kind: "bitrate", label: `${Math.round(tel.sourceBitrateKbps)} kbps`, title: "原文件平均码率" });
+    }
     const summary = parts.map(part => part.label).join(" · ") || (snapshot.currentVersionId ? "音频信息待读取" : "选择作品开始收听");
     const details = [summary];
-    if (tel?.sampleFormat) details.push(`解码采样格式：${tel.sampleFormat}`);
+    if (bitDepth) details.push(`原文件位深：${bitDepth}-bit`);
     if (snapshot.activeSource) {
       details.push(snapshot.activeSource.sourceKind === "local_imported" ? "本地原件" : snapshot.activeSource.sourceKind === "local_downloaded" ? "已下载离线" : "在线流");
     }
-    if (trackMetrics) details.push(`真峰值：${trackMetrics.truePeakDbtp.toFixed(1)} dBTP`);
     return <div className="player-audio-info tabular-nums" role="group" tabIndex={parts.length ? 0 : undefined} aria-label={`音频信息：${summary}`} title={details.join(" · ")}>
-      {parts.length ? parts.map(part => <span key={part.kind} className={`player-audio-tag is-${part.kind}`}><span className="ui-tag-label">{part.label}</span></span>) : summary}
+      {snapshot.activeSource && <span
+        className={`player-audio-tag player-source-tag ${snapshot.activeSource.sourceKind === "online_provider" ? "is-online" : "is-local"}`}
+        title={snapshot.activeSource.sourceKind === "online_provider" ? "在线流" : snapshot.activeSource.sourceKind === "local_downloaded" ? "本地流 · 已下载离线" : "本地流 · 本地导入"}
+      >
+        {snapshot.activeSource.sourceKind === "online_provider" ? <Radio size={12} aria-hidden="true" /> : <HardDrive size={12} aria-hidden="true" />}
+        <span className="ui-tag-label">{snapshot.activeSource.sourceKind === "online_provider" ? "在线流" : "本地流"}</span>
+      </span>}
+      {parts.length ? parts.map(part => <span key={part.kind} className={`player-audio-tag is-${part.kind}`} title={part.title}><span className="ui-tag-label">{part.label}</span></span>) : summary}
     </div>;
   };
 
@@ -375,6 +376,20 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
     : "点击设置起点 A";
 
   const dspActive = !snapshot.dspConfig?.masterBypass;
+  const loudnessActive = dspActive && !!snapshot.dspConfig.loudnessNormalization;
+  async function toggleLoudness() {
+    if (loudnessPending.current) return;
+    loudnessPending.current = true;
+    setLoudnessBusy(true);
+    try {
+      onSnapshotChange(await callCommand<PlaybackSnapshot>("set_loudness_normalization", { enabled: !loudnessActive }));
+    } catch (error) {
+      onError(normalizeAppError(error));
+    } finally {
+      loudnessPending.current = false;
+      setLoudnessBusy(false);
+    }
+  }
   const hasActiveSecondaryTool =
     Boolean(snapshot.activeAbLoop) ||
     abPointA !== null ||
@@ -470,13 +485,6 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
           >
             {snapshot.currentTrackTitle ?? "尚未加载音轨"}
           </button>
-          {snapshot.activeSource && <span
-            className={`badge player-source-tag ${snapshot.activeSource.sourceKind === "online_provider" ? "badge-online" : "badge-local"}`}
-            title={snapshot.activeSource.sourceKind === "online_provider" ? "在线流" : snapshot.activeSource.sourceKind === "local_downloaded" ? "本地流 · 已下载离线" : "本地流 · 本地导入"}
-          >
-            {snapshot.activeSource.sourceKind === "online_provider" ? <Radio size={11} aria-hidden="true" /> : <HardDrive size={11} aria-hidden="true" />}<span className="ui-icon-label">
-            {snapshot.activeSource.sourceKind === "online_provider" ? "在线流" : "本地流"}
-          </span></span>}
           </div>
           {audioInfo()}
         </div>
@@ -559,6 +567,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
           <button
             type="button"
             className={`btn-icon ${activeDrawerTab === "queue" ? "active-icon-btn" : ""}`}
+            data-drawer-trigger="queue"
             onClick={() => onToggleDrawer("queue")}
             aria-label="播放队列"
             aria-expanded={activeDrawerTab === "queue"}
@@ -572,19 +581,15 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
           <span className="time-label">{formatDurationMs(displayPosMs)}</span>
           <div className="waveform-seekbar-wrap">
             <div className="waveform-bars-bg" aria-hidden="true">
-              {waveformPeaks.map((peak, idx) => {
-                const barPct = ((idx + 0.5) / waveformPeaks.length) * 100;
-                const isPlayed = barPct <= seekProgressPct;
-                return (
-                  <span
-                    key={idx}
-                    className={`waveform-bar ${isPlayed ? "is-played" : ""}`}
-                    style={{
-                      height: `${Math.max(18, Math.round(peak * 100))}%`,
-                    }}
-                  />
-                );
-              })}
+              {waveformPeaks.map((peak, idx) => (
+                <span
+                  key={idx}
+                  className="waveform-bar"
+                  style={{
+                    height: `${Math.max(18, Math.round(peak * 100))}%`,
+                  }}
+                />
+              ))}
             </div>
             <input
               type="range"
@@ -636,7 +641,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
 
       {/* 右栏：收纳为单一触发按钮 + 右侧弹出式二级控制菜单（或点击关闭已打开的抽屉） */}
       <div className="player-right" ref={moreMenuRef}>
-        <PlayerLibraryActions versionId={snapshot.currentVersionId} onError={onError} />
+        <PlayerLibraryActions versionId={snapshot.currentVersionId} localPlayback={snapshot.activeSource?.sourceKind === "local_imported" || snapshot.activeSource?.sourceKind === "local_downloaded"} onError={onError} />
         <button
           type="button"
           className={`btn-right-menu-trigger ${
@@ -644,6 +649,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
               ? "active"
               : ""
           }`}
+          data-drawer-trigger="more"
           onClick={handleRightMenuTriggerClick}
           aria-label="更多播放工具与抽屉"
           aria-expanded={moreMenuOpen || activeDrawerTab !== "none"}
@@ -713,16 +719,17 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
           </div>
 
           <div className="player-more-divider" />
-          <div className="player-more-section-label">抽屉面板</div>
+          <div className="player-more-section-label">音效与面板</div>
 
-          {/* 2. 四大抽屉快捷网格 */}
+          {/* 音效与面板快捷入口 */}
           <div className="popover-drawer-grid">
             <button
               type="button"
               role="menuitem"
               className={`popover-drawer-btn ${
-                activeDrawerTab === "dsp" ? "active" : ""
+                dspActive ? "active" : ""
               }`}
+              data-drawer-trigger="dsp"
               onClick={() => {
                 onToggleDrawer("dsp");
                 setMoreMenuOpen(false);
@@ -742,14 +749,15 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
               type="button"
               role="menuitem"
               className={`popover-drawer-btn ${
-                activeDrawerTab === "audio" ? "active" : ""
+                snapshot.audioExclusive ? "active" : ""
               }`}
+              data-drawer-trigger="audio"
               onClick={() => {
                 onToggleDrawer("audio");
                 setMoreMenuOpen(false);
               }}
               aria-label="WASAPI 独占"
-              title="打开 WASAPI 独占与输出设备设置"
+              title={`WASAPI 独占${snapshot.audioExclusive ? "已开启，当前设备可能无法供其他程序播放" : "已关闭"}；点击打开输出设备设置`}
             >
               <Headphones size={14} />
               <span>WASAPI 独占</span>
@@ -757,18 +765,17 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
 
             <button
               type="button"
-              role="menuitem"
-              className={`popover-drawer-btn ${
-                activeDrawerTab === "bookmarks" ? "active" : ""
-              }`}
-              onClick={() => {
-                onToggleDrawer("bookmarks");
-                setMoreMenuOpen(false);
-              }}
-              aria-label="版本书签与循环"
+              role="menuitemcheckbox"
+              className={`popover-drawer-btn ${loudnessActive ? "active" : ""}`}
+              aria-checked={loudnessActive}
+              aria-busy={loudnessBusy}
+              disabled={loudnessBusy}
+              onClick={() => void toggleLoudness()}
+              aria-label="响度均衡"
+              title="实时调整响度，目标 −23 LUFS，均衡阶段峰值上限 −2 dBTP；会改变动态并以 48 kHz 处理。默认关闭，原声直通时停用。"
             >
-              <Bookmark size={14} />
-              <span>书签与循环面板</span>
+              <AudioLines size={14} />
+              <span>响度均衡</span>
             </button>
 
             <button
@@ -777,6 +784,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
               className={`popover-drawer-btn ${
                 activeDrawerTab === "subtitles" ? "active" : ""
               }`}
+              data-drawer-trigger="subtitles"
               onClick={() => {
                 onToggleDrawer("subtitles");
                 setMoreMenuOpen(false);
@@ -822,6 +830,11 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
             <span className="player-more-item-meta">{abStatusLabel}</span>
           </button>
 
+          <button type="button" role="menuitem" className={`player-more-item ${activeDrawerTab === "bookmarks" ? "active" : ""}`}
+            data-drawer-trigger="bookmarks" aria-label="版本书签与循环" onClick={() => { onToggleDrawer("bookmarks"); setMoreMenuOpen(false); }}>
+            <span className="player-more-item-left"><Bookmark size={14} /><span>书签与循环面板</span></span>
+          </button>
+
           <button
             type="button"
             role="menuitem"
@@ -843,31 +856,6 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
 
 
 
-          {(onToggleIsland || onToggleMiniMode) && (
-            <button
-              type="button"
-              role="menuitem"
-              className={`player-more-item ${isIslandOpen ? "is-active" : ""}`}
-              onClick={() => {
-                setMoreMenuOpen(false);
-                if (onToggleIsland) {
-                  onToggleIsland();
-                } else if (onToggleMiniMode) {
-                  onToggleMiniMode();
-                }
-              }}
-              aria-label="切换桌面灵动岛"
-              aria-pressed={isIslandOpen}
-            >
-              <span className="player-more-item-left">
-                <AppWindow size={14} />
-                <span>桌面灵动岛 (Dynamic Island)</span>
-              </span>
-              <span className="player-more-item-meta">
-                {isIslandOpen ? "已开启" : "独立桌面悬浮"}
-              </span>
-            </button>
-          )}
 
           {snapshot.alternativeSources.length > 0 && (
             <>

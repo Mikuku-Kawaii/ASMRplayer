@@ -1,3 +1,4 @@
+import { ErrorNotice } from "../../components/ErrorNotice";
 import { Select } from "../../components/Select";
 import { WorkContentBadges } from "../../components/WorkContentBadges";
 import { ContextMenu } from "../../components/ContextMenu";
@@ -5,9 +6,11 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import {
   Search,
   ChevronRight,
+  ChevronLeft,
+  ChevronsLeft,
+  ChevronsRight,
   RefreshCw,
   ExternalLink,
-  Subtitles,
   Flame,
   Trophy,
   Star,
@@ -34,8 +37,27 @@ import { DownloadTaskModal } from "../../components/DownloadTaskModal";
 import { OnlineFilters, OnlineFilterSummary } from "./OnlineFilters";
 import { useNsfwSetting } from "../settings/useNsfwSetting";
 
+interface OnlineSearchState {
+  keyword: string;
+  committedKeyword: string;
+}
+
+export interface OnlineFilterState {
+  order: string;
+  sort: string;
+  subtitleOnly: boolean;
+  filters: OnlineFilter[];
+}
+
 interface OnlineViewProps {
+  savedPage?: number;
+  onPageChange?: (page: number) => void;
+  filterState?: OnlineFilterState;
+  onFilterStateChange?: React.Dispatch<React.SetStateAction<OnlineFilterState>>;
+  searchState?: OnlineSearchState;
+  onSearchStateChange?: React.Dispatch<React.SetStateAction<OnlineSearchState>>;
   externalSearch?: { keyword: string; seq: number } | null;
+  onExternalSearchHandled?: (seq: number) => void;
   canReturnToDetail?: boolean;
   onReturnToDetail?: () => void;
   onOpenWorkDetail: (workId: string) => void;
@@ -50,24 +72,46 @@ interface OnlineContextMenuState {
 }
 
 export const OnlineView: React.FC<OnlineViewProps> = ({
+  savedPage,
+  onPageChange,
+  filterState,
+  onFilterStateChange,
+  searchState,
+  onSearchStateChange,
   externalSearch,
+  onExternalSearchHandled,
   canReturnToDetail,
   onReturnToDetail,
   onOpenWorkDetail,
   onOpenDownloads,
   onError,
 }) => {
-  const [keyword, setKeyword] = useState("");
-  const [committedKeyword, setCommittedKeyword] = useState("");
+  const [localSearch, setLocalSearch] = useState<OnlineSearchState>({ keyword: "", committedKeyword: "" });
+  const { keyword, committedKeyword } = searchState ?? localSearch;
+  const setSearch = onSearchStateChange ?? setLocalSearch;
+  const setKeyword = (value: string) => setSearch(previous => ({ ...previous, keyword: value,
+    // Clearing the input also clears the applied query, so navigating cannot revive it.
+    committedKeyword: value.trim() ? previous.committedKeyword : "" }));
+  const setCommittedKeyword = (value: string) => setSearch(previous => ({ ...previous, committedKeyword: value }));
   // Default to "popular" so asmr.one popular works load immediately
-  const [order, setOrder] = useState("popular");
-  const [sort, setSort] = useState("desc");
-  const [subtitleOnly, setSubtitleOnly] = useState(false);
-  const [filters, setFilters] = useState<OnlineFilter[]>([]);
+  const [localFilters, setLocalFilters] = useState<OnlineFilterState>({ order: "popular", sort: "desc", subtitleOnly: false, filters: [] });
+  const { order, sort, subtitleOnly, filters } = filterState ?? localFilters;
+  const setFilterState = onFilterStateChange ?? setLocalFilters;
+  const setOrder = (value: string) => setFilterState(previous => ({ ...previous, order: value }));
+  const setSort = (value: string) => setFilterState(previous => ({ ...previous, sort: value }));
+  const setSubtitleOnly = (value: boolean) => setFilterState(previous => ({ ...previous, subtitleOnly: value }));
+  const setFilters: React.Dispatch<React.SetStateAction<OnlineFilter[]>> = update => setFilterState(previous => ({
+    ...previous, filters: typeof update === "function" ? update(previous.filters) : update,
+  }));
   const [nsfwSetting, setNsfwEnabled] = useNsfwSetting();
   const nsfwEnabled = nsfwSetting ?? false;
   const [nsfwSaving, setNsfwSaving] = useState(false);
-  const [page, setPage] = useState(1);
+  const [localPage, setLocalPage] = useState(1);
+  const page = savedPage ?? localPage;
+  const setPage = onPageChange ?? setLocalPage;
+  const pageRef = useRef(page);
+  pageRef.current = page;
+  const [jumpPage, setJumpPage] = useState("");
 
   const [works, setWorks] = useState<ProviderWork[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -88,12 +132,11 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
   // Sync external CV / Tag search keyword when triggered from WorkDetailView
   useEffect(() => {
     if (externalSearch && externalSearch.seq > 0) {
-      setKeyword(externalSearch.keyword);
-      setCommittedKeyword(externalSearch.keyword);
-      setFilters([]);
+      setSearch({ keyword: externalSearch.keyword, committedKeyword: externalSearch.keyword });
       setPage(1);
+      onExternalSearchHandled?.(externalSearch.seq);
     }
-  }, [externalSearch]);
+  }, [externalSearch, onExternalSearchHandled, setSearch, setPage]);
 
   // Request sequence guard so late responses from older queries/pages never overwrite newer pages
   const reqSeqRef = useRef(0);
@@ -108,21 +151,25 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
       setTotalCount(0);
       setContextMenu(null);
       try {
-        const res = committedKeyword.trim() || filters.length > 0
+        const query = async (requestedPage: number) => committedKeyword.trim() || filters.length > 0
           ? await callCommand<Page<ProviderWork>>("search_online_works", {
               keyword: committedKeyword.trim(),
-              page: targetPage,
+              page: requestedPage,
               order,
               sort,
               subtitleOnly,
               filters,
             })
           : await callCommand<Page<ProviderWork>>("browse_online_works", {
-              page: targetPage,
+              page: requestedPage,
               order,
               sort,
               subtitleOnly,
             });
+        let res = await query(targetPage);
+        if (reqSeqRef.current !== mySeq) return;
+        const lastPage = Math.max(1, Math.ceil(res.totalCount / Math.max(1, res.pageSize)));
+        if (targetPage > lastPage) res = await query(lastPage);
 
         // Ignore stale response if a newer query/page was triggered
         if (reqSeqRef.current !== mySeq) {
@@ -131,6 +178,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
 
         setTotalCount(res.totalCount);
         setPage(res.page);
+        setJumpPage("");
         if (res.pageSize > 0) {
           setPageSize(res.pageSize);
         }
@@ -145,15 +193,25 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
         }
       }
     },
-    [committedKeyword, order, sort, subtitleOnly, filters]
+    [committedKeyword, order, sort, subtitleOnly, filters, setPage]
   );
 
+  const previousQuery = useRef<string | null>(null);
+  const previousNsfw = useRef<boolean | null>(null);
+  const lastRequest = useRef<string | null>(null);
+  useEffect(() => () => { ++reqSeqRef.current; lastRequest.current = null; }, []);
   useEffect(() => {
-    if (nsfwSaving) return;
-    const sequence = reqSeqRef;
-    void fetchPage(1);
-    return () => { ++sequence.current; };
-  }, [fetchPage, nsfwSaving, nsfwEnabled]);
+    if (nsfwSaving) { lastRequest.current = null; ++reqSeqRef.current; return; }
+    const query = JSON.stringify([committedKeyword, order, sort, subtitleOnly, filters]);
+    const request = JSON.stringify([query, nsfwEnabled]);
+    if (lastRequest.current === request) { previousNsfw.current = nsfwSetting; return; }
+    lastRequest.current = request;
+    const changed = (previousQuery.current !== null && previousQuery.current !== query)
+      || (previousNsfw.current !== null && previousNsfw.current !== nsfwEnabled);
+    previousQuery.current = query;
+    previousNsfw.current = nsfwSetting;
+    void fetchPage(changed ? 1 : pageRef.current);
+  }, [fetchPage, nsfwSaving, nsfwEnabled, nsfwSetting, committedKeyword, order, sort, subtitleOnly, filters]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -264,6 +322,9 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
   ];
 
   const totalPages = Math.max(1, Math.ceil(totalCount / Math.max(1, pageSize)));
+  const targetPage = Number(jumpPage);
+  const canJump = /^\d+$/.test(jumpPage) && Number.isSafeInteger(targetPage)
+    && targetPage >= 1 && targetPage <= totalPages && targetPage !== page;
   const fixedPopularOrder = order === "popular" && !committedKeyword.trim() && filters.length === 0;
 
   return (
@@ -355,7 +416,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
         </div>
 
         <div className="filter-controls-group">
-          <OnlineFilters filters={filters} onChange={setFilters} />
+          <OnlineFilters filters={filters} onChange={setFilters} subtitleOnly={subtitleOnly} onSubtitleChange={setSubtitleOnly} />
           <button
             type="button"
             className={`btn-chip ${nsfwEnabled ? "active btn-chip-nsfw" : ""}`}
@@ -371,16 +432,6 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
           >
             {nsfwEnabled ? <Eye size={13} /> : <EyeOff size={13} />}
             <span>{nsfwEnabled ? "NSFW 已开启" : "全年龄过滤"}</span>
-          </button>
-
-          <button
-            type="button"
-            className={`btn-chip ${subtitleOnly ? "active" : ""}`}
-            aria-pressed={subtitleOnly}
-            onClick={() => setSubtitleOnly((v) => !v)}
-          >
-            <Subtitles size={13} />
-            <span>仅带字幕</span>
           </button>
 
           <span title={fixedPopularOrder ? "热门推荐采用默认顺序；切换榜单或搜索、筛选后可调整排序方向" : undefined}>
@@ -402,11 +453,10 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
         subtitleOnly={subtitleOnly} onClearKeyword={clearKeyword} onClearSubtitle={() => setSubtitleOnly(false)}
         onReset={() => { clearKeyword(); setFilters([]); setSubtitleOnly(false); }} />
 
-      {queryError && <div className="error-banner" role="alert">
-        <span>{queryError.message}{queryError.hint ? ` ${queryError.hint}` : ""}</span>
+      {queryError && <ErrorNotice message={[queryError.message, queryError.hint].filter(Boolean).join(" ")}>
         <button type="button" className="btn btn-secondary btn-sm" disabled={loading || nsfwSaving}
           onClick={() => void fetchPage(page)}>重试查询</button>
-      </div>}
+      </ErrorNotice>}
 
       {works.length === 0 && !loading && !queryError ? (
         <div className="empty-state-box">
@@ -529,14 +579,16 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
           </div>
 
           {totalCount > 0 && (
-            <div className="pagination-row">
+            <nav className="pagination-row online-pagination" aria-label="在线作品分页">
+              <button type="button" className="btn btn-secondary btn-sm" disabled={loading || page <= 1}
+                onClick={() => void fetchPage(1)}><ChevronsLeft size={14} aria-hidden="true" /><span className="ui-icon-label">首页</span></button>
               <button
                 type="button"
                 className="btn btn-secondary btn-sm"
                 disabled={loading || page <= 1}
                 onClick={() => void fetchPage(page - 1)}
               >
-                上一页
+                <ChevronLeft size={14} aria-hidden="true" /><span className="ui-icon-label">上一页</span>
               </button>
               <span className="tabular-nums text-muted" style={{ padding: "0 12px" }}>
                 第 {page} / {totalPages} 页
@@ -547,9 +599,19 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
                 disabled={loading || page >= totalPages}
                 onClick={() => void fetchPage(page + 1)}
               >
-                下一页
+                <span className="ui-icon-label">下一页</span><ChevronRight size={14} aria-hidden="true" />
               </button>
-            </div>
+              <button type="button" className="btn btn-secondary btn-sm" disabled={loading || page >= totalPages}
+                onClick={() => void fetchPage(totalPages)}><span className="ui-icon-label">尾页</span><ChevronsRight size={14} aria-hidden="true" /></button>
+              <form className="online-page-jump" onSubmit={event => { event.preventDefault(); if (!loading && canJump) void fetchPage(targetPage); }}>
+                <label htmlFor="online-jump-page">跳至</label>
+                <input id="online-jump-page" className="input-text tabular-nums" type="text" inputMode="numeric" pattern="[0-9]+"
+                  aria-label="跳转页码" title={`输入 1 至 ${totalPages} 的整数页码`} placeholder="页码" value={jumpPage}
+                  disabled={loading} onChange={event => setJumpPage(event.target.value)} />
+                <span>页</span>
+                <button type="submit" className="btn btn-secondary btn-sm" disabled={loading || !canJump}>跳转</button>
+              </form>
+            </nav>
           )}
         </>
       )}

@@ -1,3 +1,4 @@
+import { ErrorNotice } from "../../components/ErrorNotice";
 import { useEffect, useId, useRef, useState } from "react";
 import { Headphones, RefreshCw } from "lucide-react";
 import { Select } from "../../components/Select";
@@ -87,7 +88,7 @@ export function AudioOutputPanel({ snapshot, onSnapshotChange, onError }: Props)
           ...devices.map(device => ({ value: device.id, label: device.name })),
         ]} onValueChange={deviceId => void update("device", deviceId)} />
       {unavailable && <p className="text-muted">设备已断开，可重新连接或选择系统默认设备。</p>}
-      {loadError && <p role="alert" className="audio-output-error">{loadError}</p>}
+      {loadError && <ErrorNotice message={loadError} />}
     </section>
   </div>;
 }

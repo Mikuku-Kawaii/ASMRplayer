@@ -85,3 +85,12 @@ Thumbs.db
 /src-tauri/src/regression_baseline.rs
 *_tests.rs
 /vitest.config.ts
+
+# Local diagnostics and development helpers
+/.tmp-*.json
+/stop-dev.bat
+/scripts/stop-dev.ps1
+/scripts/test-startup-responsiveness.ps1
+__pycache__/
+*.pyc
+/src-tauri/native/**/*-test.c

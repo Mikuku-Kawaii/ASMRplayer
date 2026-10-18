@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, watch};
+use super::engine_maintenance::{EngineMaintenanceSettings, MaintenanceClock};
 
 #[derive(Debug, Clone, Default)]
 pub struct CachedAudioTagMeta {
@@ -33,6 +34,7 @@ struct SavedAudioInfo {
 }
 
 pub struct PlaybackStateInner {
+    maintenance: MaintenanceClock,
     pub session_generation: u64,
     pub state: String,
     pub user_paused_intent: bool,
@@ -50,6 +52,9 @@ pub struct PlaybackStateInner {
     pub pending_seek_ms: Option<i64>,
     pub file_loaded_for_gen: bool,
     pub retried_online_for_gen: bool,
+    pub mpv_buffering: bool,
+    pub buffering_since: Option<Instant>,
+    pub online_recovery_running: bool,
     pub auto_healed_for_gen: bool,
     pub volume: f64,
     pub loop_mode: String,
@@ -66,8 +71,22 @@ pub struct PlaybackStateInner {
     /// T906: Pre-resolved next queue item `(version_id, source_id, target_uri, headers)`
     pub prefetched_next: Option<(String, String, String, Vec<(String, String)>)>,
     pub prefetching_version_id: Option<String>,
+    pub prefetched_at: Option<Instant>,
+    last_prefetch_check: Option<Instant>,
     pub cached_audio_tags: Option<CachedAudioTagMeta>,
     pub active_subtitle_cues: Vec<SubtitleCueDto>,
+}
+
+impl PlaybackStateInner {
+    fn schedule_prefetch(&mut self, now: Instant, position_ms: i64) -> bool {
+        if self.state != "playing" || self.prefetching_version_id.is_some()
+            || !self.duration_ms.is_some_and(|dur| dur > 0 && position_ms > 0 && dur - position_ms <= 15_000)
+            || self.last_prefetch_check.is_some_and(|at| now.saturating_duration_since(at) < Duration::from_secs(5)) {
+            return false;
+        }
+        self.last_prefetch_check = Some(now);
+        true
+    }
 }
 
 #[derive(Clone)]
@@ -80,6 +99,8 @@ pub struct PlaybackService {
     app_handle: Arc<Mutex<Option<AppHandle>>>,
     native_smtc: Arc<Mutex<Option<NativeSmtcController>>>,
     audio_output_operation: Arc<tokio::sync::Mutex<()>>,
+    load_operation: Arc<tokio::sync::Mutex<()>>,
+    prefetch_operation: Arc<tokio::sync::Mutex<()>>,
     shutdown_signal: watch::Sender<bool>,
 }
 
@@ -139,6 +160,9 @@ impl PlaybackService {
             .unwrap_or_else(|_| (DspConfigDto::default(), Some("asmr_pure_guard".into())));
 
         let mut initial = PlaybackStateInner {
+            maintenance: MaintenanceClock::new(db.get_setting(super::engine_maintenance::SETTINGS_KEY).ok().flatten()
+                .and_then(|raw| serde_json::from_str::<EngineMaintenanceSettings>(&raw).ok())
+                .filter(|settings| settings.validate().is_ok()).unwrap_or_default()),
             session_generation: saved_gen.max(1),
             state: "idle".into(),
             user_paused_intent: true,
@@ -156,6 +180,9 @@ impl PlaybackService {
             pending_seek_ms: None,
             file_loaded_for_gen: false,
             retried_online_for_gen: false,
+            mpv_buffering: false,
+            buffering_since: None,
+            online_recovery_running: false,
             auto_healed_for_gen: false,
             volume: saved_vol,
             loop_mode: saved_loop,
@@ -169,6 +196,9 @@ impl PlaybackService {
                 codec: None,
                 sample_rate_hz: None,
                 sample_format: None,
+                source_bit_depth: None,
+                source_sample_rate_hz: None,
+                source_bitrate_kbps: None,
                 channels: None,
                 bitrate_kbps: None,
                 active_dsp_summary: summarize_dsp_chain(&dsp_config),
@@ -179,6 +209,8 @@ impl PlaybackService {
             last_smtc_timeline_sync_at: Instant::now() - Duration::from_secs(2),
             prefetched_next: None,
             prefetching_version_id: None,
+            prefetched_at: None,
+            last_prefetch_check: None,
             cached_audio_tags: None,
             active_subtitle_cues: Vec::new(),
         };
@@ -219,6 +251,7 @@ impl PlaybackService {
                         initial.active_subtitle_cues = cues;
                     }
                 }
+                initial.active_subtitle_cues = db.subtitle_overlay(&item.version_id, initial.active_subtitle_cues);
             }
         }
 
@@ -233,12 +266,15 @@ impl PlaybackService {
             app_handle: Arc::new(Mutex::new(None)),
             native_smtc: Arc::new(Mutex::new(None)),
             audio_output_operation: Arc::new(tokio::sync::Mutex::new(())),
+            load_operation: Arc::new(tokio::sync::Mutex::new(())),
             shutdown_signal: watch::channel(false).0,
+            prefetch_operation: Arc::new(tokio::sync::Mutex::new(())),
         };
 
         svc.restore_audio_info();
         svc.spawn_event_loop(event_rx);
         svc.spawn_sleep_timer_loop();
+        svc.spawn_buffering_monitor();
         svc
     }
 
@@ -434,6 +470,32 @@ impl PlaybackService {
         serde_json::json!({ "eventSeq": self.event_seq.load(Ordering::SeqCst), "versionId": guard.current_version_id, "cues": guard.active_subtitle_cues })
     }
 
+    pub fn subtitle_context(&self) -> (u64, Option<String>, Vec<SubtitleCueDto>, Option<MediaSourceDto>) {
+        let guard = self.inner.lock();
+        (guard.session_generation, guard.current_version_id.clone(), guard.active_subtitle_cues.clone(), guard.active_source.clone())
+    }
+
+    pub(crate) fn current_version_for_generation(&self, generation: u64) -> Option<String> {
+        let guard = self.inner.lock();
+        (guard.session_generation == generation).then(|| guard.current_version_id.clone()).flatten()
+    }
+
+    /// Generated results may replace only the exact display captured by this task.
+    /// A manual subtitle change or a newer playback generation wins.
+    pub fn publish_generated_subtitles(&self, version: &str, generation: u64, expected: &[SubtitleCueDto], cues: Vec<SubtitleCueDto>) -> bool {
+        let event = {
+            let mut guard = self.inner.lock();
+            if guard.session_generation != generation || guard.current_version_id.as_deref() != Some(version) || guard.active_subtitle_cues != expected { return false; }
+            if guard.active_subtitle_cues == cues { return true; }
+            guard.active_subtitle_cues = cues;
+            serde_json::json!({"eventSeq":self.event_seq.fetch_add(1,Ordering::SeqCst),"versionId":version,"cues":guard.active_subtitle_cues})
+        };
+        if let Some(handle) = self.app_handle.lock().as_ref() { let _ = handle.emit("playback:subtitles",event); }
+        self.emit_snapshot();
+        self.retrigger_smtc_for_subtitles();
+        true
+    }
+
     /// Updates the active subtitle cues for the currently loaded version (if matching) and broadcasts
     /// them to the local AMLL server + Windows SMTC / WinIsland LRC bridge.
     pub fn set_active_subtitle_cues_for_version(
@@ -441,6 +503,7 @@ impl PlaybackService {
         version_id: Option<&str>,
         cues: Vec<SubtitleCueDto>,
     ) {
+        let cues = version_id.map(|version| self.db.subtitle_overlay(version, cues.clone())).unwrap_or(cues);
         let subtitle_update = {
             let mut guard = self.inner.lock();
             let matches = match (version_id, guard.current_version_id.as_deref()) {
@@ -525,6 +588,16 @@ impl PlaybackService {
 
     /// T906: Silently pre-resolves the next queue item when `< 15 s` remain in the current track.
     pub async fn maybe_prefetch_next_track(&self) {
+        // Only one resolver may run, even when ticks arrive during slow networking.
+        let Ok(_operation) = self.prefetch_operation.try_lock() else { return; };
+        let generation = self.inner.lock().session_generation;
+        {
+            let mut guard = self.inner.lock();
+            if guard.prefetched_at.is_some_and(|at| at.elapsed() >= Duration::from_secs(60)) {
+                guard.prefetched_next = None;
+                guard.prefetched_at = None;
+            }
+        }
         let (cur_qid, cur_vid, loop_mode, already_prefetched, prefetching) = {
             let guard = self.inner.lock();
             (
@@ -573,6 +646,7 @@ impl PlaybackService {
 
         {
             let mut guard = self.inner.lock();
+            if guard.session_generation != generation { return; }
             guard.prefetching_version_id = Some(next_item.version_id.clone());
         }
 
@@ -608,6 +682,7 @@ impl PlaybackService {
             if let Some(ref abs) = chosen_src.absolute_path {
                 if !abs.ends_with(".part") && Path::new(abs).is_file() {
                     let mut guard = self.inner.lock();
+                    if guard.session_generation != generation { guard.prefetching_version_id = None; return; }
                     if guard.prefetching_version_id.as_deref() != Some(&next_item.version_id) { return; }
                     guard.prefetched_next = Some((
                         next_item.version_id,
@@ -616,6 +691,7 @@ impl PlaybackService {
                         Vec::new(),
                     ));
                     guard.prefetching_version_id = None;
+                    guard.prefetched_at = Some(Instant::now());
                     return;
                 }
             }
@@ -635,6 +711,7 @@ impl PlaybackService {
                 .await
             {
                 let mut guard = self.inner.lock();
+                if guard.session_generation != generation { guard.prefetching_version_id = None; return; }
                 if guard.prefetching_version_id.as_deref() != Some(&next_item.version_id) { return; }
                 guard.prefetched_next = Some((
                     next_item.version_id,
@@ -643,6 +720,7 @@ impl PlaybackService {
                     resolved.headers,
                 ));
                 guard.prefetching_version_id = None;
+                guard.prefetched_at = Some(Instant::now());
                 return;
             }
         }
@@ -650,7 +728,7 @@ impl PlaybackService {
         self.inner.lock().prefetching_version_id = None;
     }
 
-    fn list_sources_for_version(&self, version_id: &str) -> AppResult<Vec<MediaSourceDto>> {
+    pub(crate) fn list_sources_for_version(&self, version_id: &str) -> AppResult<Vec<MediaSourceDto>> {
         self.read_sources_for_version(version_id, true)
     }
 
@@ -751,6 +829,9 @@ impl PlaybackService {
             state.audio_telemetry.codec = saved.telemetry.codec;
             state.audio_telemetry.sample_rate_hz = saved.telemetry.sample_rate_hz;
             state.audio_telemetry.sample_format = saved.telemetry.sample_format;
+            state.audio_telemetry.source_bit_depth = saved.telemetry.source_bit_depth;
+            state.audio_telemetry.source_sample_rate_hz = saved.telemetry.source_sample_rate_hz;
+            state.audio_telemetry.source_bitrate_kbps = saved.telemetry.source_bitrate_kbps;
             state.audio_telemetry.channels = saved.telemetry.channels;
             state.audio_telemetry.bitrate_kbps = saved.telemetry.bitrate_kbps;
         } else {
@@ -868,6 +949,8 @@ impl PlaybackService {
                 self.db.append_queue_items(&[(version_id.to_string(), preferred_source_id.clone())])?.into_iter().next()
             };
             guard.session_generation += 1;
+            guard.last_prefetch_check = None;
+            guard.maintenance.active();
             let gen_val = guard.session_generation;
             // T212: Replaying a completed track individually starts from 0
             let start_pos = start_position_ms.unwrap_or(if completed { 0 } else { saved_pos_ms.max(0) }).max(0);
@@ -887,7 +970,12 @@ impl PlaybackService {
             guard.duration_ms = db_dur_ms;
             guard.pending_seek_ms = if start_pos > 0 { Some(start_pos) } else { None };
             guard.file_loaded_for_gen = false;
-            guard.retried_online_for_gen = force_online_refresh;
+            // A user-initiated retry starts a fresh attempt. Refreshing an expired
+            // URL here must not consume this generation's recovery allowance.
+            guard.retried_online_for_gen = false;
+            guard.mpv_buffering = false;
+            guard.buffering_since = None;
+            guard.online_recovery_running = false;
             guard.auto_healed_for_gen = false;
             guard.active_ab_loop = None;
             guard.dsp_config = target_dsp_cfg.clone();
@@ -897,6 +985,9 @@ impl PlaybackService {
                 codec: None,
                 sample_rate_hz: None,
                 sample_format: None,
+                source_bit_depth: None,
+                source_sample_rate_hz: None,
+                source_bitrate_kbps: None,
                 channels: None,
                 bitrate_kbps: None,
                 active_dsp_summary: summarize_dsp_chain(&target_dsp_cfg),
@@ -920,7 +1011,8 @@ impl PlaybackService {
         } else {
             need_cloud_sub_fetch = true;
         }
-        self.inner.lock().active_subtitle_cues = initial_cues;
+        let initial_cues = self.db.subtitle_overlay(version_id, initial_cues);
+        self.publish_generated_subtitles(version_id, my_gen, &self.subtitle_context().2, initial_cues.clone());
 
         if pending_online_sub_att_id.is_some() || need_cloud_sub_fetch {
             let svc_sub = self.clone();
@@ -932,7 +1024,8 @@ impl PlaybackService {
                     let _ = svc_sub.provider.ensure_online_subtitle_cached(&att_id).await;
                     if let Ok(cues) = lib.load_subtitle_cues(&att_id) {
                         if !cues.is_empty() {
-                            svc_sub.set_active_subtitle_cues_for_version(Some(&vid_sub), cues);
+                            let cues = svc_sub.db.subtitle_overlay(&vid_sub, cues);
+                            svc_sub.publish_generated_subtitles(&vid_sub, my_gen, &initial_cues, cues);
                             return;
                         }
                     }
@@ -949,10 +1042,8 @@ impl PlaybackService {
                                 let _ = svc_sub.provider.ensure_online_subtitle_cached(&att.id).await;
                                 if let Ok(cues) = lib.load_subtitle_cues(&att.id) {
                                     if !cues.is_empty() {
-                                        svc_sub.set_active_subtitle_cues_for_version(
-                                            Some(&vid_sub),
-                                            cues,
-                                        );
+                                        let cues = svc_sub.db.subtitle_overlay(&vid_sub, cues);
+                                        svc_sub.publish_generated_subtitles(&vid_sub, my_gen, &initial_cues, cues);
                                     }
                                 }
                             }
@@ -1042,6 +1133,9 @@ impl PlaybackService {
         // Resolve target path or URL (T906: check prefetched_next cache first!)
         let prefetched_hit = if !force_online_refresh && artificial_resolve_delay.is_none() {
             let mut guard = self.inner.lock();
+            if !guard.prefetched_at.is_some_and(|at| at.elapsed() < Duration::from_secs(60)) {
+                guard.prefetched_next = None;
+            }
             if let Some((ref pf_vid, ref pf_sid, _, _)) = guard.prefetched_next {
                 if pf_vid == version_id && pf_sid == &chosen_source.id {
                     guard.prefetched_next.take().map(|(_, _, u, h)| (u, h))
@@ -1110,6 +1204,8 @@ impl PlaybackService {
             }
         };
 
+        // A delayed recovery must not replace a newer user-selected track.
+        let _load = self.load_operation.lock().await;
         // Check generation again before instructing mpv (R05)
         {
             let mut guard = self.inner.lock();
@@ -1117,6 +1213,7 @@ impl PlaybackService {
                 return Ok(drop_and_snap(&self, guard)?);
             }
             guard.state = "loading".into();
+            guard.buffering_since = Some(Instant::now());
             guard.active_source = Some(chosen_source.clone());
             guard.alternative_sources = all_sources
                 .into_iter()
@@ -1141,6 +1238,23 @@ impl PlaybackService {
             return Err(err);
         }
 
+        // Probe the actual selected source in the background; metadata cannot delay playback.
+        let info_service = self.clone();
+        spawn_bg_task(async move {
+            let depth = if chosen_source.source_kind == "online_provider" {
+                if !matches!(chosen_source.format.to_ascii_lowercase().as_str(), "wav" | "wave" | "rf64" | "flac" | "aif" | "aiff" | "aifc") {
+                    return;
+                }
+                match info_service.provider.build_client() {
+                    Ok(client) => super::source_audio_info::online_bit_depth(&client, &target_uri, &headers).await,
+                    Err(_) => None,
+                }
+            } else {
+                super::source_audio_info::local_bit_depth(&target_uri).await
+            };
+            info_service.apply_source_bit_depth(my_gen, &chosen_source.id, depth);
+        });
+
         // Record playback start in work_playback_state (T404)
         let _ = self
             .db
@@ -1148,6 +1262,18 @@ impl PlaybackService {
         self.persist_current_state(true);
 
         self.get_snapshot()
+    }
+
+    fn apply_source_bit_depth(&self, generation: u64, source_id: &str, depth: Option<u16>) {
+        {
+            let mut state = self.inner.lock();
+            if state.session_generation != generation || state.active_source.as_ref().map(|s| s.id.as_str()) != Some(source_id) {
+                return;
+            }
+            state.audio_telemetry.source_bit_depth = depth;
+        }
+        self.persist_current_state(false);
+        self.emit_snapshot();
     }
 
     /// T209/R03: Builds queue scoped to the user-selected directory group (`group_path`) and starts playback.
@@ -1484,7 +1610,7 @@ impl PlaybackService {
     }
 
     pub async fn toggle_pause(&self) -> AppResult<PlaybackSnapshot> {
-        let (state, cur_ver, cur_src, user_paused, completed) = {
+        let (state, cur_ver, cur_src, user_paused, completed, loaded, generation) = {
             let guard = self.inner.lock();
             (
                 guard.state.clone(),
@@ -1492,13 +1618,23 @@ impl PlaybackService {
                 guard.active_source.clone(),
                 guard.user_paused_intent,
                 guard.current_completed,
+                guard.file_loaded_for_gen,
+                guard.session_generation,
             )
         };
 
-        // If restored from startup in paused state and mpv hasn't loaded the file yet, load & play!
-        if (state == "paused" || state == "idle" || state == "ended") && (cur_src.is_none() || completed || state == "ended") {
+        if state == "error" {
             if let Some(vid) = cur_ver {
-                return self.play(&vid, None).await;
+                let source_id = cur_src.as_ref().map(|s| s.id.clone());
+                return self.play_internal(&vid, source_id, true, None).await;
+            }
+        }
+        // If restored from startup in paused state and mpv hasn't loaded the file yet, load & play!
+        if (state == "paused" || state == "idle" || state == "ended")
+            && (!loaded || !self.mpv.is_running().await || cur_src.is_none() || completed || state == "ended") {
+            if let Some(vid) = cur_ver {
+                if self.inner.lock().session_generation != generation { return self.get_snapshot(); }
+                return self.play(&vid, cur_src.map(|source| source.id)).await;
             }
         }
 
@@ -1506,14 +1642,31 @@ impl PlaybackService {
             state == "playing" || state == "buffering" || (state == "loading" && !user_paused);
         {
             let mut guard = self.inner.lock();
+            if guard.session_generation != generation { return drop_and_snap(self, guard); }
             guard.user_paused_intent = target_pause;
+            guard.buffering_since = None;
             guard.state = if target_pause {
                 "paused".into()
+            } else if guard.mpv_buffering {
+                "buffering".into()
             } else {
                 "playing".into()
             };
         }
-        let _ = self.mpv.set_pause(target_pause).await;
+        if let Err(error) = self.mpv.set_pause(target_pause).await {
+            {
+                let mut guard = self.inner.lock();
+                if guard.session_generation != generation { return drop_and_snap(self, guard); }
+                guard.state = "error".into();
+                guard.file_loaded_for_gen = false;
+                guard.user_paused_intent = true;
+                guard.last_error = Some(error.clone());
+            }
+            self.db.append_log("WARN", &format!("Playback pause/resume failed: {error}"));
+            self.persist_current_state(false);
+            self.emit_snapshot();
+            return Err(error);
+        }
         self.persist_current_state(false);
         self.emit_snapshot();
         self.get_snapshot()
@@ -2274,62 +2427,95 @@ impl PlaybackService {
     /// T1001: Self-healing engine restart that recycles `mpv`, restores `volume` & `dsp_config` (`af` filter graph),
     /// and preserves `current_version_id` and `position_ms` (`pending_seek_ms`) in paused state.
     pub async fn restart_engine(&self) -> AppResult<PlaybackSnapshot> {
-        self.mpv.shutdown().await;
-        let (cur_vid, cur_pos, cur_src, volume, af_graph) = {
+        let _load = self.load_operation.lock().await;
+        self.restart_engine_locked(true).await
+    }
+
+    pub fn engine_maintenance_settings(&self) -> EngineMaintenanceSettings {
+        self.inner.lock().maintenance.settings.clone()
+    }
+
+    pub fn set_engine_maintenance_settings(&self, settings: EngineMaintenanceSettings) -> AppResult<EngineMaintenanceSettings> {
+        settings.validate()?;
+        let mut state = self.inner.lock();
+        self.db.set_setting(super::engine_maintenance::SETTINGS_KEY, &serde_json::to_string(&settings)
+            .map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?)?;
+        state.maintenance = MaintenanceClock::new(settings.clone());
+        Ok(settings)
+    }
+
+    async fn maybe_maintain_engine(&self, gap_generation: Option<u64>) -> AppResult<Option<u64>> {
+        let due = || {
+            let mut state = self.inner.lock();
+            if gap_generation.is_some_and(|generation| state.session_generation != generation || !state.current_completed) {
+                return false;
+            }
+            let inactive = matches!(state.state.as_str(), "idle" | "paused" | "stopped" | "ended" | "error");
+            state.maintenance.due(Instant::now(), inactive, gap_generation.is_some())
+        };
+        if !due() || *self.shutdown_signal.borrow() { return Ok(None); }
+        let _load = self.load_operation.lock().await;
+        if !due() || *self.shutdown_signal.borrow() { return Ok(None); }
+        self.db.append_log("INFO", if gap_generation.is_some() { "Scheduled engine restart: completed-track interval" } else { "Scheduled engine restart: idle interval" });
+        self.restart_engine_locked(gap_generation.is_none()).await.map(|snapshot| Some(snapshot.session_generation))
+    }
+
+    // Caller owns load_operation. Scheduled maintenance rechecks its gate under it.
+    async fn restart_engine_locked(&self, reload_current: bool) -> AppResult<PlaybackSnapshot> {
+        let (generation, source, volume, af_graph) = {
             let mut guard = self.inner.lock();
-            let pos = guard.position_ms.max(0);
+            // Failed attempts also wait a full interval; never retry each timer tick.
+            guard.maintenance.restarted(Instant::now());
+            guard.session_generation += 1;
             guard.state = "paused".into();
             guard.user_paused_intent = true;
             guard.file_loaded_for_gen = false;
-            guard.pending_seek_ms = if pos > 0 { Some(pos) } else { None };
-            guard.last_error = None;
-            let graph = build_lavfi_graph(&guard.dsp_config);
-            (
-                guard.current_version_id.clone(),
-                pos,
-                guard.active_source.clone(),
-                guard.volume,
-                graph,
-            )
+            guard.pending_seek_ms = (guard.position_ms > 0).then_some(guard.position_ms);
+            guard.mpv_buffering = false;
+            guard.buffering_since = None;
+            guard.online_recovery_running = false;
+            guard.prefetched_next = None;
+            guard.prefetched_at = None;
+            guard.last_prefetch_check = None;
+            (guard.session_generation, guard.active_source.clone(), guard.volume,
+                build_lavfi_graph(&guard.dsp_config))
         };
+        // Preserve progress before tearing down the old native context.
+        self.persist_current_state(false);
+        self.mpv.shutdown().await;
+        if self.inner.lock().session_generation != generation { return self.get_snapshot(); }
         self.mpv.set_initial_af_graph(af_graph.clone());
-
-        // Attempt to pre-warm and reload local source in paused mode so resume is instantaneous
-        let local_target = cur_src
-            .as_ref()
-            .filter(|s| s.source_kind == "local_imported" || s.source_kind == "local_downloaded")
-            .and_then(|s| s.absolute_path.clone())
-            .filter(|p| !p.ends_with(".part") && Path::new(p).is_file())
-            .or_else(|| {
-                cur_vid.as_deref().and_then(|vid| {
-                    self.list_sources_for_version(vid)
-                        .ok()?
-                        .into_iter()
-                        .find(|s| {
-                            (s.source_kind == "local_imported"
-                                || s.source_kind == "local_downloaded")
-                                && s.availability == "available"
-                        })
-                        .and_then(|s| s.absolute_path)
-                        .filter(|p| !p.ends_with(".part") && Path::new(p).is_file())
-                })
-            });
-
-        if let Some(abs_path) = local_target {
-            let _ = self
-                .mpv
-                .load_file_pipelined(&abs_path, &[], true, volume, &af_graph)
-                .await;
-            if cur_pos > 0 {
-                let _ = self.mpv.seek_absolute_ms(cur_pos).await;
+        let result = async {
+            // Online/empty sessions must also create and validate a new engine.
+            self.mpv.ensure_started().await?;
+            self.mpv.set_audio_filters(&af_graph).await?;
+            self.mpv.set_volume(volume).await?;
+            if self.inner.lock().session_generation != generation { return Ok(()); }
+            if let Some(source) = source.as_ref().filter(|s| reload_current && !self.inner.lock().current_completed && matches!(s.source_kind.as_str(), "local_imported" | "local_downloaded")) {
+                let path = source.absolute_path.as_deref().filter(|p| !p.ends_with(".part") && Path::new(p).is_file())
+                    .ok_or_else(|| AppError::new(ErrorCode::SourceNotFound, "重启后无法加载原音源：本地文件不存在或未完成下载"))?;
+                self.mpv.load_file_pipelined(path, &[], true, volume, &af_graph).await?;
+                // FileLoaded performs the pending seek. Seeking before it can be lost.
             }
-        } else {
+            Ok::<_, AppError>(())
+        }.await;
+        {
             let mut guard = self.inner.lock();
-            guard.active_source = None;
+            if guard.session_generation != generation { return drop_and_snap(self, guard); }
+            match &result {
+                Ok(()) => guard.last_error = None,
+                Err(error) => {
+                    guard.state = "error".into();
+                    guard.last_error = Some(error.clone());
+                }
+            }
         }
-
+        if let Err(error) = &result {
+            self.db.append_log("WARN", &format!("Engine restart failed: generation={generation}, error={error}"));
+        }
         self.persist_current_state(false);
         self.emit_snapshot();
+        result?;
         self.get_snapshot()
     }
 
@@ -2425,6 +2611,8 @@ impl PlaybackService {
         validate_dsp_config(&mut config)?;
         let af_graph = build_lavfi_graph(&config);
         let summary = summarize_dsp_chain(&config);
+        // Publish/persist the requested state only after the engine accepts it.
+        self.mpv.set_audio_filters(&af_graph).await?;
 
         let current_work_id = {
             let mut guard = self.inner.lock();
@@ -2454,10 +2642,18 @@ impl PlaybackService {
                 .save_dsp_global_state(&config, preset_id.as_deref());
         }
 
-        self.mpv.set_initial_af_graph(af_graph.clone());
-        let _ = self.mpv.set_audio_filters(&af_graph).await;
         self.emit_snapshot();
         self.get_dsp_state(current_work_id)
+    }
+
+    pub async fn set_loudness_normalization(&self, enabled: bool) -> AppResult<PlaybackSnapshot> {
+        let mut config = self.inner.lock().dsp_config.clone();
+        config.loudness_normalization = enabled;
+        if enabled {
+            config.master_bypass = false;
+        }
+        self.update_dsp_config(config, None).await?;
+        self.get_snapshot()
     }
 
     pub async fn apply_dsp_preset(&self, preset_id: &str) -> AppResult<DspStateDto> {
@@ -2622,6 +2818,125 @@ impl PlaybackService {
         self.emit_snapshot();
     }
 
+    /// Observe host buffering state rather than guessing progress from frontend timers.
+    async fn check_online_buffering(&self, now: Instant) {
+        let generation = {
+            let mut state = self.inner.lock();
+            let online = state.active_source.as_ref().is_some_and(|s| s.source_kind == "online_provider");
+            if !online || state.user_paused_intent
+                || !matches!(state.state.as_str(), "loading" | "playing" | "buffering")
+                || (!state.mpv_buffering && state.file_loaded_for_gen) {
+                state.buffering_since = None;
+                return;
+            }
+            let since = *state.buffering_since.get_or_insert(now);
+            if now.saturating_duration_since(since) < Duration::from_secs(30) { return; }
+            state.buffering_since = None;
+            state.session_generation
+        };
+        self.recover_online_stream(generation, true).await;
+    }
+
+    async fn recover_online_stream(&self, generation: u64, stalled: bool) {
+        if *self.shutdown_signal.borrow() { return; }
+        let (source, exhausted) = {
+            let mut state = self.inner.lock();
+            if state.session_generation != generation || state.online_recovery_running
+                || matches!(state.state.as_str(), "error" | "idle" | "stopped" | "ended") { return; }
+            let Some(source) = state.active_source.clone().filter(|s| s.source_kind == "online_provider") else { return; };
+            let exhausted = state.retried_online_for_gen;
+            state.retried_online_for_gen = true;
+            state.online_recovery_running = true;
+            (source, exhausted)
+        };
+        let resolved = if exhausted {
+            Err(AppError::new(ErrorCode::NetworkUnavailable, if stalled {
+                "在线音频持续缓冲，重新连接后仍未恢复。请检查网络或切换线路后点击播放重试。"
+            } else {
+                "在线音频加载失败，刷新地址后仍无法播放。请检查网络或切换线路后点击播放重试。"
+            }))
+        } else {
+            self.db.append_log("WARN", &format!("Online stream recovery: generation={generation}, stalled={stalled}; refreshing source once"));
+            self.provider.resolve_media(&ProviderMediaRef {
+                provider: source.provider.clone().unwrap_or_else(|| "asmr_one".into()),
+                source_work_id: source.source_work_id.clone().unwrap_or_default(),
+                remote_file_id: source.remote_file_id.clone().unwrap_or_default(),
+                remote_relative_path: source.remote_relative_path.clone().unwrap_or_default(),
+            }, MediaPurpose::Play, true).await
+        };
+        let _load = self.load_operation.lock().await;
+        if *self.shutdown_signal.borrow() { return; }
+        let (volume, graph) = {
+            let mut state = self.inner.lock();
+            if state.session_generation != generation
+                || state.active_source.as_ref().map(|s| &s.id) != Some(&source.id)
+                || matches!(state.state.as_str(), "stopped" | "idle" | "ended") {
+                if state.session_generation == generation { state.online_recovery_running = false; }
+                return;
+            }
+            // A slow refresh must not interrupt a stream that recovered on its own.
+            if stalled && !state.mpv_buffering && state.file_loaded_for_gen {
+                state.online_recovery_running = false;
+                state.retried_online_for_gen = exhausted;
+                return;
+            }
+            state.file_loaded_for_gen = false;
+            state.pending_seek_ms = Some(state.position_ms.max(0));
+            state.mpv_buffering = false;
+            state.buffering_since = Some(Instant::now());
+            state.state = "loading".into();
+            (state.volume, build_lavfi_graph(&state.dsp_config))
+        };
+        let result = match resolved {
+            // Load paused; FileLoaded seeks first and then applies the latest user intent.
+            Ok(media) => self.mpv.load_file_pipelined(&media.url, &media.headers, true, volume, &graph).await,
+            Err(error) => Err(error),
+        };
+        {
+            let mut state = self.inner.lock();
+            if state.session_generation != generation { return; }
+            state.online_recovery_running = false;
+        }
+        if let Err(error) = result {
+            {
+                let mut state = self.inner.lock();
+                if state.session_generation != generation { return; }
+                state.state = "error".into();
+                state.user_paused_intent = true;
+                state.buffering_since = None;
+                state.last_error = Some(error);
+            }
+            self.db.append_log("WARN", &format!("Online stream recovery failed: generation={generation}; manual retry available"));
+            self.persist_current_state(false);
+            self.emit_snapshot();
+            let _ = self.mpv.stop().await;
+        } else {
+            self.emit_snapshot();
+        }
+    }
+
+    fn spawn_buffering_monitor(&self) {
+        let this = self.clone();
+        let mut shutdown = self.shutdown_signal.subscribe();
+        spawn_bg_task(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.changed() => break,
+                    _ = interval.tick() => {
+                        tokio::select! {
+                            biased;
+                            _ = shutdown.changed() => break,
+                            _ = this.check_online_buffering(Instant::now()) => {},
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     fn spawn_sleep_timer_loop(&self) {
         let this = self.clone();
         let mut shutdown = self.shutdown_signal.subscribe();
@@ -2635,6 +2950,7 @@ impl PlaybackService {
                     while !*this.shutdown_signal.borrow() {
                         interval.tick().await;
                         let _ = this.check_and_fire_sleep_timer().await;
+                        let _ = this.maybe_maintain_engine(None).await;
                     }
                 } => {}
             }
@@ -2652,12 +2968,16 @@ impl PlaybackService {
             while let Some(ev) = event_rx.recv().await {
                 if *this.shutdown_signal.borrow() { break; }
                 match ev {
-                    MpvEvent::FileLoaded { .. } => {
+                    MpvEvent::FileLoaded { playlist_entry_id } => {
+                        let _load = this.load_operation.lock().await;
                         let pending_seek = {
                             let mut guard = this.inner.lock();
+                            if matches!(guard.state.as_str(), "error" | "stopped" | "idle") { continue; }
                             guard.file_loaded_for_gen = true;
                             guard.state = if guard.user_paused_intent {
                                 "paused".into()
+                            } else if guard.mpv_buffering {
+                                "buffering".into()
                             } else {
                                 "playing".into()
                             };
@@ -2672,6 +2992,22 @@ impl PlaybackService {
                                 guard.pending_seek_ms = None;
                             }
                         }
+                        let paused = this.inner.lock().user_paused_intent;
+                        let _ = this.mpv.set_pause(paused).await;
+                        let source_context = {
+                            let state = this.inner.lock();
+                            state.active_source.as_ref().map(|source| (state.session_generation, source.id.clone()))
+                        };
+                        if let Some((generation, source_id)) = source_context {
+                            if let Some((rate, bitrate)) = this.mpv.source_audio_rates(playlist_entry_id).await {
+                                let mut state = this.inner.lock();
+                                if state.session_generation == generation && state.active_source.as_ref().map(|s| s.id.as_str()) == Some(source_id.as_str()) {
+                                    state.audio_telemetry.source_sample_rate_hz = rate;
+                                    state.audio_telemetry.source_bitrate_kbps = bitrate;
+                                }
+                            }
+                        }
+                        this.persist_current_state(false);
                         this.sync_native_smtc_timeline();
                         this.emit_snapshot();
                     }
@@ -2746,10 +3082,7 @@ impl PlaybackService {
                             let save = guard.last_persisted_at.elapsed() >= Duration::from_secs(5);
                             let sync_smtc =
                                 guard.last_smtc_timeline_sync_at.elapsed() >= Duration::from_secs(1);
-                            let prefetch = guard
-                                .duration_ms
-                                .map(|dur| dur > 0 && pos_ms > 0 && (dur - pos_ms) <= 15_000)
-                                .unwrap_or(false);
+                            let prefetch = guard.schedule_prefetch(Instant::now(), pos_ms);
                             let eot_fade = if guard.sleep_timer.mode == "end_of_track"
                                 && guard.sleep_timer.fade_out_seconds > 0
                             {
@@ -2793,14 +3126,11 @@ impl PlaybackService {
                         }
                         if should_save {
                             this.persist_current_state(false);
-                            this.emit_snapshot();
-                        } else {
-                            if should_sync_smtc {
-                                this.sync_native_smtc_timeline();
-                            }
-                            // T905: High-frequency ticks use lightweight `playback:tick` payload
-                            this.emit_tick();
                         }
+                        if should_sync_smtc { this.sync_native_smtc_timeline(); }
+                        // Saving progress does not change metadata or the queue. Avoid
+                        // rebuilding cover/subtitle/SMTC payloads every five seconds.
+                        this.emit_tick();
                         if should_prefetch {
                             let svc_clone = this.clone();
                             spawn_bg_task(async move {
@@ -2814,6 +3144,8 @@ impl PlaybackService {
                             if guard.file_loaded_for_gen && paused == guard.user_paused_intent {
                                 guard.state = if paused {
                                     "paused".into()
+                                } else if guard.mpv_buffering {
+                                    "buffering".into()
                                 } else {
                                     "playing".into()
                                 };
@@ -2824,8 +3156,10 @@ impl PlaybackService {
                     MpvEvent::BufferingChanged(buffering) => {
                         {
                             let mut guard = this.inner.lock();
+                            guard.mpv_buffering = buffering;
+                            if !buffering { guard.buffering_since = None; }
                             if guard.file_loaded_for_gen {
-                                if buffering {
+                                if buffering && !guard.user_paused_intent {
                                     guard.state = "buffering".into();
                                 } else {
                                     // Buffering must never override user's pause intent (README Section 7)
@@ -2868,20 +3202,27 @@ impl PlaybackService {
                         this.emit_snapshot();
                     }
                     MpvEvent::AudioBitrateChanged(bps) => {
-                        {
+                        let changed = {
                             let mut guard = this.inner.lock();
-                            if let Some(bps) = bps.filter(|value| *value > 0) {
-                                guard.audio_telemetry.bitrate_kbps = Some(((bps as f64) / 1000.0).round() as i64);
-                            }
-                        }
-                        this.emit_snapshot();
+                            let kbps = bps.filter(|v| *v > 0).map(|v| ((v as f64) / 1000.0).round() as i64);
+                            let changed = kbps.is_some() && kbps != guard.audio_telemetry.bitrate_kbps;
+                            if changed { guard.audio_telemetry.bitrate_kbps = kbps; }
+                            changed
+                        };
+                        if changed { this.emit_snapshot(); }
                     }
                     MpvEvent::AudioDeviceDisconnected(reason) => {
                         let _ = this.handle_audio_device_disconnected(&reason).await;
                     }
-                    MpvEvent::EndFile { reason, error, .. } => {
+                    MpvEvent::EndFile { reason, error, audio_output_error, .. } => {
                         // Ignore 'stop'/'redirect'/'quit' generated during track switches!
                         if reason == "eof" {
+                            let finished_generation = {
+                                let mut state = this.inner.lock();
+                                let generation = state.session_generation;
+                                if state.file_loaded_for_gen && !state.current_completed { state.maintenance.finished(generation); }
+                                generation
+                            };
                             let (vid_opt, dur_opt, loop_mode, stop_at_end_of_track, base_vol) = {
                                 let mut guard = this.inner.lock();
                                 guard.current_completed = true;
@@ -2908,6 +3249,12 @@ impl PlaybackService {
                                     .save_playback_position(vid, final_pos, true, true);
                             }
 
+                            let continuation_generation = match this.maybe_maintain_engine(Some(finished_generation)).await {
+                                Ok(Some(generation)) => generation,
+                                Ok(None) => finished_generation,
+                                Err(_) => continue,
+                            };
+                            if this.inner.lock().session_generation != continuation_generation { continue; }
                             if stop_at_end_of_track {
                                 // R14 & T1101: "本轨结束停止" must NOT advance to the next track, and restores base volume
                                 let _ = this.mpv.set_volume(base_vol).await;
@@ -2928,32 +3275,35 @@ impl PlaybackService {
                                 let _ = this.step_queue(1).await;
                             }
                         } else if reason == "error" {
-                            // T304: Re-resolve online URL once if it expired/failed
-                            let retry_info = {
+                            let online_generation = {
                                 let mut guard = this.inner.lock();
-                                let is_online = guard
-                                    .active_source
-                                    .as_ref()
-                                    .map(|s| s.source_kind == "online_provider")
-                                    .unwrap_or(false);
-                                if is_online && !guard.retried_online_for_gen {
-                                    guard.retried_online_for_gen = true;
-                                    guard.current_version_id.clone()
+                                if let Some(output_error) = audio_output_error {
+                                    // Output failures cannot be repaired by refreshing a media URL.
+                                    // Leave the current track/position and device selection intact.
+                                    guard.state = "error".into();
+                                    guard.file_loaded_for_gen = false;
+                                    guard.mpv_buffering = false;
+                                    guard.buffering_since = None;
+                                    this.db.append_log("WARN", &output_error.to_string());
+                                    guard.last_error = Some(output_error);
+                                    None
+                                } else if guard.active_source.as_ref().is_some_and(|s| s.source_kind == "online_provider") {
+                                    Some(guard.session_generation)
                                 } else {
                                     guard.state = "error".into();
-                                    guard.last_error = Some(AppError::new(
-                                        ErrorCode::MediaDecodeFailed,
-                                        format!(
-                                            "播放失败: {}",
-                                            error.unwrap_or_else(|| "媒体加载或解码错误".into())
-                                        ),
-                                    ));
+                                    guard.file_loaded_for_gen = false;
+                                    guard.mpv_buffering = false;
+                                    guard.buffering_since = None;
+                                    guard.last_error = Some(AppError::new(ErrorCode::MediaDecodeFailed,
+                                        format!("播放失败: {}", error.unwrap_or_else(|| "媒体加载或解码错误".into()))));
+                                    this.db.append_log("WARN", &format!("Local playback failed: generation={}, position_ms={}, error={}",
+                                        guard.session_generation, guard.position_ms, guard.last_error.as_ref().unwrap()));
                                     None
                                 }
                             };
-
-                            if let Some(vid) = retry_info {
-                                let _ = this.play_internal(&vid, None, true, None).await;
+                            if let Some(generation) = online_generation {
+                                let recovery = this.clone();
+                                spawn_bg_task(async move { recovery.recover_online_stream(generation, false).await; });
                             } else {
                                 this.emit_snapshot();
                             }
@@ -2963,6 +3313,10 @@ impl PlaybackService {
                         this.persist_current_state(false);
                         let should_auto_heal = {
                             let mut guard = this.inner.lock();
+                            // A paused session also loses its file when the engine exits.
+                            guard.file_loaded_for_gen = false;
+                            guard.mpv_buffering = false;
+                            guard.buffering_since = None;
                             if guard.state == "playing"
                                 || guard.state == "loading"
                                 || guard.state == "buffering"
@@ -3054,6 +3408,798 @@ mod playback_tests {
     use tempfile::tempdir;
 
     #[tokio::test]
+    async fn maintenance_eof_restarts_between_tracks_but_stop_does_not_count() {
+        let (_root, pb) = online_stall_fixture();
+        pb.set_engine_maintenance_settings(EngineMaintenanceSettings { idle_minutes: None, completed_tracks: Some(1) }).unwrap();
+        pb.inner.lock().state = "playing".into();
+        let generation = pb.inner.lock().session_generation;
+        let (tx, rx) = mpsc::unbounded_channel(); pb.spawn_event_loop(rx);
+        tx.send(MpvEvent::EndFile { reason: "stop".into(), error: None, audio_output_error: None, playlist_entry_id: None }).unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(pb.inner.lock().session_generation, generation);
+        assert!(!pb.mpv.is_running().await);
+        tx.send(MpvEvent::EndFile { reason: "eof".into(), error: None, audio_output_error: None, playlist_entry_id: None }).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let current = pb.inner.lock().session_generation;
+                if current != generation && pb.mpv.is_running().await { break; }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        assert_eq!(pb.mpv.command(serde_json::json!(["get_property", "playlist-count"])).await.unwrap(), serde_json::json!(0));
+        assert_eq!(pb.inner.lock().state, "paused");
+        assert_eq!(pb.inner.lock().current_version_id.as_deref(), Some("v"));
+        pb.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn maintenance_persists_settings_and_rechecks_active_playback_under_load_lock() {
+        let (_root, pb) = online_stall_fixture();
+        assert_eq!(pb.engine_maintenance_settings(), EngineMaintenanceSettings::default());
+        let settings = EngineMaintenanceSettings { idle_minutes: Some(1), completed_tracks: Some(2) };
+        pb.set_engine_maintenance_settings(settings.clone()).unwrap();
+        assert_eq!(serde_json::from_str::<EngineMaintenanceSettings>(&pb.db.get_setting(super::super::engine_maintenance::SETTINGS_KEY).unwrap().unwrap()).unwrap(), settings);
+        {
+            let mut state = pb.inner.lock(); state.state = "paused".into();
+            state.maintenance.due(Instant::now() - Duration::from_secs(61), true, false);
+        }
+        let held = pb.load_operation.lock().await;
+        let worker = pb.clone();
+        let attempt = tokio::spawn(async move { worker.maybe_maintain_engine(None).await });
+        tokio::task::yield_now().await;
+        pb.inner.lock().state = "playing".into();
+        drop(held);
+        assert!(attempt.await.unwrap().unwrap().is_none());
+        assert!(!pb.mpv.is_running().await);
+        let generation = pb.inner.lock().session_generation;
+        {
+            let mut state = pb.inner.lock(); state.current_completed = true;
+            state.maintenance.finished(generation - 1); state.maintenance.finished(generation);
+        }
+        assert!(pb.maybe_maintain_engine(Some(generation - 1)).await.unwrap().is_none());
+        assert!(pb.maybe_maintain_engine(Some(generation)).await.unwrap().is_some());
+        assert!(pb.mpv.is_running().await);
+        assert_eq!(pb.inner.lock().position_ms, 1000);
+        assert!(!pb.inner.lock().file_loaded_for_gen);
+        assert!(pb.maybe_maintain_engine(None).await.unwrap().is_none());
+        pb.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn maintenance_failed_idle_restart_waits_for_next_interval() {
+        let (root, pb) = online_stall_fixture();
+        pb.set_engine_maintenance_settings(EngineMaintenanceSettings { idle_minutes: Some(1), completed_tracks: None }).unwrap();
+        {
+            let mut state = pb.inner.lock(); state.state = "paused".into();
+            state.maintenance.due(Instant::now() - Duration::from_secs(61), true, false);
+            let source = state.active_source.as_mut().unwrap(); source.source_kind = "local_imported".into();
+            source.absolute_path = Some(root.path().join("missing.wav").to_string_lossy().into_owned());
+        }
+        assert!(pb.maybe_maintain_engine(None).await.is_err());
+        let generation = pb.inner.lock().session_generation;
+        for _ in 0..100 { assert!(pb.maybe_maintain_engine(None).await.unwrap().is_none()); }
+        assert_eq!(pb.inner.lock().session_generation, generation);
+        pb.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn engine_restart_online_initializes_engine_and_preserves_source_for_resume() {
+        let (_root, pb) = online_stall_fixture();
+        assert!(!pb.mpv.is_running().await);
+        let old_generation = pb.inner.lock().session_generation;
+        let snapshot = pb.restart_engine().await.unwrap();
+        assert!(pb.mpv.is_running().await);
+        assert_eq!(snapshot.state, "paused");
+        assert_eq!(snapshot.active_source.unwrap().id, "remote");
+        assert_eq!(snapshot.position_ms, 1000);
+        assert!(snapshot.session_generation > old_generation);
+        assert!(!pb.inner.lock().file_loaded_for_gen);
+        assert_eq!(pb.inner.lock().pending_seek_ms, Some(1000));
+        assert!(!pb.inner.lock().mpv_buffering);
+        pb.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn engine_restart_missing_local_source_reports_failure_instead_of_success() {
+        let (root, pb) = online_stall_fixture();
+        {
+            let mut state = pb.inner.lock();
+            let source = state.active_source.as_mut().unwrap();
+            source.source_kind = "local_imported".into();
+            source.absolute_path = Some(root.path().join("missing.wav").to_string_lossy().into_owned());
+        }
+        let error = pb.restart_engine().await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::SourceNotFound);
+        let snapshot = pb.get_snapshot().unwrap();
+        assert_eq!(snapshot.state, "error");
+        assert_eq!(snapshot.last_error.unwrap().code, ErrorCode::SourceNotFound);
+        assert_eq!(snapshot.position_ms, 1000);
+        assert_eq!(snapshot.current_version_id.as_deref(), Some("v"));
+        assert!(pb.db.read_recent_logs(20).iter().any(|line| line.contains("Engine restart failed")));
+        pb.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn long_runtime_paused_exit_invalidates_loaded_file_and_resume_reloads() {
+        let (root, pb) = online_stall_fixture();
+        let audio = root.path().join("silence.wav");
+        let bytes = 16000u32 * 2 * 4;
+        let mut wav = b"RIFF".to_vec();
+        wav.extend((36 + bytes).to_le_bytes()); wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes()); wav.extend(1u16.to_le_bytes()); wav.extend(1u16.to_le_bytes());
+        wav.extend(16000u32.to_le_bytes()); wav.extend(32000u32.to_le_bytes());
+        wav.extend(2u16.to_le_bytes()); wav.extend(16u16.to_le_bytes()); wav.extend(b"data");
+        wav.extend(bytes.to_le_bytes()); wav.resize(wav.len() + bytes as usize, 0);
+        std::fs::write(&audio, wav).unwrap();
+        pb.db.with_conn(|conn| {
+            conn.execute("INSERT INTO media_sources(id,version_id,source_kind,absolute_path,format,availability,created_at,updated_at) VALUES('local','v','local_imported',?1,'wav','available','now','now')", [audio.to_string_lossy()])?;
+            Ok(())
+        }).unwrap();
+        {
+            let mut state = pb.inner.lock();
+            state.state = "paused".into(); state.user_paused_intent = true;
+            state.active_source = pb.list_sources_for_version("v").unwrap().into_iter().next();
+        }
+        let generation = pb.inner.lock().session_generation;
+        let (tx, rx) = mpsc::unbounded_channel(); pb.spawn_event_loop(rx);
+        tx.send(MpvEvent::ProcessExited("synthetic idle engine exit".into())).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while pb.inner.lock().file_loaded_for_gen { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        assert_eq!(pb.inner.lock().state, "paused");
+        assert_eq!(pb.inner.lock().position_ms, 1000);
+        pb.mpv.command(serde_json::json!(["set_property", "ao", "null"])).await.unwrap();
+        pb.toggle_pause().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !pb.inner.lock().file_loaded_for_gen { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await.unwrap();
+        assert!(pb.inner.lock().session_generation > generation);
+        assert_eq!(pb.inner.lock().active_source.as_ref().unwrap().id, "local");
+        assert!(pb.inner.lock().position_ms >= 1000);
+        pb.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn long_runtime_prefetch_is_bounded_and_idle_never_schedules() {
+        let (_root, pb) = online_stall_fixture();
+        let now = Instant::now();
+        {
+            let mut state = pb.inner.lock();
+            state.state = "playing".into(); state.duration_ms = Some(60_000);
+            let count = (0..60_000).filter(|i| state.schedule_prefetch(now + Duration::from_millis(*i), 50_000)).count();
+            assert_eq!(count, 12, "60,000 ticks must schedule at most 12 checks/minute");
+            state.state = "paused".into();
+            assert!(!state.schedule_prefetch(now + Duration::from_secs(90), 50_000));
+            state.state = "playing".into(); state.prefetching_version_id = Some("v".into());
+            assert!(!state.schedule_prefetch(now + Duration::from_secs(90), 50_000));
+        }
+        let operation = pb.prefetch_operation.lock().await;
+        tokio::time::timeout(Duration::from_millis(100), pb.maybe_prefetch_next_track()).await.unwrap();
+        drop(operation);
+        {
+            let mut state = pb.inner.lock();
+            state.prefetched_next = Some(("v".into(), "s".into(), "expired-url".into(), vec![]));
+            state.prefetched_at = Some(now - Duration::from_secs(61));
+        }
+        pb.maybe_prefetch_next_track().await;
+        assert!(pb.inner.lock().prefetched_next.is_none());
+        pb.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn long_runtime_idle_subtitle_poll_does_not_wait_for_database() {
+        use crate::services::{recognition::RecognitionService, subtitle_tasks::SubtitleTaskService};
+        let (root, pb) = online_stall_fixture();
+        pb.inner.lock().state = "paused".into();
+        let tasks = SubtitleTaskService::new(pb.db.clone(),
+            RecognitionService::new(pb.db.clone(), root.path().join("d"), "idle-poll-test"),
+            pb.clone(), pb.provider.clone());
+        let db = pb.db.clone();
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || db.with_conn(|_| {
+            held_tx.send(()).unwrap();
+            let _ = release_rx.recv_timeout(Duration::from_secs(2));
+            Ok(())
+        }).unwrap());
+        held_rx.recv().unwrap();
+        let start = Instant::now();
+        let mut attempted = None;
+        for _ in 0..1000 { tasks.automatic_step(&mut attempted).await; }
+        let elapsed = start.elapsed();
+        let _ = release_tx.send(()); writer.join().unwrap();
+        pb.shutdown().await;
+        assert!(attempted.is_none());
+        assert!(elapsed < Duration::from_millis(200), "idle polling waited on database: {elapsed:?}");
+    }
+
+    #[tokio::test]
+    async fn audio_output_failure_keeps_track_progress_and_skips_online_recovery() {
+        for source_kind in ["online_provider", "local_imported"] {
+            let (_root, pb) = online_stall_fixture();
+            let queue_id = pb.db.append_queue_items(&[("v".into(), None)]).unwrap().remove(0);
+            {
+                let mut state = pb.inner.lock();
+                state.active_source.as_mut().unwrap().source_kind = source_kind.into();
+                state.current_queue_item_id = Some(queue_id.clone());
+                state.pending_seek_ms = Some(2300);
+            }
+            let (tx, rx) = mpsc::unbounded_channel();
+            pb.spawn_event_loop(rx);
+            tx.send(MpvEvent::EndFile {
+                reason: "error".into(),
+                error: Some("audio output initialization failed".into()),
+                audio_output_error: Some(AppError::new(ErrorCode::AudioDeviceBusy, "音频设备被占用")),
+                playlist_entry_id: None,
+            }).unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while pb.inner.lock().last_error.is_none() { tokio::task::yield_now().await; }
+            }).await.unwrap();
+            {
+                let state = pb.inner.lock();
+                assert_eq!(state.state, "error");
+                assert_eq!(state.last_error.as_ref().unwrap().code, ErrorCode::AudioDeviceBusy);
+                assert_eq!(state.current_version_id.as_deref(), Some("v"));
+                assert_eq!(state.current_queue_item_id.as_deref(), Some(queue_id.as_str()));
+                assert_eq!(state.position_ms, 1000);
+                assert_eq!(state.pending_seek_ms, Some(2300));
+                assert!(!state.current_completed);
+                assert!(!state.file_loaded_for_gen);
+                assert!(!state.mpv_buffering);
+                assert!(!state.online_recovery_running);
+                assert!(!state.retried_online_for_gen);
+            }
+            assert_eq!(pb.db.get_queue_items().unwrap().len(), 1);
+            pb.shutdown().await;
+        }
+    }
+
+    fn online_stall_fixture() -> (tempfile::TempDir, PlaybackService) {
+        let root = tempdir().unwrap();
+        let db = Database::open_and_migrate(&root.path().join("d"), &root.path().join("c")).unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('w','test','now','now');
+                INSERT INTO tracks(id,work_id,title,sort_key,created_at) VALUES('t','w','test','1','now');
+                INSERT INTO track_versions(id,track_id,created_at) VALUES('v','t','now');")?;
+            Ok(())
+        }).unwrap();
+        let pb = PlaybackService::new(db.clone(), AsmrOneProvider::new(db));
+        {
+            let mut state = pb.inner.lock();
+            state.current_version_id = Some("v".into());
+            state.active_source = Some(serde_json::from_value(serde_json::json!({
+                "id":"remote", "versionId":"v", "sourceKind":"online_provider",
+                "provider":"asmr_one", "sourceWorkId":"1", "remoteFileId":"hash",
+                "remoteRelativePath":"test.mp3", "format":"mp3", "availability":"available"
+            })).unwrap());
+            state.state = "buffering".into();
+            state.mpv_buffering = true;
+            state.file_loaded_for_gen = true;
+            state.user_paused_intent = false;
+            state.position_ms = 1000;
+            state.volume = 0.0;
+        }
+        (root, pb)
+    }
+
+    #[tokio::test]
+    async fn online_manual_retry_gets_fresh_recovery_budget_and_reports_load_failure() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+        let (_root, pb) = online_stall_fixture();
+        pb.db.with_conn(|conn| {
+            conn.execute_batch("INSERT INTO media_sources(id,version_id,source_kind,provider,source_work_id,remote_file_id,remote_relative_path,format,created_at,updated_at)
+                VALUES('remote','v','online_provider','asmr_one','1','hash','test.mp3','mp3','now','now');")?;
+            Ok(())
+        }).unwrap();
+        let server = MockServer::start().await;
+        Mock::given(path("/api/tracks/1")).respond_with(ResponseTemplate::new(200)
+            .set_body_json(serde_json::json!([{"type":"audio", "title":"test.mp3", "hash":"hash",
+                "mediaStreamUrl":format!("{}/missing.mp3", server.uri())}]))).expect(4).mount(&server).await;
+        Mock::given(path("/missing.mp3")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+        pb.provider.set_api_base(&server.uri()).unwrap();
+        { let mut state = pb.inner.lock(); state.state = "error".into(); state.retried_online_for_gen = true; }
+        for _ in 0..2 {
+            pb.toggle_pause().await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while pb.inner.lock().state != "error" { tokio::time::sleep(Duration::from_millis(10)).await; }
+            }).await.expect("A failed manual retry must finish after one automatic refresh");
+            let state = pb.inner.lock();
+            assert!(state.user_paused_intent);
+            let message = &state.last_error.as_ref().unwrap().message;
+            assert!(message.contains("加载失败"));
+            assert!(!message.contains("持续缓冲"));
+        }
+        pb.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn online_stall_deadline_interrupts_real_native_request_and_can_retry() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+        let (_root, pb) = online_stall_fixture();
+        let server = MockServer::start().await;
+        Mock::given(path("/api/tracks/1")).respond_with(ResponseTemplate::new(200)
+            .set_body_json(serde_json::json!([{"type":"audio", "title":"test.mp3", "hash":"hash",
+                "mediaStreamUrl":format!("{}/stalled.mp3", server.uri())}]))).expect(1).mount(&server).await;
+        Mock::given(path("/stalled.mp3")).respond_with(ResponseTemplate::new(200)
+            .set_delay(Duration::from_secs(60))).mount(&server).await;
+        pb.provider.set_api_base(&server.uri()).unwrap();
+        pb.inner.lock().buffering_since = Some(Instant::now() - Duration::from_secs(31));
+        pb.check_online_buffering(Instant::now()).await;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while server.received_requests().await.unwrap().len() < 2 { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await.unwrap();
+        pb.inner.lock().buffering_since = Some(Instant::now() - Duration::from_secs(31));
+        tokio::time::timeout(Duration::from_secs(3), pb.check_online_buffering(Instant::now()))
+            .await.expect("The host deadline must interrupt a native HTTP read");
+        assert_eq!(pb.inner.lock().state, "error");
+        assert!(pb.inner.lock().last_error.as_ref().unwrap().message.contains("持续缓冲"));
+        let audio = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
+            .join("tests/fixtures/audio/stereo_lr_check.mp3");
+        { let mut state = pb.inner.lock(); state.state = "loading".into(); state.user_paused_intent = true; }
+        pb.mpv.load_file_pipelined(&audio.to_string_lossy(), &[], true, 0.0, "").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !pb.inner.lock().file_loaded_for_gen { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await.expect("Playback must remain usable after the host stops a stalled request");
+        assert_eq!(pb.inner.lock().state, "paused");
+        pb.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn online_stall_pause_time_does_not_count_and_resume_has_grace() {
+        let (_root, pb) = online_stall_fixture();
+        let now = Instant::now();
+        {
+            let mut state = pb.inner.lock();
+            state.user_paused_intent = true;
+            state.buffering_since = Some(now - Duration::from_secs(5 * 3600));
+        }
+        pb.check_online_buffering(now).await;
+        assert!(pb.inner.lock().buffering_since.is_none());
+        pb.inner.lock().user_paused_intent = false;
+        pb.check_online_buffering(now).await;
+        pb.check_online_buffering(now + Duration::from_secs(29)).await;
+        assert!(!pb.inner.lock().retried_online_for_gen);
+        assert_eq!(pb.inner.lock().position_ms, 1000);
+        pb.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn online_stall_failed_refresh_exits_buffering_and_is_bounded() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+        let (_root, pb) = online_stall_fixture();
+        let server = MockServer::start().await;
+        Mock::given(path("/api/tracks/1")).respond_with(ResponseTemplate::new(404)).expect(1).mount(&server).await;
+        pb.provider.set_api_base(&server.uri()).unwrap();
+        pb.inner.lock().buffering_since = Some(Instant::now() - Duration::from_secs(31));
+        pb.check_online_buffering(Instant::now()).await;
+        let generation = {
+            let state = pb.inner.lock();
+            assert_eq!(state.state, "error");
+            assert!(state.last_error.is_some());
+            assert_eq!(state.position_ms, 1000);
+            assert!(state.user_paused_intent);
+            state.session_generation
+        };
+        pb.recover_online_stream(generation, false).await;
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        pb.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn online_stall_refresh_preserves_position_and_latest_pause_intent() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+        let (_root, pb) = online_stall_fixture();
+        let server = MockServer::start().await;
+        let audio = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
+            .join("tests/fixtures/audio/stereo_lr_check.mp3");
+        Mock::given(path("/api/tracks/1")).respond_with(ResponseTemplate::new(200)
+            .set_body_json(serde_json::json!([{"type":"audio", "title":"test.mp3", "hash":"hash", "mediaStreamUrl":audio}]))).expect(1).mount(&server).await;
+        pb.provider.set_api_base(&server.uri()).unwrap();
+        // Hold the real load boundary instead of relying on a 200 ms HTTP delay.
+        // The new pause intent must arrive before the resolved source can load.
+        let load_gate = pb.load_operation.lock().await;
+        let generation = pb.inner.lock().session_generation;
+        let recovery = pb.clone();
+        let task = tokio::spawn(async move { recovery.recover_online_stream(generation, true).await; });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while server.received_requests().await.unwrap().is_empty() { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        pb.inner.lock().user_paused_intent = true;
+        drop(load_gate);
+        task.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if { let state = pb.inner.lock(); state.file_loaded_for_gen && state.pending_seek_ms.is_none() } { break; }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await.unwrap();
+        assert_eq!(pb.mpv.command(serde_json::json!(["get_property", "pause"])).await.unwrap(), true);
+        let position = pb.mpv.command(serde_json::json!(["get_property", "time-pos"])).await.unwrap().as_f64().unwrap();
+        assert!((position - 1.0).abs() < 0.15, "position={position}");
+        assert_eq!(pb.inner.lock().state, "paused");
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        pb.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn online_stall_recovery_rechecks_buffer_events_and_exhausted_budget_at_load_boundary() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+        // No healthy native stream is falsified into a stall. Explicit event order
+        // covers both outcomes of the race, before and after the retry is spent.
+        for exhausted in [false, true] {
+            for recovered in [false, true] {
+                let (_root, pb) = online_stall_fixture();
+                let server = MockServer::start().await;
+                Mock::given(path("/api/tracks/1")).respond_with(ResponseTemplate::new(404))
+                    .expect(if exhausted { 0 } else { 1 }).mount(&server).await;
+                pb.provider.set_api_base(&server.uri()).unwrap();
+                pb.inner.lock().retried_online_for_gen = exhausted;
+                let generation = pb.inner.lock().session_generation;
+                let (tx, rx) = mpsc::unbounded_channel();
+                pb.spawn_event_loop(rx);
+                let load_gate = pb.load_operation.lock().await;
+                let recovery = pb.clone();
+                let task = tokio::spawn(async move { recovery.recover_online_stream(generation, true).await; });
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    while !pb.inner.lock().online_recovery_running { tokio::task::yield_now().await; }
+                }).await.unwrap();
+                if recovered {
+                    tx.send(MpvEvent::BufferingChanged(false)).unwrap();
+                    tokio::time::timeout(Duration::from_secs(3), async {
+                        while pb.inner.lock().mpv_buffering { tokio::task::yield_now().await; }
+                    }).await.unwrap();
+                }
+                drop(load_gate);
+                task.await.unwrap();
+                {
+                    let state = pb.inner.lock();
+                    assert_eq!(state.state, if recovered { "playing" } else { "error" });
+                    assert_eq!(state.retried_online_for_gen, exhausted || !recovered);
+                    assert_eq!(state.file_loaded_for_gen, recovered);
+                    assert_eq!(state.user_paused_intent, !recovered);
+                    assert_eq!(state.last_error.is_some(), !recovered);
+                    assert!(!state.online_recovery_running);
+                    assert_eq!(state.position_ms, 1000);
+                }
+                if !recovered {
+                    // Late cache/pause notifications cannot clear the terminal error.
+                    tx.send(MpvEvent::BufferingChanged(false)).unwrap();
+                    tx.send(MpvEvent::PauseChanged(true)).unwrap();
+                    tx.send(MpvEvent::AudioBitrateChanged(Some(421000))).unwrap();
+                    tokio::time::timeout(Duration::from_secs(3), async {
+                        while pb.inner.lock().audio_telemetry.bitrate_kbps != Some(421) { tokio::task::yield_now().await; }
+                    }).await.unwrap();
+                    assert_eq!(pb.inner.lock().state, "error");
+                    pb.recover_online_stream(generation, true).await;
+                }
+                assert_eq!(server.received_requests().await.unwrap().len(), usize::from(!exhausted));
+                pb.shutdown().await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn online_stall_late_refresh_cannot_replace_new_selection() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+        let (_root, pb) = online_stall_fixture();
+        let server = MockServer::start().await;
+        Mock::given(path("/api/tracks/1")).respond_with(ResponseTemplate::new(404).set_delay(Duration::from_millis(200))).expect(1).mount(&server).await;
+        pb.provider.set_api_base(&server.uri()).unwrap();
+        let generation = pb.inner.lock().session_generation;
+        let recovery = pb.clone();
+        let task = tokio::spawn(async move { recovery.recover_online_stream(generation, true).await; });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while server.received_requests().await.unwrap().is_empty() { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        {
+            let mut state = pb.inner.lock();
+            state.session_generation += 1;
+            state.current_version_id = Some("new-selection".into());
+            state.state = "playing".into();
+            state.online_recovery_running = false;
+        }
+        task.await.unwrap();
+        assert_eq!(pb.inner.lock().current_version_id.as_deref(), Some("new-selection"));
+        assert_eq!(pb.inner.lock().state, "playing");
+        assert!(pb.inner.lock().last_error.is_none());
+        pb.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn t1513_manual_subtitle_edits_publish_preserve_originals_and_reject_stale_or_running_saves() {
+        use crate::services::{recognition::RecognitionService,subtitle_tasks::SubtitleTaskService,subtitle_documents::{SubtitleEdit,SubtitleFormat,SubtitleMode}};
+        let root=tempdir().unwrap();
+        let db=Database::open_and_migrate(&root.path().join("d"),&root.path().join("c")).unwrap();
+        db.with_conn(|conn| {conn.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('w','w','now','now'); INSERT INTO tracks(id,work_id,title,sort_key,created_at) VALUES('t','w','t','1','now'); INSERT INTO track_versions(id,track_id,created_at) VALUES('v','t','now');")?; Ok(())}).unwrap();
+        let pb=PlaybackService::new(db.clone(),AsmrOneProvider::new(db.clone()));
+        let original=vec![SubtitleCueDto {index:13,start_ms:100,end_ms:900,text:"おやすみ".into()}];
+        {let mut state=pb.inner.lock(); state.current_version_id=Some("v".into()); state.active_subtitle_cues=original.clone();}
+        let svc=SubtitleTaskService::new(db.clone(),RecognitionService::new(db.clone(),root.path().join("d"),"editing-test"),pb.clone(),AsmrOneProvider::new(db.clone()));
+        let read=serde_json::to_value(svc.editable_document("v").unwrap()).unwrap();
+        let edit=|| SubtitleEdit {version_id:"v".into(),source_key:read["sourceKey"].as_str().unwrap().into(),revision:read["revision"].as_str().unwrap().into(),index:13,original:"おやすみなさい".into(),translation:"晚安".into(),reset:false,undo_model:false,exclude_non_dialogue:false};
+        let result=serde_json::to_value(svc.edit_document(edit()).unwrap()).unwrap();
+        assert_eq!(pb.subtitle_context().2[0].text,"おやすみなさい\n晚安");
+        assert!(svc.edit_document(edit()).is_err());
+        let saved=db.subtitle_document("v",read["sourceKey"].as_str().unwrap()).unwrap().unwrap();
+        assert_eq!(saved.original,original);
+        assert_eq!(db.subtitle_overlay("v",original),saved.rendered());
+        let path=root.path().join("export.srt");
+        assert!(svc.export_document("v",read["revision"].as_str().unwrap(),SubtitleFormat::Srt,SubtitleMode::Bilingual,&path).is_err());
+        assert!(!path.exists());
+        svc.export_document("v",result["revision"].as_str().unwrap(),SubtitleFormat::Srt,SubtitleMode::Bilingual,&path).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("晚安"));
+        svc.start_batch(vec!["v".into()],true,true,false).unwrap();
+        let mut current_edit=edit(); current_edit.revision=result["revision"].as_str().unwrap().into();
+        assert!(svc.edit_document(current_edit).unwrap_err().message.contains("正在运行"));
+        svc.cancel();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        svc.shutdown(); pb.shutdown().await;
+    }
+
+    fn local_translation_response(request: &wiremock::Request, text: &str) -> wiremock::ResponseTemplate {
+        let body: serde_json::Value = request.body_json().unwrap();
+        let user: serde_json::Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let translations: Vec<_> = user["sentences"].as_array().unwrap().iter()
+            .map(|line| serde_json::json!({"id":line["id"],"parts":[{"source":line["text"],"translation":text}]})).collect();
+        wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({"message":{"content":serde_json::json!({"translations":translations}).to_string()}}))
+    }
+
+    #[tokio::test]
+    async fn t1513_preferences_rules_and_work_glossary_flow_through_saved_subtitles() {
+        use crate::{db::subtitles::{SubtitleDocument,external_key},services::{recognition::{RecognitionService,RecognitionSettings},subtitle_preferences::{SubtitlePreferences,Term},subtitle_tasks::SubtitleTaskService}};
+        use wiremock::{Mock,MockServer,matchers::{method,path}};
+        let root=tempdir().unwrap(); let db=Database::open_and_migrate(&root.path().join("d"),&root.path().join("c")).unwrap();
+        db.with_conn(|c| {c.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('w','作品','now','now'); INSERT INTO tracks(id,work_id,title,sort_key,created_at) VALUES('t','w','t','1','now'); INSERT INTO track_versions(id,track_id,created_at) VALUES('v','t','now');")?;Ok(())}).unwrap();
+        let server=MockServer::start().await;
+        let recognition=RecognitionService::new(db.clone(),root.path().join("d"),"prefs-test");
+        let term=|source:&str,target:&str| Term{source:source.into(),target:target.into(),..Default::default()};
+        let prefs=SubtitlePreferences{glossary:vec![term("先輩","前辈")],work_glossaries:std::collections::BTreeMap::from([("w".into(),vec![term("先輩","学姐")]),("other".into(),vec![term("先輩","不应发送")])]),corrections_enabled:true,corrections:vec![term("おやすみ","おやすみなさい")],translation_style:"soft".into(),translation_punctuation:"minimal".into(),..Default::default()};
+        recognition.save_settings(RecognitionSettings{ollama_url:server.uri(),preferences:prefs.clone(),..Default::default()}).unwrap();
+        let pb=PlaybackService::new(db.clone(),AsmrOneProvider::new(db.clone()));
+        let cues=vec![SubtitleCueDto{index:4,start_ms:0,end_ms:900,text:"先輩おやすみ".into()},SubtitleCueDto{index:5,start_ms:1000,end_ms:1900,text:"またね".into()},SubtitleCueDto{index:6,start_ms:2000,end_ms:2900,text:"呼".into()}];
+        let key=external_key(&cues); let mut doc=SubtitleDocument::new("v".into(),key.clone(),cues.clone(),true);
+        doc.translation_corrections.insert(5,"手工译文".into()); doc.translations.insert(4,"旧译文".into()); db.save_subtitle_document(&doc).unwrap();
+        {let mut state=pb.inner.lock();state.current_version_id=Some("v".into());state.active_subtitle_cues=doc.rendered();}
+        let tasks=SubtitleTaskService::new(db.clone(),recognition.clone(),pb.clone(),AsmrOneProvider::new(db.clone()));
+        assert_eq!(tasks.subtitle_work_context(None).unwrap().work_id,"w");
+        assert_eq!(tasks.apply_current_subtitle_rules("v",false).unwrap(),1);
+        assert_eq!(pb.subtitle_context().2[0].text,"先輩おやすみなさい");
+        assert_eq!(tasks.apply_current_subtitle_rules("v",true).unwrap(),1);
+        assert_eq!(pb.subtitle_context().2[0].text,"先輩おやすみ");
+        assert!(db.subtitle_document("v",&key).unwrap().unwrap().rules_suppressed);
+        tasks.add_subtitle_term("v",term("先生","老师")).unwrap();
+        assert!(tasks.add_subtitle_term("v",term("先生","另一个译名")).is_err());
+        Mock::given(method("POST")).and(path("/api/chat")).respond_with(|r: &wiremock::Request| local_translation_response(r, "学姐，晚安～")).mount(&server).await;
+        async fn finish(tasks:&SubtitleTaskService) {tokio::time::timeout(Duration::from_secs(5),async {while matches!(tasks.snapshot().state.as_str(),"running"|"cancelling") {tokio::time::sleep(Duration::from_millis(10)).await;}}).await.unwrap();assert_eq!(tasks.snapshot().state,"completed","{:?}",tasks.snapshot().error);}
+        tasks.start_batch(vec!["v".into()],true,true,false).unwrap();finish(&tasks).await;
+        let requests=server.received_requests().await.unwrap(); assert_eq!(requests.len(),1); // breath and manual translation don't call the API
+        let body:serde_json::Value=serde_json::from_slice(&requests[0].body).unwrap();
+        assert!(body["messages"][0]["content"].as_str().unwrap().contains("柔和"));
+        let user:serde_json::Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(user["glossary"],serde_json::json!([{"source":"先輩","target":"学姐","misrecognitions":[],"context":""}]));assert_eq!(user["sentences"],serde_json::json!([{"id":4,"text":"先輩おやすみ","sourceParts":["先輩おやすみ"]}]));
+        let saved=db.subtitle_document("v",&key).unwrap().unwrap(); assert_eq!(saved.original,cues); assert_eq!(saved.translation_text(4),Some("学姐 晚安"));assert_eq!(saved.translation_text(5),Some("手工译文"));assert_eq!(saved.rendered()[2].text,"呼");
+        let mut changed=recognition.settings().unwrap().preferences;changed.translation_style="natural".into();recognition.save_preferences(changed).unwrap();
+        tasks.start_batch(vec!["v".into()],true,true,false).unwrap();finish(&tasks).await;
+        assert_eq!(server.received_requests().await.unwrap().len(),2);assert_eq!(db.subtitle_document("v",&key).unwrap().unwrap().translation_text(5),Some("手工译文"));
+        assert_eq!(tasks.apply_current_subtitle_rules("v",false).unwrap(),1);
+        {pb.inner.lock().current_version_id=Some("other".into());}
+        assert!(tasks.apply_current_subtitle_rules("v",true).is_err());
+        assert!(!recognition.model_directory().exists()); assert!(!recognition.runtime_directory().exists());
+        tasks.shutdown();pb.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn t1513_automatic_modes_restore_full_cache_and_translate_partial_without_recognizing() {
+        use crate::{db::subtitles::SubtitleDocument, services::{recognition::{AutoRecognitionMode, RecognitionService, RecognitionSettings}, subtitle_tasks::SubtitleTaskService}};
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path}};
+        let root = tempdir().unwrap();
+        let db = Database::open_and_migrate(&root.path().join("d"), &root.path().join("c")).unwrap();
+        db.with_conn(|c| { c.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('w','w','now','now'); INSERT INTO tracks(id,work_id,title,sort_key,created_at) VALUES('t','w','t','1','now'); INSERT INTO track_versions(id,track_id,created_at) VALUES('v','t','now'); INSERT INTO media_sources(id,version_id,source_kind,remote_file_id,format,availability,created_at,updated_at) VALUES('v','v','online_provider','v','mp3','available','now','now');")?; Ok(()) }).unwrap();
+        let provider = AsmrOneProvider::new(db.clone());
+        let recognition = RecognitionService::new(db.clone(), root.path().join("d"), "auto-modes");
+        let pb = PlaybackService::new(db.clone(), provider.clone());
+        let tasks = SubtitleTaskService::new(db.clone(), recognition.clone(), pb.clone(), provider);
+        let chinese = vec![SubtitleCueDto { index: 0, start_ms: 0, end_ms: 1000, text: "已有中文字幕".into() }];
+        let original = vec![SubtitleCueDto { text: "おはよう".into(), ..chinese[0].clone() }];
+        let mut doc = SubtitleDocument::new("v".into(), db.audio_subtitle_key("v").unwrap(), original, true);
+        db.save_subtitle_document(&doc).unwrap();
+        { let mut state = pb.inner.lock(); state.current_version_id = Some("v".into()); state.state = "playing".into(); state.active_subtitle_cues = chinese.clone(); }
+        let mut settings = RecognitionSettings { auto_recognition: AutoRecognitionMode::Missing, ..Default::default() };
+        recognition.save_settings(settings.clone()).unwrap();
+        let mut attempted = None;
+        tasks.automatic_step(&mut attempted).await;
+        assert_eq!(pb.subtitle_context().2, chinese);
+        assert_eq!(tasks.snapshot().state, "");
+        settings.auto_recognition = AutoRecognitionMode::All;
+        recognition.save_settings(settings.clone()).unwrap();
+        tasks.automatic_step(&mut attempted).await;
+        assert_eq!(pb.subtitle_context().2, doc.rendered());
+        assert_eq!(tasks.snapshot().state, ""); // Reuses completed cache without a model.
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/tags")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"models":[{"name":"qwen3:4b"}]}))).mount(&server).await;
+        Mock::given(method("POST")).and(path("/api/chat")).respond_with(|r: &wiremock::Request| local_translation_response(r, "早上好")).expect(1).mount(&server).await;
+        doc.recognition_complete = false;
+        doc.completed_chunks.insert(0);
+        db.save_subtitle_document(&doc).unwrap();
+        settings.auto_recognition = AutoRecognitionMode::Off;
+        settings.auto_translation = true;
+        settings.ollama_url = server.uri();
+        recognition.save_settings(settings).unwrap();
+        tasks.automatic_step(&mut attempted).await;
+        tokio::time::timeout(Duration::from_secs(5), async { while matches!(tasks.snapshot().state.as_str(), "running" | "cancelling") { tokio::time::sleep(Duration::from_millis(10)).await; } }).await.unwrap();
+        assert_eq!(tasks.snapshot().state, "completed", "{:?}", tasks.snapshot().error);
+        let saved = db.subtitle_document("v", &doc.source_key).unwrap().unwrap();
+        assert!(!saved.recognition_complete && saved.completed_chunks == doc.completed_chunks);
+        assert_eq!(saved.translations.get(&0).map(String::as_str), Some("早上好"));
+        assert!(!root.path().join("d/models").exists());
+        tasks.shutdown();
+        pb.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn t1513_batch_and_automatic_processing_preserve_playback_and_require_opt_in() {
+        use crate::{db::subtitles::SubtitleDocument, services::{recognition::{RecognitionService, RecognitionSettings}, subtitle_tasks::SubtitleTaskService}};
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method,path}};
+        let root=tempdir().unwrap();
+        let db=Database::open_and_migrate(&root.path().join("d"),&root.path().join("c")).unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('w','w','now','now'); INSERT INTO tracks(id,work_id,title,sort_key,created_at) VALUES('t','w','t','1','now');")?;
+            for id in ["a","b","c"] {
+                conn.execute("INSERT INTO track_versions(id,track_id,version_label,created_at) VALUES(?1,'t',?1,'now')",[id])?;
+                conn.execute("INSERT INTO media_sources(id,version_id,source_kind,remote_file_id,format,availability,created_at,updated_at) VALUES(?1,?1,'online_provider',?1,'mp3','available','now','now')",[id])?;
+            } Ok(())
+        }).unwrap();
+        let original=vec![SubtitleCueDto {index:0,start_ms:0,end_ms:1000,text:"おはよう".into()}];
+        for id in ["a","b"] { db.save_subtitle_document(&SubtitleDocument::new(id.into(),db.audio_subtitle_key(id).unwrap(),original.clone(),true)).unwrap(); }
+        let server=MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/tags")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"models":[{"name":"qwen3:4b"}]}))).mount(&server).await;
+        Mock::given(method("POST")).and(path("/api/chat")).respond_with(|r: &wiremock::Request| local_translation_response(r, "早上好")).mount(&server).await;
+        let recognition=RecognitionService::new(db.clone(),root.path().join("d"),"automatic-test");
+        let mut settings=RecognitionSettings {ollama_url:server.uri(),..Default::default()};
+        recognition.save_settings(settings.clone()).unwrap();
+        let playback=PlaybackService::new(db.clone(),AsmrOneProvider::new(db.clone()));
+        { let mut state=playback.inner.lock(); state.current_version_id=Some("a".into()); state.state="playing".into(); }
+        let tasks=SubtitleTaskService::new(db.clone(),recognition.clone(),playback.clone(),AsmrOneProvider::new(db.clone()));
+        let mut attempted=None;
+        tasks.automatic_step(&mut attempted).await;
+        assert_eq!(tasks.snapshot().state,"");
+        assert!(server.received_requests().await.unwrap().is_empty());
+        let readiness=tasks.readiness(&["b".into(),"c".into()]).await.unwrap();
+        assert!(!readiness[0].can_recognize && readiness[0].can_translate);
+        assert!(!readiness[1].can_recognize && !readiness[1].can_translate);
+        assert!(tasks.start_batch(vec!["c".into()],false,false,false).is_err());
+        async fn finished(tasks:&SubtitleTaskService) {
+            tokio::time::timeout(std::time::Duration::from_secs(5),async {
+                while matches!(tasks.snapshot().state.as_str(),"running"|"cancelling") {tokio::time::sleep(std::time::Duration::from_millis(10)).await;}
+            }).await.unwrap();
+        }
+        tasks.start_batch(vec!["b".into(),"a".into(),"b".into()],true,false,false).unwrap();
+        finished(&tasks).await;
+        assert_eq!(tasks.snapshot().state,"completed");
+        assert_eq!(tasks.snapshot().tracks_total,2); assert_eq!(tasks.snapshot().tracks_completed,2);
+        assert_eq!(playback.subtitle_context().1.as_deref(),Some("a"));
+        assert_eq!(playback.get_snapshot().unwrap().state,"playing");
+        assert_eq!(db.subtitle_overlay("b",vec![])[0].text,"おはよう\n早上好");
+        // Generated Chinese is an overlay, never an existing Chinese attachment.
+        assert!(tasks.prepare(&["b".into()]).await.unwrap().is_empty());
+        tasks.start_batch(vec!["b".into()],true,false,false).unwrap();
+        finished(&tasks).await;
+        // Chinese originals are skipped without contacting the translation provider.
+        playback.inner.lock().active_subtitle_cues=vec![SubtitleCueDto {index:0,start_ms:0,end_ms:1000,text:"已经是中文字幕".into()}];
+        settings.auto_translation=true; recognition.save_settings(settings.clone()).unwrap();
+        let before_chinese=server.received_requests().await.unwrap().len();
+        tasks.automatic_step(&mut attempted).await;
+        assert_eq!(server.received_requests().await.unwrap().len(),before_chinese);
+        // Explicit opt-in starts a single automatic job; repeated ticks do not resubmit it.
+        db.save_subtitle_document(&SubtitleDocument::new("a".into(),db.audio_subtitle_key("a").unwrap(),original.clone(),true)).unwrap();
+        playback.inner.lock().active_subtitle_cues=original.clone();
+        playback.inner.lock().session_generation+=1;
+        settings.auto_translation=true; recognition.save_settings(settings.clone()).unwrap();
+        tasks.automatic_step(&mut attempted).await; finished(&tasks).await;
+        assert_eq!(tasks.snapshot().state,"completed");
+        let count=server.received_requests().await.unwrap().len();
+        tasks.automatic_step(&mut attempted).await;
+        assert_eq!(server.received_requests().await.unwrap().len(),count);
+        // Automatic translation follows the read-ahead window, then a seek, without
+        // translating the rest of the track or resubmitting completed sentences.
+        let buffered = vec![
+            SubtitleCueDto { index: 0, start_ms: 0, end_ms: 1000, text: "おはよう".into() },
+            SubtitleCueDto { index: 1, start_ms: 25_000, end_ms: 26_000, text: "こんにちは".into() },
+            SubtitleCueDto { index: 2, start_ms: 65_000, end_ms: 66_000, text: "こんばんは".into() },
+        ];
+        let key = db.audio_subtitle_key("a").unwrap();
+        db.save_subtitle_document(&SubtitleDocument::new("a".into(), key.clone(), buffered.clone(), true)).unwrap();
+        { let mut state = playback.inner.lock(); state.active_subtitle_cues = buffered;
+          state.session_generation += 1; state.position_ms = 0; state.duration_ms = Some(90_000); }
+        tasks.automatic_step(&mut attempted).await; finished(&tasks).await;
+        assert_eq!(db.subtitle_document("a", &key).unwrap().unwrap().translations.keys().copied().collect::<Vec<_>>(), vec![0]);
+        playback.inner.lock().position_ms = 6000;
+        tasks.automatic_step(&mut attempted).await; finished(&tasks).await;
+        assert_eq!(db.subtitle_document("a", &key).unwrap().unwrap().translations.keys().copied().collect::<Vec<_>>(), vec![0, 1]);
+        playback.inner.lock().position_ms = 65_000;
+        tasks.automatic_step(&mut attempted).await; finished(&tasks).await;
+        assert_eq!(db.subtitle_document("a", &key).unwrap().unwrap().translations.keys().copied().collect::<Vec<_>>(), vec![0, 1, 2]);
+        let count=server.received_requests().await.unwrap().len();
+        tasks.automatic_step(&mut attempted).await;
+        assert_eq!(server.received_requests().await.unwrap().len(), count);
+        // Deletion updates the player immediately and cannot be undone by an
+        // automatic task prepared before deletion. Explicit translation still works.
+        tasks.delete_generated(&["a".into()], true).unwrap();
+        assert!(db.subtitle_document("a", &key).unwrap().unwrap().translations.is_empty());
+        assert!(playback.subtitle_context().2.iter().all(|cue| !cue.text.contains("早上好")));
+        assert_eq!(playback.get_snapshot().unwrap().state, "playing");
+        attempted = None;
+        tasks.automatic_step(&mut attempted).await;
+        assert!(tasks.start_batch(vec!["a".into()], true, true, true).is_err());
+        assert_eq!(server.received_requests().await.unwrap().len(), count);
+        tasks.start_batch(vec!["a".into()], true, false, false).unwrap();
+        finished(&tasks).await;
+        assert_eq!(tasks.snapshot().state, "completed");
+        let count = server.received_requests().await.unwrap().len();
+        // Cancelling suppresses automatic restarts for this playback session.
+        tasks.cancel(); attempted=None;
+        tasks.automatic_step(&mut attempted).await;
+        assert_eq!(server.received_requests().await.unwrap().len(),count);
+        assert!(!recognition.model_directory().exists()); assert!(!recognition.runtime_directory().exists());
+        tasks.shutdown(); playback.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn t1513_translation_resumes_saved_sentences_and_never_overwrites_new_selection() {
+        use crate::{db::subtitles::external_key, services::{recognition::{RecognitionService,RecognitionSettings},subtitle_tasks::SubtitleTaskService}};
+        use wiremock::{Mock,MockServer,ResponseTemplate,matchers::{method,path}};
+        let dir=tempdir().unwrap();
+        let db=Database::open_and_migrate(&dir.path().join("d"),&dir.path().join("c")).unwrap();
+        db.with_conn(|conn| { conn.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('w','w','now','now'); INSERT INTO tracks(id,work_id,title,sort_key,created_at) VALUES('t','w','t','1','now'); INSERT INTO track_versions(id,track_id,version_label,created_at) VALUES('v','t','original','now'),('other','t','other','now');")?; Ok(()) }).unwrap();
+        let server=MockServer::start().await;
+        let recognition=RecognitionService::new(db.clone(),dir.path().join("d"),"subtitle-test");
+        recognition.save_settings(RecognitionSettings { ollama_url:server.uri(),..Default::default() }).unwrap();
+        let playback=PlaybackService::new(db.clone(),AsmrOneProvider::new(db.clone()));
+        let mut cues: Vec<_> = (0..6).map(|i| SubtitleCueDto {index:10+i,start_ms:i as i64*1000,end_ms:(i as i64+1)*1000,text:"おはよう".into()}).collect();
+        cues.push(SubtitleCueDto {index:9,start_ms:6000,end_ms:7000,text:"ありがとう".into()});
+        { let mut state=playback.inner.lock(); state.current_version_id=Some("v".into()); state.active_subtitle_cues=cues.clone(); }
+        let tasks=SubtitleTaskService::new(db.clone(),recognition.clone(),playback.clone(),AsmrOneProvider::new(db.clone()));
+        assert!(server.received_requests().await.unwrap().is_empty());
+        let count=std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)); let counter=count.clone();
+        Mock::given(method("POST")).and(path("/api/chat")).respond_with(move |r: &wiremock::Request| {
+            if counter.fetch_add(1,Ordering::SeqCst)==0 { local_translation_response(r, "早上好") }
+            else { ResponseTemplate::new(500) }
+        }).mount(&server).await;
+        tasks.start("v".into(),true).unwrap();
+        assert!(tasks.start("v".into(),true).is_err());
+        async fn finished(tasks:&SubtitleTaskService) { tokio::time::timeout(std::time::Duration::from_secs(5),async { while matches!(tasks.snapshot().state.as_str(),"running"|"cancelling") { tokio::time::sleep(std::time::Duration::from_millis(10)).await; } }).await.unwrap(); }
+        finished(&tasks).await;
+        assert_eq!(tasks.snapshot().state,"failed");
+        let key=external_key(&cues);
+        assert_eq!(db.subtitle_document("v",&key).unwrap().unwrap().translations.len(),6);
+        assert!(playback.subtitle_context().2[0].text.contains("早上好"));
+        server.reset().await;
+        Mock::given(method("POST")).and(path("/api/chat")).respond_with(|r: &wiremock::Request| local_translation_response(r, "谢谢")).expect(1).mount(&server).await;
+        tasks.start_batch(vec!["v".into()],true,true,false).unwrap(); finished(&tasks).await;
+        assert_eq!(tasks.snapshot().state,"completed");
+        let requests=server.received_requests().await.unwrap();
+        assert_eq!(requests.len(),1); assert_eq!(requests[0].url.path(),"/api/chat");
+        let body:serde_json::Value=serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["stream"],false); assert_eq!(body["format"]["type"],"object");
+        let user:serde_json::Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(user["sentences"],serde_json::json!([{"id":9,"text":"ありがとう","sourceParts":["ありがとう"]}])); assert_eq!(user["context"],"句子 9 之前 [13] おはよう\n句子 9 之前 [14] おはよう\n句子 9 之前 [15] おはよう");
+        assert!(!recognition.model_directory().exists()); assert!(!recognition.runtime_directory().exists());
+        let (generation,_,rendered,_)=playback.subtitle_context();
+        assert_eq!(rendered[6].text,"ありがとう\n谢谢");
+        assert!(db.subtitle_overlay("other",cues.clone())==cues);
+        // Old results cannot replace a manual selection, a new version, or a new session.
+        assert!(!playback.publish_generated_subtitles("v",generation,&cues,Vec::new()));
+        assert!(!playback.publish_generated_subtitles("other",generation,&rendered,Vec::new()));
+        assert!(!playback.publish_generated_subtitles("v",generation+1,&rendered,Vec::new()));
+        server.reset().await;
+        Mock::given(method("POST")).and(path("/api/chat")).respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(30))).mount(&server).await;
+        { let mut state=playback.inner.lock(); state.active_subtitle_cues=vec![SubtitleCueDto {index:0,start_ms:0,end_ms:1000,text:"別の字幕".into()}]; }
+        tasks.start("v".into(),true).unwrap(); tasks.cancel(); finished(&tasks).await;
+        assert_eq!(tasks.snapshot().state,"cancelled");
+        playback.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn bulk_queue_append_keeps_session_order_and_is_atomic_on_failure() {
         let dir = tempdir().unwrap();
         let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
@@ -3113,7 +4259,14 @@ mod playback_tests {
             state.audio_telemetry.sample_rate_hz = Some(96000);
             state.audio_telemetry.channels = Some("stereo".into());
             state.audio_telemetry.bitrate_kbps = Some(1200);
+            state.audio_telemetry.source_sample_rate_hz = Some(44100);
+            state.audio_telemetry.source_bitrate_kbps = Some(900);
         }
+        let generation = player.inner.lock().session_generation;
+        player.apply_source_bit_depth(generation, "s", Some(24));
+        player.apply_source_bit_depth(generation.wrapping_sub(1), "s", Some(16));
+        player.apply_source_bit_depth(generation, "different-source", Some(32));
+        assert_eq!(player.get_snapshot().unwrap().audio_telemetry.source_bit_depth, Some(24));
         player.try_persist_current_state(false).unwrap();
         player.shutdown().await;
         let restored = PlaybackService::new(db.clone(), AsmrOneProvider::new(db.clone()));
@@ -3122,14 +4275,69 @@ mod playback_tests {
         assert_eq!(snapshot.audio_telemetry.sample_rate_hz, Some(96000));
         assert_eq!(snapshot.audio_telemetry.channels.as_deref(), Some("stereo"));
         assert_eq!(snapshot.audio_telemetry.bitrate_kbps, Some(1200));
+        assert_eq!(snapshot.audio_telemetry.source_bit_depth, Some(24));
+        assert_eq!(snapshot.audio_telemetry.source_sample_rate_hz, Some(44100));
+        assert_eq!(snapshot.audio_telemetry.source_bitrate_kbps, Some(900));
         assert!(!restored.inner.lock().file_loaded_for_gen);
         assert!(snapshot.active_source.is_none());
         restored.shutdown().await;
         db.with_conn(|conn| { conn.execute("UPDATE media_sources SET byte_size=2000 WHERE id='s'", [])?; Ok(()) }).unwrap();
         let changed = PlaybackService::new(db.clone(), AsmrOneProvider::new(db.clone()));
         assert!(changed.get_snapshot().unwrap().audio_telemetry.sample_rate_hz.is_none());
+        assert!(changed.get_snapshot().unwrap().audio_telemetry.source_bit_depth.is_none());
+        assert!(changed.get_snapshot().unwrap().audio_telemetry.source_sample_rate_hz.is_none());
+        assert!(changed.get_snapshot().unwrap().audio_telemetry.source_bitrate_kbps.is_none());
         assert_eq!(changed.get_snapshot().unwrap().audio_telemetry.codec.as_deref(), Some("FLAC"));
         changed.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn source_depth_playback_reports_24_bit_file_even_when_decoder_outputs_s32() {
+        let root = tempdir().unwrap();
+        let audio = root.path().join("24bit.wav");
+        let data_len = 48000u32 * 2 * 3;
+        let mut wav = b"RIFF".to_vec();
+        wav.extend((36 + data_len).to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(2u16.to_le_bytes());
+        wav.extend(48000u32.to_le_bytes());
+        wav.extend(data_len.to_le_bytes());
+        wav.extend(6u16.to_le_bytes());
+        wav.extend(24u16.to_le_bytes());
+        wav.extend(b"data");
+        wav.extend(data_len.to_le_bytes());
+        wav.resize(wav.len() + data_len as usize, 0); // Synthetic silence only.
+        std::fs::write(&audio, wav).unwrap();
+        let db = Database::open_and_migrate(&root.path().join("d"), &root.path().join("c")).unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('w','test','now','now');
+                INSERT INTO tracks(id,work_id,title,sort_key,created_at) VALUES('t','w','test','1','now');
+                INSERT INTO track_versions(id,track_id,created_at) VALUES('v','t','now');")?;
+            conn.execute("INSERT INTO media_sources(id,version_id,source_kind,absolute_path,format,created_at,updated_at) VALUES('s','v','local_imported',?1,'wav','now','now')", [audio.to_string_lossy()])?;
+            Ok(())
+        }).unwrap();
+        let player = PlaybackService::new(db.clone(), AsmrOneProvider::new(db));
+        player.inner.lock().volume = 0.0;
+        player.mpv.command(serde_json::json!(["set_property", "ao", "null"])).await.unwrap();
+        player.mpv.command(serde_json::json!(["set_property", "audio-samplerate", "24000"])).await.unwrap();
+        player.play("v", None).await.unwrap();
+        let snapshot = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let snapshot = player.get_snapshot().unwrap();
+                let output_rate = player.mpv.command(serde_json::json!(["get_property", "audio-out-params/samplerate"])).await.ok().and_then(|v| v.as_i64());
+                if snapshot.audio_telemetry.source_bit_depth.is_some() && snapshot.audio_telemetry.sample_format.is_some() && snapshot.audio_telemetry.source_sample_rate_hz.is_some() && output_rate == Some(24000) { break snapshot; }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await;
+        let last = player.get_snapshot().unwrap();
+        player.shutdown().await;
+        let snapshot = snapshot.unwrap_or_else(|_| panic!("state={} depth={:?} format={:?} error={:?}", last.state, last.audio_telemetry.source_bit_depth, last.audio_telemetry.sample_format, last.last_error));
+        assert_eq!(snapshot.audio_telemetry.source_bit_depth, Some(24));
+        assert_eq!(snapshot.audio_telemetry.sample_format.as_deref(), Some("s32"));
+        assert_eq!(snapshot.audio_telemetry.source_sample_rate_hz, Some(48000));
+        assert_eq!(snapshot.audio_telemetry.source_bitrate_kbps, Some(2304));
     }
 
     #[tokio::test]
@@ -3592,6 +4800,13 @@ mod playback_tests {
         // Run 6 cycles of seek -> pause -> resume -> step next -> step prev -> verify monotonic eventSeq & DB persistence
         let mut last_seq = snap0.event_seq;
         for i in 1..=6 {
+            // loadfile acceptance is not FileLoaded. Exercise pause/resume of an
+            // actually loaded track; the unloaded-resume path has its own test.
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while !playback.inner.lock().file_loaded_for_gen {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.unwrap();
             let target_ms = (i * 1_500) as i64;
             let s1 = playback.seek_ms(target_ms).await.unwrap();
             assert!(s1.event_seq > last_seq);
@@ -3729,6 +4944,17 @@ mod playback_tests {
         let s_seek = playback.seek_ms(6_400).await.unwrap();
         assert_eq!(s_seek.position_ms, 6_400);
 
+        let normalized = playback.set_loudness_normalization(true).await.unwrap();
+        assert!(normalized.dsp_config.loudness_normalization);
+        assert!(normalized.audio_telemetry.active_filter_graph.contains("loudnorm"));
+        assert_eq!(normalized.position_ms, 6_400);
+        assert_eq!(normalized.current_version_id.as_deref(), Some("v_dsp"));
+        assert!(db.get_dsp_global_state().unwrap().0.loudness_normalization);
+        let restored = playback.set_loudness_normalization(false).await.unwrap();
+        assert!(!restored.audio_telemetry.active_filter_graph.contains("loudnorm"));
+        assert_eq!(restored.position_ms, 6_400);
+        assert!(!db.get_dsp_global_state().unwrap().0.loudness_normalization);
+
         // Apply ASMR De-Esser preset in real time
         let dsp_state = playback.apply_dsp_preset("asmr_de_esser").await.unwrap();
         assert_eq!(dsp_state.active_preset_id.as_deref(), Some("asmr_de_esser"));
@@ -3865,6 +5091,7 @@ mod playback_tests {
         let t0 = Instant::now();
         let all_works = db.list_works("all", None).unwrap();
         let list_elapsed = t0.elapsed();
+        eprintln!("T1515 list_works (2,000 works / 30,000 tracks): {list_elapsed:?}");
         assert_eq!(all_works.len(), 2000);
         assert!(
             list_elapsed < Duration::from_millis(160),
@@ -3893,6 +5120,7 @@ mod playback_tests {
         let t_rj = Instant::now();
         let by_rj = db.list_works("all", Some("RJ01001500")).unwrap();
         let rj_elapsed = t_rj.elapsed();
+        eprintln!("T1515 FTS5 RJ search: {rj_elapsed:?}");
         assert_eq!(by_rj.len(), 1);
         assert_eq!(by_rj[0].id, "w_1500");
         assert!(
@@ -3908,6 +5136,23 @@ mod playback_tests {
         let by_sub = db.list_works("all", Some("炭酸シャンプー音")).unwrap();
         assert_eq!(by_sub.len(), 1);
         assert_eq!(by_sub[0].id, "w_1888");
+
+        // T1515: Also exercise a populated listening history, not just empty tables.
+        db.with_conn(|conn| {
+            conn.execute_batch("INSERT INTO playback_positions(version_id,position_ms,completed,ever_completed,updated_at)
+                SELECT v.id,1000,0,CASE WHEN CAST(SUBSTR(t.work_id,3) AS INTEGER)%3=0 OR t.id LIKE '%_01' THEN 1 ELSE 0 END,'now'
+                FROM track_versions v JOIN tracks t ON t.id=v.track_id;")?;
+            Ok(())
+        }).unwrap();
+        let started = Instant::now();
+        let with_history = db.list_works("all", None).unwrap();
+        let history_elapsed = started.elapsed();
+        eprintln!("T1515 list_works with 30,000 progress records: {history_elapsed:?}");
+        assert_eq!(with_history.len(), 2000);
+        assert_eq!(with_history.iter().filter(|w| w.listening_status == crate::domain::ListeningStatus::Played).count(), 666);
+        assert_eq!(with_history.iter().filter(|w| w.listening_status == crate::domain::ListeningStatus::InProgress).count(), 1334);
+        // Additional workload: report it separately from the original empty-history
+        // 160 ms list/search budgets above, and verify durable completion semantics.
     }
 
     #[tokio::test]

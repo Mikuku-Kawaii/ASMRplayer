@@ -1,4 +1,10 @@
 fn main() {
+    println!("cargo:rerun-if-changed=native/sherpa");
+    println!("cargo:rerun-if-changed=native/whisper");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        cc::Build::new().file("native/sherpa/bridge.c").include("native/sherpa").compile("asmr_sensevoice");
+        cc::Build::new().file("native/whisper/bridge.c").include("native/whisper").compile("asmr_whisper");
+    }
     // Copy vulkan-1.dll alongside the compiled binary in target/{profile} if present,
     // so the dynamically loaded libmpv runtime finds its companion DLL during dev runs.
     if let Ok(out_dir) = std::env::var("OUT_DIR") {

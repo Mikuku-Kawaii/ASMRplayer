@@ -178,7 +178,11 @@ impl Database {
                     ListeningFilter::Unplayed => work.listening_status == crate::domain::ListeningStatus::Unplayed,
                 }
                 && contains_all(&work.voice_actors, &filters.voice_actors)
-                && contains_all(&work.tags, &filters.tags)
+                && filters.tags.iter().all(|tag| match tag.to_lowercase().as_str() {
+                    "r18" => work.nsfw,
+                    "带字幕" => work.has_subtitle,
+                    _ => contains_all(&work.tags, std::slice::from_ref(tag)),
+                })
         });
         Ok(works)
     }
@@ -199,6 +203,30 @@ mod tests {
             }
             Ok(())
         }).unwrap();
+    }
+
+    #[test]
+    fn shared_special_tags_use_resolved_rating_and_subtitle_state_t1501() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("data"), &dir.path().join("cache")).unwrap();
+        db.set_setting("nsfw_enabled", "true").unwrap();
+        seed(&db, "matching", None);
+        seed(&db, "tag_only", None);
+        db.with_conn(|conn| {
+            conn.execute("UPDATE works SET nsfw_detected=1,has_subtitle_metadata=1 WHERE id='matching'", [])?;
+            conn.execute("UPDATE works SET tags_json='[\"R18\",\"带字幕\"]' WHERE id='tag_only'", [])?;
+            Ok(())
+        }).unwrap();
+        db.set_work_override("tag_only", "nsfw", "set", Some("false")).unwrap();
+        let filters = CollectionFilters { tags: vec!["r18".into(), "带字幕".into()], ..Default::default() };
+        let saved = db.save_smart_collection(None, "有字幕的成人作品", &filters).unwrap();
+        let matches = db.query_smart_collection(&saved.filters).unwrap();
+        assert_eq!(matches.iter().map(|w| w.id.as_str()).collect::<Vec<_>>(), vec!["matching"]);
+        db.with_conn(|conn| {
+            conn.execute("UPDATE works SET has_subtitle_metadata=0 WHERE id='matching'", [])?;
+            Ok(())
+        }).unwrap();
+        assert!(db.query_smart_collection(&saved.filters).unwrap().is_empty());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+import { ErrorNotice } from "../../components/ErrorNotice";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -137,18 +138,18 @@ export function UpdateDialog({ update, run, onClose }: {
           <progress aria-label="更新下载进度" max={update.totalBytes || undefined} value={update.totalBytes ? Math.min(update.downloadedBytes, update.totalBytes) : undefined} />
           <span className="tabular-nums">{formatBytes(update.downloadedBytes)}{update.totalBytes ? ` / ${formatBytes(update.totalBytes)}` : " · 总大小未知"}</span>
         </div>}
-        {actualError && <div role="alert" className="error-banner">{actualError.message} {actualError.hint}</div>}
+        {actualError && <ErrorNotice message={[actualError.message, actualError.hint].filter(Boolean).join(" ")} />}
         {update.phase === "ready" && <p className="settings-field-hint">安装会暂停播放并重启应用；音频库、收藏、书签和离线文件会保留。</p>}
       </div>
-      <footer className="update-actions">
-        <button className="btn btn-ghost" disabled={locked} onClick={() => void callCommand("open_release_page").catch(e => setError(normalizeAppError(e)))}>查看发布页</button>
+      <footer className="update-actions dialog-actions">
         {!locked && <>
           <button className="btn btn-ghost" onClick={close}>稍后提醒</button>
           <button className="btn btn-ghost" disabled={!!pending || ["downloading", "verifying"].includes(update.phase) || update.skippedVersion === update.latestVersion}
             onClick={() => { if (!pendingRef.current) void run("dismiss_update", { skip: true }).then(onClose).catch(e => setError(normalizeAppError(e))); }}>跳过此版本</button>
         </>}
-        {["available", "error"].includes(update.phase) && <button className="btn btn-primary" disabled={!!pending} onClick={() => void perform("download_update")}>{update.phase === "error" ? "重试下载" : "下载更新"}</button>}
         {update.phase === "downloading" && <button className="btn btn-secondary" onClick={() => void run("cancel_update_download").catch(e => setError(normalizeAppError(e)))}>取消下载</button>}
+        <button className="btn btn-ghost" disabled={locked} onClick={() => void callCommand("open_release_page").catch(e => setError(normalizeAppError(e)))}>查看发布页</button>
+        {["available", "error"].includes(update.phase) && <button className="btn btn-primary" disabled={!!pending} onClick={() => void perform("download_update")}>{update.phase === "error" ? "重试下载" : "下载更新"}</button>}
         {(update.phase === "ready" || locked) && <button className="btn btn-primary" disabled={!!pending || locked} onClick={() => void perform("install_update")}>{locked ? "正在安装…" : "安装并重启"}</button>}
       </footer>
     </div>

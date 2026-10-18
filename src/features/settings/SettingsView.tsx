@@ -1,5 +1,9 @@
+import { SettingsDisclosure } from "./SettingsDisclosure";
+import { HelpHint } from "../../components/HelpHint";
 import { DesktopLyricsSettings } from "./DesktopLyricsSettings";
+import { usePageScroll } from "../../app/usePageScroll";
 import { InterfaceScaleSettings } from "./InterfaceScaleSettings";
+import { EngineMaintenanceSettings } from "./EngineMaintenanceSettings";
 import { Select } from "../../components/Select";
 import { Toast } from "../../components/Toast";
 import { RemoveLibraryRootButton } from "./RemoveLibraryRootButton";
@@ -39,28 +43,45 @@ import { ShortcutSettings } from "./ShortcutSettings";
 import { StorageSettings } from "./StorageSettings";
 import { BackupSettings } from "./BackupSettings";
 import { DiagnosticSettings } from "./DiagnosticSettings";
+import { RecognitionSettings } from "./RecognitionSettings";
 
 interface SettingsViewProps {
   onError: (err: AppError) => void;
+  initialSection?: string;
+  onSectionChange?: (section: string) => void;
+  searchQuery?: string;
+  onSearchQueryChange?: (value: string) => void;
 }
 
 const settingsSections = [
   { id:"privacy-window", members:["privacy-window", "shortcuts"], title:"通用与快捷键", hint:"隐私、窗口与键位", icon:ShieldAlert, keywords:"全年龄 关闭 托盘 NSFW SMTC 键盘 热键 命令 搜索 界面 缩放 大小 DPI 比例" },
-  { id:"desktop-island", members:["desktop-island", "desktop-lyrics"], title:"桌面显示", hint:"灵动岛与桌面歌词", icon:AppWindow, keywords:"大小 屏幕 比例 吸附 全屏 音量 提示 字幕 字号 双语 日文 中文 锁定 穿透 字体 颜色 透明度" },
-  { id:"audio-engine", members:["audio-engine"], title:"音频与播放", hint:"输出与硬件加速", icon:Volume2, keywords:"独占 引擎 GPU" },
+  { id:"desktop-island", members:["desktop-island", "desktop-lyrics"], title:"桌面显示", hint:"灵动岛与桌面歌词", icon:AppWindow, keywords:"大小 屏幕 比例 吸附 全屏 音量 提示 字幕 字号 字重 粗细 双语 日文 中文 锁定 穿透 字体 颜色 透明度" },
+  { id:"audio-engine", members:["audio-engine"], title:"音频与播放", hint:"输出与硬件加速", icon:Volume2, keywords:"独占 引擎 GPU 定时 重启 空闲 音轨 性能" },
+  { id:"recognition-translation", members:["recognition-translation"], title:"识别与翻译", hint:"字幕偏好、模型与 API", icon:Cpu, keywords:"字幕 语音 转文字 SenseVoice FP16 GPU CUDA NVIDIA INT8 Whisper Ollama Qwen DeepSeek DS 密钥 本地 翻译 模型 下载 自动识别 自动翻译 词库 人名 术语 纠错 语言 轻声 呼气 拟声词 忠实 自然 柔和 标点 思考 温度 输出长度 token 参数 计费" },
   { id:"network-online", members:["network-online"], title:"网络与在线", hint:"镜像、代理与账户", icon:Globe, keywords:"api token 令牌 预设" },
   { id:"storage-library", members:["storage-library", "storage", "backup-sync"], title:"媒体库与数据", hint:"目录、清理与备份", icon:FolderOpen, keywords:"本地 下载 路径 实时 监控 扫描 存储 用量 空间 缓存 磁盘 恢复 同步 加密 WebDAV 导入 导出 保留" },
   { id:"updates", members:["updates", "cache-diagnostics"], title:"更新与诊断", hint:"版本、日志与排查", icon:RefreshCw, keywords:"软件 历史 检查 升级 说明 系统 错误 脱敏 报告" },
 ];
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
-  const [section, setSection] = useState("privacy-window");
-  const [search, setSearch] = useState("");
+export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSection = "privacy-window", onSectionChange, searchQuery, onSearchQueryChange }) => {
+  const [localSection, setLocalSection] = useState(initialSection);
+  const section = onSectionChange ? initialSection : localSection;
+  const setSection = onSectionChange ?? setLocalSection;
+  useEffect(() => { setLocalSection(initialSection); }, [initialSection]);
+  const [localSearch, setLocalSearch] = useState("");
+  const search = searchQuery ?? localSearch;
+  const setSearch = onSearchQueryChange ?? setLocalSearch;
   const query = search.trim().toLowerCase();
   const visible = (id: string) => settingsSections.some(x => x.members.includes(id) && (query
     ? `${x.title} ${x.hint} ${x.keywords}`.toLowerCase().includes(query)
     : section === x.id));
+  const recognitionVisible = visible("recognition-translation");
+  const [recognitionVisited, setRecognitionVisited] = useState(recognitionVisible);
+  useEffect(() => {
+    if (recognitionVisible) setRecognitionVisited(true);
+  }, [recognitionVisible]);
   const contentRef = useRef<HTMLDivElement>(null);
+  usePageScroll(contentRef, `settings:${section}:${query}`);
   const [settings, setSettings] = useState<AppSettingsDto | null>(null);
   const [roots, setRoots] = useState<LibraryRootDto[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
@@ -367,16 +388,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
     <div className="page-container settings-page-container">
       <header className="settings-page-header">
         <h2>设置</h2>
-        <label className="settings-search"><Search size={18} aria-hidden="true" /><input type="search" value={search} onChange={e => { setSearch(e.target.value); if (contentRef.current) contentRef.current.scrollTop = 0; }} placeholder="搜索设置…" aria-label="搜索设置" /></label>
+        <label className="settings-search"><Search size={18} aria-hidden="true" /><input type="search" value={search} onChange={e => { setSearch(e.target.value); }} placeholder="搜索设置…" aria-label="搜索设置" /></label>
       </header>
       <div className="settings-workspace">
         <nav className="settings-category-nav" aria-label="设置分类">
-          {settingsSections.map(({id,title,hint,icon:Icon}) => <button key={id} type="button" aria-current={!query && section === id ? "page" : undefined} onClick={() => { setSection(id); setSearch(""); if (contentRef.current) contentRef.current.scrollTop = 0; }}><Icon size={20} aria-hidden="true" /><span><strong>{title}</strong><small>{hint}</small></span></button>)}
+          {settingsSections.map(({id,title,hint,icon:Icon}) => <button key={id} type="button" aria-current={!query && section === id ? "page" : undefined} onClick={() => { setSection(id); setSearch(""); }}><Icon size={20} aria-hidden="true" /><span><strong>{title}</strong><small>{hint}</small></span></button>)}
         </nav>
         <div className="settings-content" ref={contentRef} role="region" aria-label="设置内容" tabIndex={0}>
       {savedNotice && <Toast key={savedNotice.id} message={savedNotice.message} onClose={() => setSavedNotice(null)} />}
       {query && !settingsSections.some(x => visible(x.id)) && <p className="settings-field-hint" role="status">没有找到相关设置，试试“字幕”“音频”或“网络”。</p>}
       <div hidden={!visible("updates")}><UpdateSettings onError={onError} /></div>
+      {/* Load on first visit, then retain drafts and disclosure state across categories. */}
+      <div hidden={!recognitionVisible}>{(recognitionVisible || recognitionVisited) && <RecognitionSettings />}</div>
 
       {/* 模块化设置表单 — 功能相近聚合为同一分组卡片，功能相异拆分为独立分组卡片 */}
       <form
@@ -399,12 +422,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
               <span className="settings-group-icon">
                 <ShieldAlert size={16} />
               </span>
-              <div>
-                <h3>内容安全、隐私防护与窗口行为</h3>
-                <p className="settings-group-desc">
+              <div className="setting-label-help"><h3>内容安全、隐私防护与窗口行为</h3><HelpHint label={"内容安全、隐私防护与窗口行为"} text={<>
                   集中管理 NSFW 敏感内容默认过滤、Windows 锁屏/媒体浮窗防社死脱敏及窗口关闭驻留策略
-                </p>
-              </div>
+                </>} /></div>
             </div>
             <span className="badge badge-tech">隐私与内容边界</span>
           </div>
@@ -413,12 +433,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
             <InterfaceScaleSettings />
             {/* NSFW 敏感内容显示开关（默认关闭） */}
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label>NSFW 敏感/成人向内容显示开关（默认关闭）</label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label>成人向内容</label><HelpHint label={"NSFW 敏感/成人向内容显示开关（默认关闭）"} text={<>
                   默认关闭以自动过滤在线浏览、搜索与列表中的 R18 / NSFW 敏感作品；开启后展示全部内容
-                </span>
-              </div>
+                </>} /></span>
               <div>
                 <button
                   type="button"
@@ -436,22 +453,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                   {nsfwEnabled ? <Eye size={14} /> : <EyeOff size={14} />}
                   <span>
                     {nsfwEnabled
-                      ? "已开启 NSFW 敏感内容显示 (允许展示 R18 作品)"
-                      : "已隐藏 NSFW 敏感内容 (默认关闭，自动过滤 R18 作品)"}
+                      ? "显示成人向内容"
+                      : "隐藏成人向内容"}
                   </span>
                 </button>
               </div>
             </div>
 
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label>
-                  Windows SMTC 系统媒体浮层与隐私脱敏模式（键盘多媒体键控制）
-                </label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label>
+                  系统媒体信息
+                </label><HelpHint label={"Windows SMTC 系统媒体浮层与隐私脱敏模式（键盘多媒体键控制）"} text={<>
                   控制 Windows 11 快捷媒体卡片、桌面音量浮窗与锁屏界面是否暴露真实封面与作品名
-                </span>
-              </div>
+                </>} /></span>
               <div className="track-actions">
                 <button
                   type="button"
@@ -467,7 +481,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                     void persistSettings({ smtcMode: "full" });
                   }}
                 >
-                  <span>完整展示 (真实标题与封面)</span>
+                  <span>完整展示</span>
                 </button>
                 <button
                   type="button"
@@ -483,7 +497,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                     void persistSettings({ smtcMode: "privacy" });
                   }}
                 >
-                  <span>隐私脱敏 (展示 ASMR Audio Track 并隐藏封面)</span>
+                  <span>隐私模式</span>
                 </button>
                 <button
                   type="button"
@@ -499,18 +513,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                     void persistSettings({ smtcMode: "disabled" });
                   }}
                 >
-                  <span>完全关闭 SMTC</span>
+                  <span>关闭</span>
                 </button>
               </div>
             </div>
 
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label htmlFor="setting-close">点击窗口关闭按钮时</label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label htmlFor="setting-close">点击窗口关闭按钮时</label><HelpHint label={"点击窗口关闭按钮时"} text={<>
                   选择点击右上角关闭按钮时最小化到托盘继续助眠播放，或彻底退出进程
-                </span>
-              </div>
+                </>} /></span>
               <Select
                 id="setting-close"
                 className="settings-control-wide"
@@ -540,25 +551,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
               <span className="settings-group-icon">
                 <AppWindow size={16} />
               </span>
-              <div>
-                <h3>桌面灵动岛偏好设置</h3>
-                <p className="settings-group-desc">
+              <div className="setting-label-help"><h3>桌面灵动岛偏好设置</h3><HelpHint label={"桌面灵动岛偏好设置"} text={<>
                   调整显示屏幕、大小与播放交互
-                </p>
-              </div>
+                </>} /></div>
             </div>
           </div>
 
           <div className="settings-group-body">
             {/* 1. 全屏独占避让开关 */}
-            <IslandDisplaySettings />
+            <SettingsDisclosure title="屏幕与外观" description="选择显示屏幕，调整灵动岛大小、字号与字重"><IslandDisplaySettings /></SettingsDisclosure>
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label>全屏独占避让（全屏视频与游戏时自动淡出隐藏）</label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label>全屏时自动隐藏</label><HelpHint label={"全屏独占避让（全屏视频与游戏时自动淡出隐藏）"} text={<>
                   当检测到其他软件（全屏游戏、全屏看剧）进入全屏独占时，灵动岛自动平滑淡出隐藏，退出全屏后恢复显示
-                </span>
-              </div>
+                </>} /></span>
               <div>
                 <button
                   type="button"
@@ -575,8 +580,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                 >
                   <span>
                     {islandFullscreenAvoidance
-                      ? "已启用全屏自动避让淡出"
-                      : "已关闭全屏避让（始终保持显示）"}
+                      ? "已开启自动避让"
+                      : "始终显示"}
                   </span>
                 </button>
               </div>
@@ -584,12 +589,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
 
             {/* 2. 边缘弹性磁吸开关 */}
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label>边缘弹性磁吸（靠近屏幕顶部 30px 自动贴边）</label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label>贴近屏幕顶部时吸附</label><HelpHint label={"边缘弹性磁吸（靠近屏幕顶部 30px 自动贴边）"} text={<>
                   拖拽常态胶囊松开时，若光标距离屏幕或副屏顶部小于 30px，自动弹性吸附贴边并持久化记忆坐标
-                </span>
-              </div>
+                </>} /></span>
               <div>
                 <button
                   type="button"
@@ -607,8 +609,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                   <Magnet size={14} />
                   <span>
                     {islandEdgeSnap
-                      ? "已开启 30px 屏幕顶部弹性磁吸"
-                      : "已关闭磁吸（支持自由像素停靠）"}
+                      ? "已开启边缘吸附"
+                      : "自由停靠"}
                   </span>
                 </button>
               </div>
@@ -616,12 +618,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
 
             {/* 3. 灵动岛默认置顶开关 */}
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label>灵动岛窗口置顶（Always on Top）</label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label>窗口置顶</label><HelpHint label={"灵动岛窗口置顶（Always on Top）"} text={<>
                   保持桌面灵动岛始终浮于常规桌面窗口之上，方便随时查看同步台词与快速播控
-                </span>
-              </div>
+                </>} /></span>
               <div>
                 <button
                   type="button"
@@ -640,8 +639,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                   <Pin size={14} />
                   <span>
                     {islandAlwaysOnTop
-                      ? "已开启桌面置顶 (Always on Top)"
-                      : "已关闭置顶（允许被其他窗口覆盖）"}
+                      ? "已开启置顶"
+                      : "已关闭置顶"}
                   </span>
                 </button>
               </div>
@@ -649,12 +648,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
 
             {/* 4. 紧凑态滚轮调音开关 */}
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label>常态胶囊滚轮调音（无需展开控制舱）</label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label>滚轮调节音量</label><HelpHint label={"常态胶囊滚轮调音（无需展开控制舱）"} text={<>
                   鼠标悬停在常态紧凑胶囊上直接滚动鼠标滚轮即可按步进快速微调播放音量并弹出数值反馈
-                </span>
-              </div>
+                </>} /></span>
               <div>
                 <button
                   type="button"
@@ -672,8 +668,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                   <Volume2 size={14} />
                   <span>
                     {islandScrollVolume
-                      ? "已开启常态胶囊滚轮调音"
-                      : "已关闭常态滚轮调音"}
+                      ? "已开启滚轮调音"
+                      : "已关闭滚轮调音"}
                   </span>
                 </button>
               </div>
@@ -685,12 +681,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
 
             {/* 6. 灵动岛隐私脱敏模式开关 */}
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label>灵动岛防社死隐私脱敏模式</label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label>隐藏封面与标题</label><HelpHint label={"灵动岛防社死隐私脱敏模式"} text={<>
                   隐藏敏感同人插画封面，将曲目名称统一显示为中性占位文本 "ASMR Audio Track"
-                </span>
-              </div>
+                </>} /></span>
               <div>
                 <button
                   type="button"
@@ -709,8 +702,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                   {islandPrivacyMode ? <EyeOff size={14} /> : <Eye size={14} />}
                   <span>
                     {islandPrivacyMode
-                      ? "已开启脱敏模式 (隐藏封面与敏感标题)"
-                      : "已关闭脱敏模式 (正常展示封面与标题)"}
+                      ? "已开启隐私模式"
+                      : "显示封面与标题"}
                   </span>
                 </button>
               </div>
@@ -730,24 +723,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
               <span className="settings-group-icon">
                 <Cpu size={16} />
               </span>
-              <div>
-                <h3>音频引擎、硬件直通与解码加速</h3>
-                <p className="settings-group-desc">
+              <div className="setting-label-help"><h3>音频引擎、硬件直通与解码加速</h3><HelpHint label={"音频引擎、硬件直通与解码加速"} text={<>
                   管理 mpv 音频宿主状态、WASAPI 声卡独占原生采样率直通以及 WebView2 / 解码硬件加速
-                </p>
-              </div>
+                </>} /></div>
             </div>
             <span className="badge badge-tech">高保真声学核心</span>
           </div>
 
           <div className="settings-group-body">
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label>libmpv 进程内引擎状态 (mpv-2.dll)</label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label>libmpv 进程内引擎状态 (mpv-2.dll)</label><HelpHint label={"libmpv 进程内引擎状态 (mpv-2.dll)"} text={<>
                   通过主进程内 FFI 原生调用 libmpv C-API 驱动无损解码、200% 音量上限与 8 级 lavfi 音效链路（无独立子进程）
-                </span>
-              </div>
+                </>} /></span>
               <div>
                 {settings?.mpvAvailable ? (
                   <span className="badge badge-downloaded">
@@ -764,12 +751,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
             </div>
 
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label>WASAPI 独占直通模式（绕过系统混音器重采样）</label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label>WASAPI 独占输出</label><HelpHint label={"WASAPI 独占直通模式（绕过系统混音器重采样）"} text={<>
                   直接接管声卡/DAC 按原采样率（如 96kHz/24bit）输出；也可在底栏「控制与音效」中热切换
-                </span>
-              </div>
+                </>} /></span>
               <div>
                 <button
                   type="button"
@@ -785,20 +769,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                 >
                   <span>
                     {audioExclusive
-                      ? "已开启 WASAPI 独占直通 (--ao=wasapi --audio-exclusive=yes，占用时自动安全回退)"
-                      : "已使用系统 WASAPI 共享模式 (点击开启独占直通)"}
+                      ? "独占输出已开启"
+                      : "使用共享输出"}
                   </span>
                 </button>
               </div>
             </div>
 
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label>启用硬件加速（GPU 界面渲染与媒体解码加速）</label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label>硬件加速</label><HelpHint label={"启用硬件加速（GPU 界面渲染与媒体解码加速）"} text={<>
                   开启 GPU 光栅化与 AVX2 多线程硬解加速，显著降低高分屏与长音频播放时的 CPU 占用
-                </span>
-              </div>
+                </>} /></span>
               <div>
                 <button
                   type="button"
@@ -815,13 +796,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                   <Cpu size={14} />
                   <span>
                     {hardwareAcceleration
-                      ? "已开启全链路硬件加速 (WebView2 GPU + mpv 硬解/AVX2 多线程)"
-                      : "已切换为纯软件兼容模式 (关闭硬件加速)"}
+                      ? "已开启硬件加速"
+                      : "使用软件模式"}
                   </span>
                 </button>
               </div>
             </div>
           </div>
+        </section>
+
+        <section className="settings-card" hidden={!visible("audio-engine")} aria-label="引擎定期维护">
+          <h3>定期重启引擎</h3>
+          <EngineMaintenanceSettings />
         </section>
 
         {/* 分组 3：在线源站、网络代理与远程挂载 */}
@@ -835,24 +821,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
               <span className="settings-group-icon">
                 <Globe size={16} />
               </span>
-              <div>
-                <h3>在线源站、网络代理与远程挂载</h3>
-                <p className="settings-group-desc">
+              <div className="setting-label-help"><h3>在线源站、网络代理与远程挂载</h3><HelpHint label={"在线源站、网络代理与远程挂载"} text={<>
                   独立配置 asmr.one 镜像节点、HTTP/SOCKS5 网络代理、站点访问凭据及局域网 WebDAV/NAS 流式地址
-                </p>
-              </div>
+                </>} /></div>
             </div>
             <span className="badge badge-tech">网络与在线连接</span>
           </div>
 
           <div className="settings-group-body">
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label htmlFor="setting-api-base">asmr.one API 基址</label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label htmlFor="setting-api-base">asmr.one API 基址</label><HelpHint label={"asmr.one API 基址"} text={<>
                   用于在线浏览、元数据同步与云端字幕抓取的站点 API 域名，支持一键切换官方镜像
-                </span>
-              </div>
+                </>} /></span>
               <div className="input-with-btn">
                 <input
                   id="setting-api-base"
@@ -886,14 +866,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
             </div>
 
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label htmlFor="setting-proxy">
-                  HTTP / SOCKS5 代理 (同时作用于 API 与 mpv)
-                </label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label htmlFor="setting-proxy">
+                  网络代理
+                </label><HelpHint label={"HTTP / SOCKS5 代理 (同时作用于 API 与 mpv)"} text={<>
                   留空则直接连接；配置后将同步作用于在线接口请求、离线下载与 mpv 流式播放
-                </span>
-              </div>
+                </>} /></span>
               <input
                 id="setting-proxy"
                 type="text"
@@ -909,15 +886,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
               />
             </div>
 
+            <SettingsDisclosure title="访问凭据与远程目录" description="站点令牌、WebDAV 与 NAS 地址">
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label htmlFor="setting-token">
-                  站点 Bearer 凭据 (存于 Windows 系统凭据管理器)
-                </label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label htmlFor="setting-token">
+                  站点访问令牌
+                </label><HelpHint label={"站点 Bearer 凭据 (存于 Windows 系统凭据管理器)"} text={<>
                   令牌通过系统级 Keyring 加密存储，绝不明文写入数据库或日志
-                </span>
-              </div>
+                </>} /></span>
               <div className="input-with-btn">
                 <input
                   id="setting-token"
@@ -955,14 +930,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
             </div>
 
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label htmlFor="setting-webdav">
-                  局域网 WebDAV / NAS 挂载流式地址
-                </label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label htmlFor="setting-webdav">
+                  WebDAV / NAS 地址
+                </label><HelpHint label={"局域网 WebDAV / NAS 挂载流式地址"} text={<>
                   可选挂载家庭 NAS 或 WebDAV 共享目录，支持跨局域网直接流式收听大容量无损作品
-                </span>
-              </div>
+                </>} /></span>
               <input
                 id="setting-webdav"
                 type="text"
@@ -977,6 +949,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                 onBlur={() => void persistSettings({ webdavUrl })}
               />
             </div>
+            </SettingsDisclosure>
           </div>
         </section>
 
@@ -991,24 +964,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
               <span className="settings-group-icon">
                 <HardDrive size={16} />
               </span>
-              <div>
-                <h3>本地存储、目录实时监听与音频库根目录</h3>
-                <p className="settings-group-desc">
+              <div className="setting-label-help"><h3>本地存储、目录实时监听与音频库根目录</h3><HelpHint label={"本地存储、目录实时监听与音频库根目录"} text={<>
                   统一管理离线下载存放目录、后台目录指纹增量监听以及外接硬盘盘符变更后的无损重定位
-                </p>
-              </div>
+                </>} /></div>
             </div>
             <span className="badge badge-tech">本地磁盘与目录树</span>
           </div>
 
           <div className="settings-group-body">
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label htmlFor="setting-dl-dir">离线下载根目录</label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label htmlFor="setting-dl-dir">离线下载根目录</label><HelpHint label={"离线下载根目录"} text={<>
                   在线作品下载完成后的本地存放根目录（下载中自动隔离为 .part 临时文件）
-                </span>
-              </div>
+                </>} /></span>
               <div className="input-with-btn">
                 <input
                   id="setting-dl-dir"
@@ -1034,12 +1001,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
             </div>
 
             <div className="settings-row">
-              <div className="settings-label-block">
-                <label>目录实时文件监听与无感增量同步</label>
-                <span className="settings-field-hint">
+              <span className="setting-label-help"><label>自动同步音频库</label><HelpHint label={"目录实时文件监听与无感增量同步"} text={<>
                   后台自动比对已导入根目录指纹，仅在新增或变更作品时触发秒级无感增量入库
-                </span>
-              </div>
+                </>} /></span>
               <div className="track-actions">
                 <button
                   type="button"
@@ -1055,8 +1019,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                 >
                   <span>
                     {realtimeWatchEnabled
-                      ? "已开启后台目录实时监听与自动增量同步"
-                      : "已暂停后台目录实时监听"}
+                      ? "已开启自动同步"
+                      : "已暂停自动同步"}
                   </span>
                 </button>
                 <button
@@ -1065,15 +1029,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                   onClick={() => void handleSyncWatchedRootsNow()}
                 >
                   <RefreshCw size={13} />
-                  <span>立即增量同步监听目录</span>
+                  <span>立即同步</span>
                 </button>
               </div>
             </div>
 
-            <div className="settings-subsection">
-              <div className="settings-subsection-title">
-                已挂载的本地音频库根目录列表与盘符重定位
-              </div>
+            <SettingsDisclosure title="音频库目录" description="查看已导入目录、增量扫描与路径重定位" summary={`${roots.length} 个目录`}>
+              <div className="settings-table-scroll" role="region" aria-label="音频库目录列表" tabIndex={0}>
               {roots.length === 0 ? (
                 <div className="empty-box">尚未导入任何本地根目录</div>
               ) : (
@@ -1179,7 +1141,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
                   </tbody>
                 </table>
               )}
-            </div>
+              </div>
+            </SettingsDisclosure>
           </div>
         </section>
       </form>
@@ -1199,12 +1162,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
             <span className="settings-group-icon">
               <Terminal size={16} />
             </span>
-            <div>
-              <h3>脱敏诊断日志</h3>
-              <p className="settings-group-desc">
+            <div className="setting-label-help"><h3>脱敏诊断日志</h3><HelpHint label={"脱敏诊断日志"} text={<>
                 查看已自动脱敏令牌的宿主运行日志
-              </p>
-            </div>
+              </>} /></div>
           </div>
           <div className="track-actions">
             <button
@@ -1217,6 +1177,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
             </button>
           </div>
         </div>
+        <div className="settings-group-body"><SettingsDisclosure title="最近运行日志" description="查看已脱敏的日志内容" summary={`${logs.length} 条记录`}>
         <div className="log-box">
           <div className="log-header">
             <Terminal size={14} />
@@ -1226,6 +1187,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError }) => {
             {logs.length === 0 ? "暂无日志记录" : logs.join("\n")}
           </pre>
         </div>
+        </SettingsDisclosure></div>
       </section>
 
       <div hidden={!visible("shortcuts")}><ShortcutSettings smtcMode={settings?.smtcMode} /></div>

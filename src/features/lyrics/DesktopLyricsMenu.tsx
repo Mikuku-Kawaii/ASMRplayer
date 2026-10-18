@@ -1,3 +1,4 @@
+import { ErrorNotice } from "../../components/ErrorNotice";
 import { useEffect } from "react";
 import { Captions, Eye, EyeOff, Lock, Unlock, Minus, Plus, RotateCcw, X } from "lucide-react";
 import { ContextMenu } from "../../components/ContextMenu";
@@ -15,7 +16,10 @@ export function DesktopLyricsMenu() {
   async function change(patch: Partial<Omit<DesktopLyricsSettingsDto, "revision">>) {
     if (await update(patch)) close();
   }
-  if (!settings) return error ? <p role="alert">{error}</p> : null;
+  if (!settings) return error ? <ErrorNotice message={error} /> : null;
+  const mode = settings.languageMode ?? (settings.showTranslation ? "bilingual" : "original");
+  const nextMode = mode === "chinese" ? "original" : mode === "original" ? "bilingual" : "chinese";
+  const modeLabels = { chinese: "中文", original: "原文", bilingual: "双语" };
   return <ContextMenu x={8} y={8} onClose={close} label="桌面歌词菜单">
     <div className="m3-context-menu-header"><span className="m3-context-menu-title">桌面歌词</span></div>
     <button className="m3-menu-item" role="menuitem" disabled={busy} onClick={() => void change({ locked: !settings.locked })}>{settings.locked ? <Unlock size={16} /> : <Lock size={16} />}<span className="ui-icon-label">{settings.locked ? "解锁位置" : "锁定当前位置"}</span></button>
@@ -23,10 +27,10 @@ export function DesktopLyricsMenu() {
     <button className="m3-menu-item" role="menuitem" disabled={busy || settings.fontSize >= 64} onClick={() => void change({ fontSize: Math.min(64, settings.fontSize + 2) })}><Plus size={16} /><span className="ui-icon-label">放大字幕</span></button>
     <button className="m3-menu-item" role="menuitem" disabled={busy || settings.fontSize <= 20} onClick={() => void change({ fontSize: Math.max(20, settings.fontSize - 2) })}><Minus size={16} /><span className="ui-icon-label">缩小字幕</span></button>
     <button className="m3-menu-item" role="menuitem" disabled={busy} onClick={() => void change({ backgroundEnabled: !settings.backgroundEnabled })}>{settings.backgroundEnabled ? <EyeOff size={16} /> : <Eye size={16} />}<span className="ui-icon-label">{settings.backgroundEnabled ? "关闭背景" : "打开背景"}</span></button>
-    <button className="m3-menu-item" role="menuitem" disabled={busy} onClick={() => void change({ showTranslation: !settings.showTranslation })}><Captions size={16} /><span className="ui-icon-label">{settings.showTranslation ? "隐藏双语字幕" : "显示双语字幕"}</span></button>
+    <button className="m3-menu-item" role="menuitem" disabled={busy} title={`切换为${modeLabels[nextMode]}字幕`} onClick={() => void change({ languageMode: nextMode })}><Captions size={16} /><span className="ui-icon-label">字幕 · {modeLabels[mode]}</span></button>
     <button className="m3-menu-item" role="menuitem" disabled={busy || settings.locked} onClick={() => void callCommand("desktop_lyrics_reset_position").then(close).catch(e => setError(normalizeAppError(e).message))}><RotateCcw size={16} /><span className="ui-icon-label">恢复原位</span></button>
     <div className="m3-menu-divider" role="separator" />
     <button className="m3-menu-item" role="menuitem" disabled={busy} onClick={() => void change({ enabled: false })}><X size={16} /><span className="ui-icon-label">关闭桌面歌词</span></button>
-    {error && <p className="error-banner" role="alert">{error}</p>}
+    {error && <ErrorNotice message={error} />}
   </ContextMenu>;
 }

@@ -1,3 +1,5 @@
+import { HelpHint } from "../../components/HelpHint";
+import { ErrorNotice } from "../../components/ErrorNotice";
 import React, { useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { AppError, callCommand, normalizeAppError } from "../../lib/api";
@@ -23,14 +25,13 @@ export const UpdateSettings: React.FC<{ onError: (error: AppError) => void }> = 
     <div className="settings-group-header">
       <div className="settings-group-title-wrap">
         <span className="settings-group-icon"><RefreshCw size={16} /></span>
-        <div><h3>软件更新</h3><p className="settings-group-desc">从 GitHub 获取正式版本，安装前保存收听进度</p></div>
+        <div className="setting-label-help"><h3>软件更新</h3><HelpHint label={"软件更新"} text={<>从 GitHub 获取正式版本，安装前保存收听进度</>} /></div>
       </div>
       {update && <span className="badge badge-tech tabular-nums">当前 v{update.currentVersion}</span>}
     </div>
     <div className="settings-group-body">
       <div className="settings-row">
-        <div className="settings-label-block"><label htmlFor="update-auto-check">启动时检查更新</label>
-          <span className="settings-field-hint">发现新版本时提醒，点击安装后才会退出播放器</span></div>
+        <span className="setting-label-help"><label htmlFor="update-auto-check">启动时检查更新</label><HelpHint label={"启动时检查更新"} text={<>发现新版本时提醒，点击安装后才会退出播放器</>} /></span>
         <input id="update-auto-check" type="checkbox" role="switch" checked={update?.autoCheck ?? false}
           disabled={!update || pending || busy} onChange={e => void perform("set_update_auto_check", { enabled: e.target.checked })} />
       </div>
@@ -40,7 +41,7 @@ export const UpdateSettings: React.FC<{ onError: (error: AppError) => void }> = 
         {update?.checkedAt && <span className="settings-field-hint">上次检查：{new Date(update.checkedAt).toLocaleString()}</span>}
         {update?.latestVersion && update.skippedVersion === update.latestVersion && <span className="settings-field-hint">已跳过此版本的启动提醒，仍可手动查看</span>}
       </div>
-      {update?.error && <div className="error-banner" role="alert">{update.error.message} {update.error.hint}</div>}
+      {update?.error && <ErrorNotice message={[update.error.message, update.error.hint].filter(Boolean).join(" ")} />}
       <div className="update-actions">
         <button className="btn btn-secondary" disabled={!update || busy || pending || update.phase === "ready"}
           onClick={() => void perform("check_for_updates")}><RefreshCw size={14} /><span className="ui-icon-label">{update?.phase === "checking" ? "正在检查…" : "检查更新"}</span></button>

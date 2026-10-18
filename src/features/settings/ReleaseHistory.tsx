@@ -1,3 +1,5 @@
+import { ErrorNotice } from "../../components/ErrorNotice";
+import { HelpHint } from "../../components/HelpHint";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { RefreshCw, X } from "lucide-react";
@@ -74,16 +76,16 @@ export function ReleaseHistoryDialog({ initialView, onClose }: { initialView: Vi
       if (e.shiftKey && document.activeElement === controls[0]) { e.preventDefault(); controls.at(-1)?.focus(); }
       else if (!e.shiftKey && document.activeElement === controls.at(-1)) { e.preventDefault(); controls[0]?.focus(); }
     }}>
-    <header className="storage-heading"><div><h2 id="release-history-title">更新历史</h2><p className="settings-field-hint">{history ? `当前安装 v${history.currentVersion} · 新增功能与设置变化` : "读取本机发布说明…"}</p></div>
+    <header className="storage-heading"><div><div className="setting-label-help"><h2 id="release-history-title">更新历史</h2><HelpHint label="更新历史" text="查看各版本新增功能与设置变化。打开时优先读取本机缓存；点击刷新历史获取最近 30 条发布记录中的正式版本。" /></div><p className="settings-field-hint">{history ? `当前安装 v${history.currentVersion}` : "读取本机发布说明…"}</p></div>
       <button ref={closeButton} type="button" className="btn-icon" aria-label="关闭更新历史" title="关闭更新历史 (Esc)" onClick={onClose}><X size={18} /></button></header>
     <div className="release-history-toolbar"><label htmlFor="release-history-version">发布版本</label><Select id="release-history-version" disabled={!history} value={selected} options={entries.map(item => ({ value: item.version, label: `v${item.version}${item.version === history?.currentVersion ? " · 当前版本" : ""}${item.title && item.title !== `v${item.version}` ? ` · ${item.title}` : ""}` }))} onValueChange={setSelected} />
       <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void refresh()}><RefreshCw size={14} /><span className="ui-icon-label">{busy ? "正在读取…" : "刷新历史"}</span></button></div>
-    <p className="settings-field-hint" role="status">{history?.fetchedAt ? `本机缓存 · 最近刷新 ${date(history.fetchedAt)}` : "打开时优先读取本机缓存；点击刷新历史获取最近 30 条发布记录中的正式版本。"}</p>
-    {error && <div role="alert" className="error-banner">{error.message} {error.hint}</div>}
+    <p className="settings-field-hint" role="status">{history?.fetchedAt ? `本机缓存 · 最近刷新 ${date(history.fetchedAt)}` : "尚未刷新发布记录"}</p>
+    {error && <ErrorNotice message={[error.message, error.hint].filter(Boolean).join(" ")} />}
     <section className="release-history-body" tabIndex={0} aria-label="历史发布说明">
       {entry ? <><h3>{entry.title || `v${entry.version}`}</h3>{entry.publishedAt && <p className="settings-field-hint">发布于 {date(entry.publishedAt)}</p>}<ReleaseNotes notes={entry.notes} onError={setError} /></>
         : <p className="settings-field-hint">{busy ? "正在读取发布说明…" : "此版本尚无本机缓存。可刷新历史获取说明，或打开发布页查看。"}</p>}
     </section>
-    <footer className="update-actions"><button type="button" className="btn btn-ghost" onClick={() => void callCommand(entry ? "open_update_link" : "open_release_page", entry ? { url: entry.url } : undefined).catch(e => setError(normalizeAppError(e)))}>查看发布页</button><button type="button" className="btn btn-primary" onClick={onClose}>关闭说明</button></footer>
+    <footer className="update-actions dialog-actions"><button type="button" className="btn btn-ghost" onClick={onClose}>关闭说明</button><button type="button" className="btn btn-primary" onClick={() => void callCommand(entry ? "open_update_link" : "open_release_page", entry ? { url: entry.url } : undefined).catch(e => setError(normalizeAppError(e)))}>查看发布页</button></footer>
   </dialog>, document.body);
 }

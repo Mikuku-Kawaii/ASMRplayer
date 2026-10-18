@@ -1,3 +1,4 @@
+import { ErrorNotice } from "../../components/ErrorNotice";
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Search, X } from "lucide-react";
@@ -70,8 +71,8 @@ export function CommandPalette({ onClose, onExecute, disabledReason }: {
         </button>)}
       </div>
       {results.length === 0 && <p className="settings-field-hint" role="status">没有匹配命令，请换一个关键词。</p>}
-      {loadError && <p className="shortcut-error" role="alert">{loadError}</p>}
-      {error && <p className="shortcut-error" role="alert">{error}</p>}
+      {loadError && <ErrorNotice message={loadError} />}
+      {error && <ErrorNotice message={error} />}
       <footer className="settings-field-hint">{busy ? "正在执行…" : "↑ ↓ 选择 · Enter 执行 · Esc 关闭"}</footer>
     </div>
   </div>, document.body);

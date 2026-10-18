@@ -57,6 +57,10 @@ fn apply_region(win: &tauri::WebviewWindow, bounds: Option<LyricsContentBounds>)
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum LyricsLanguageMode { Chinese, Original, Bilingual }
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct LyricsSettings {
@@ -68,6 +72,7 @@ pub struct LyricsSettings {
     pub color: String,
     pub background_opacity: f64,
     pub show_translation: bool,
+    pub language_mode: Option<LyricsLanguageMode>,
     pub revision: u64,
 }
 impl Default for LyricsSettings {
@@ -81,6 +86,7 @@ impl Default for LyricsSettings {
             color: "lavender".into(),
             background_opacity: 0.25,
             show_translation: true,
+            language_mode: None,
             revision: 0,
         }
     }
@@ -96,8 +102,17 @@ pub struct LyricsPatch {
     pub color: Option<String>,
     pub background_opacity: Option<f64>,
     pub show_translation: Option<bool>,
+    pub language_mode: Option<LyricsLanguageMode>,
 }
 impl LyricsSettings {
+    fn with_language_mode(mut self) -> Self {
+        let mode = self.language_mode.unwrap_or(if self.show_translation {
+            LyricsLanguageMode::Bilingual
+        } else { LyricsLanguageMode::Original });
+        self.language_mode = Some(mode);
+        self.show_translation = mode == LyricsLanguageMode::Bilingual;
+        self
+    }
     fn patched(mut self, p: LyricsPatch) -> AppResult<Self> {
         if let Some(v) = p.enabled {
             self.enabled = v;
@@ -122,7 +137,10 @@ impl LyricsSettings {
         }
         if let Some(v) = p.show_translation {
             self.show_translation = v;
+            self.language_mode = None;
         }
+        if let Some(v) = p.language_mode { self.language_mode = Some(v); }
+        self = self.with_language_mode();
         if !["system", "yahei", "dengxian", "simsun", "kaiti", "meiryo"]
             .contains(&self.font_family.as_str())
             || !(20..=64).contains(&self.font_size)
@@ -178,6 +196,7 @@ impl DesktopLyricsService {
             .get_setting(KEY)?
             .map(|s| serde_json::from_str(&s).map_err(error))
             .unwrap_or_else(|| Ok(LyricsSettings::default()))
+            .map(LyricsSettings::with_language_mode)
     }
     pub fn update(&self, patch: LyricsPatch) -> AppResult<LyricsSettings> {
         let _guard = self.gate.lock();
@@ -384,6 +403,24 @@ impl DesktopLyricsService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn subtitle_language_modes_migrate_and_survive_saved_preferences() {
+        for (legacy, expected) in [(false, LyricsLanguageMode::Original), (true, LyricsLanguageMode::Bilingual)] {
+            let old: LyricsSettings = serde_json::from_value(serde_json::json!({"showTranslation":legacy})).unwrap();
+            assert_eq!(old.with_language_mode().language_mode, Some(expected));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("data"), &dir.path().join("cache")).unwrap();
+        for mode in [LyricsLanguageMode::Chinese, LyricsLanguageMode::Original, LyricsLanguageMode::Bilingual] {
+            let saved = LyricsSettings::default().patched(LyricsPatch { language_mode: Some(mode), ..Default::default() }).unwrap();
+            db.set_setting(KEY, &serde_json::to_string(&saved).unwrap()).unwrap();
+            let loaded: LyricsSettings = serde_json::from_str(&db.get_setting(KEY).unwrap().unwrap()).unwrap();
+            let changed = loaded.patched(LyricsPatch { font_size: Some(40), ..Default::default() }).unwrap();
+            assert_eq!(changed.language_mode, Some(mode));
+            assert_eq!(changed.show_translation, mode == LyricsLanguageMode::Bilingual);
+        }
+        assert!(serde_json::from_str::<LyricsPatch>(r#"{"languageMode":"invalid"}"#).is_err());
+    }
     #[test]
     fn locked_region_fits_text_with_small_padding_and_monitor_scale() {
         let bounds = LyricsContentBounds { x: 320., y: 65., width: 200., height: 40. };

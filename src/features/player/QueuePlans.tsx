@@ -1,3 +1,4 @@
+import { ErrorNotice } from "../../components/ErrorNotice";
 import { useEffect, useId, useRef, useState } from "react";
 import { ListMusic, Pencil, Plus, RefreshCw, Save } from "lucide-react";
 import { Select } from "../../components/Select";
@@ -146,7 +147,7 @@ export function QueuePlans({ snapshot, onSnapshotChange }: {
           <button className="btn btn-primary btn-sm" type="button" disabled={!canApply} onClick={() => void apply("replace")}>{busy ? "正在替换…" : "确认替换"}</button></div>
       </div>}
     </div>}
-    {error && <p className="queue-plan-error" role="alert">{error}</p>}
+    {error && <ErrorNotice message={error} />}
     {message && <p className="queue-plan-hint" role="status">{message}</p>}
   </section>;
 }

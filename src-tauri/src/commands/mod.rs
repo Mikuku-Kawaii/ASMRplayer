@@ -9,8 +9,12 @@ use crate::services::playback::PlaybackService;
 use crate::services::session::SessionService;
 use crate::services::updater::{UpdateService, UpdateSnapshot};
 use tauri::{AppHandle, Emitter, Manager, State};
+pub mod recognition;
 
 pub struct AppState {
+    pub window_placement: crate::services::window_placement::WindowPlacementService,
+    pub subtitle_tasks: crate::services::subtitle_tasks::SubtitleTaskService,
+    pub recognition: crate::services::recognition::RecognitionService,
     pub db: Database,
     pub library: LibraryService,
     pub provider: AsmrOneProvider,
@@ -26,7 +30,7 @@ pub struct AppState {
 pub fn get_island_preferences(state: State<'_, AppState>) -> AppResult<crate::services::island::IslandPreferences> { state.island.preferences() }
 
 #[tauri::command]
-pub async fn set_island_preferences(state: State<'_, AppState>, compact_scale: Option<f64>, expanded_scale: Option<f64>, monitor_id: Option<String>) -> AppResult<crate::services::island::IslandPreferences> { state.island.set_preferences(compact_scale, expanded_scale, monitor_id) }
+pub async fn set_island_preferences(state: State<'_, AppState>, compact_scale: Option<f64>, expanded_scale: Option<f64>, monitor_id: Option<String>, font_size: Option<u8>, font_weight: Option<u16>, subtitle_preference: Option<crate::services::island::IslandSubtitlePreference>) -> AppResult<crate::services::island::IslandPreferences> { state.island.set_preferences(compact_scale, expanded_scale, monitor_id, font_size, font_weight, subtitle_preference) }
 
 #[tauri::command]
 pub async fn island_set_form(state: State<'_, AppState>, form: crate::services::island::IslandForm, animate: Option<bool>, compact_width: Option<f64>) -> AppResult<crate::services::island::IslandLayout> {
@@ -494,6 +498,16 @@ pub async fn restart_player_engine(state: State<'_, AppState>) -> AppResult<Play
 }
 
 #[tauri::command]
+pub fn get_engine_maintenance(state: State<'_, AppState>) -> crate::services::engine_maintenance::EngineMaintenanceSettings {
+    state.playback.engine_maintenance_settings()
+}
+
+#[tauri::command]
+pub fn set_engine_maintenance(state: State<'_, AppState>, settings: crate::services::engine_maintenance::EngineMaintenanceSettings) -> AppResult<crate::services::engine_maintenance::EngineMaintenanceSettings> {
+    state.playback.set_engine_maintenance_settings(settings)
+}
+
+#[tauri::command]
 pub fn set_sleep_timer(
     state: State<'_, AppState>,
     mode: String,
@@ -607,15 +621,18 @@ pub fn delete_bookmark(state: State<'_, AppState>, bookmark_id: String) -> AppRe
 pub async fn load_subtitle_cues(
     state: State<'_, AppState>,
     attachment_id: String,
+    version_id: Option<String>,
 ) -> AppResult<Vec<SubtitleCueDto>> {
+    let (generation, current, expected, _) = state.playback.subtitle_context();
     let _ = state
         .provider
         .ensure_online_subtitle_cached(&attachment_id)
         .await;
-    let cues = state.library.load_subtitle_cues(&attachment_id)?;
-    state
-        .playback
-        .set_active_subtitle_cues_for_version(None, cues.clone());
+    let mut cues = state.library.load_subtitle_cues(&attachment_id)?;
+    if let Some(current) = current.filter(|id| version_id.as_ref().map(|v| v == id).unwrap_or(true)) {
+        cues = state.db.subtitle_overlay(&current, cues);
+        state.playback.publish_generated_subtitles(&current, generation, &expected, cues.clone());
+    }
     Ok(cues)
 }
 
@@ -624,10 +641,9 @@ pub async fn auto_match_subtitle_for_version(
     state: State<'_, AppState>,
     version_id: String,
 ) -> AppResult<Option<AutoMatchedSubtitleDto>> {
+    let (generation, _, expected, _) = state.playback.subtitle_context();
     let Some(mut attachment) = state.library.find_best_subtitle_for_version(&version_id)? else {
-        state
-            .playback
-            .set_active_subtitle_cues_for_version(Some(&version_id), Vec::new());
+        state.playback.publish_generated_subtitles(&version_id, generation, &expected, state.db.subtitle_overlay(&version_id, Vec::new()));
         return Ok(None);
     };
     if let Ok(cached_path) = state
@@ -640,9 +656,8 @@ pub async fn auto_match_subtitle_for_version(
     }
     match state.library.load_subtitle_cues(&attachment.id) {
         Ok(cues) => {
-            state
-                .playback
-                .set_active_subtitle_cues_for_version(Some(&version_id), cues.clone());
+            let cues = state.db.subtitle_overlay(&version_id, cues);
+            state.playback.publish_generated_subtitles(&version_id, generation, &expected, cues.clone());
             Ok(Some(AutoMatchedSubtitleDto { attachment, cues }))
         }
         Err(_) => Ok(None),
@@ -725,7 +740,7 @@ pub async fn prepare_work_download(
 ) -> AppResult<DownloadPreviewDto> {
     state
         .provider
-        .ensure_work_online_tracks(&work_id, rj_or_id.as_deref())
+        .ensure_work_download_files(&work_id, rj_or_id.as_deref())
         .await?;
     state.downloads.preview_download(&work_id, None)
 }
@@ -808,6 +823,24 @@ pub fn cancel_download_task(
     task_id: String,
 ) -> AppResult<Vec<DownloadTaskDto>> {
     state.downloads.cancel_task(&task_id)
+}
+
+#[tauri::command]
+pub fn resume_all_download_tasks(state: State<'_, AppState>) -> AppResult<Vec<DownloadTaskDto>> {
+    state.downloads.resume_all_tasks()
+}
+#[tauri::command]
+pub fn pause_all_download_tasks(state: State<'_, AppState>) -> AppResult<Vec<DownloadTaskDto>> {
+    state.downloads.pause_all_tasks()
+}
+#[tauri::command]
+pub fn cancel_all_download_tasks(state: State<'_, AppState>) -> AppResult<Vec<DownloadTaskDto>> {
+    state.downloads.cancel_all_tasks()
+}
+
+#[tauri::command]
+pub fn clear_completed_download_tasks(state: State<'_, AppState>) -> AppResult<Vec<DownloadTaskDto>> {
+    state.downloads.clear_completed_tasks()
 }
 
 #[tauri::command]
@@ -1039,7 +1072,13 @@ pub async fn preview_user_backup(state: State<'_, AppState>, raw: Option<String>
 #[tauri::command]
 pub async fn apply_user_backup(state: State<'_, AppState>, token: String, scopes: Vec<crate::services::backup::RestoreScope>) -> AppResult<crate::services::backup::RestoreResult> {
     let svc=state.session.backups.clone();
-    let mut result=tokio::task::spawn_blocking(move ||svc.restore(&token,scopes)).await.map_err(|e|AppError::new(ErrorCode::InternalError,e.to_string()))??;
+    let subtitle_tasks=state.subtitle_tasks.clone();
+    let mut result=tokio::task::spawn_blocking(move || {
+        if scopes.contains(&crate::services::backup::RestoreScope::Subtitles) {
+            subtitle_tasks.with_idle(|| svc.restore(&token,scopes))
+        } else { svc.restore(&token,scopes) }
+    }).await.map_err(|e|AppError::new(ErrorCode::InternalError,e.to_string()))??;
+    if result.report.subtitles_restored > 0 { state.subtitle_tasks.refresh_restored_subtitles(); }
     if result.dsp_changed {
         if let Err(e) = state.playback.reload_restored_dsp().await {
             state.db.append_log("WARN", &format!("备份已恢复，音效运行态刷新失败：{}", e.message));
@@ -1095,6 +1134,13 @@ pub async fn apply_dsp_preset(
     preset_id: String,
 ) -> AppResult<DspStateDto> {
     state.playback.apply_dsp_preset(&preset_id).await
+}
+
+#[tauri::command]
+pub async fn set_loudness_normalization(
+    state: State<'_, AppState>, enabled: bool,
+) -> AppResult<PlaybackSnapshot> {
+    state.playback.set_loudness_normalization(enabled).await
 }
 
 #[tauri::command]
@@ -1173,172 +1219,12 @@ pub async fn handle_smtc_action(
     state.playback.handle_smtc_action(&action, seek_ms).await
 }
 
-const WINDOW_PLACEMENT_SETTING_KEY: &str = "window_placement_json";
-
-pub fn capture_and_save_window_placement(window: &tauri::WebviewWindow, db: &Database) {
-    if window.is_minimized().unwrap_or(false) {
-        return;
-    }
-    let Ok(pos) = window.outer_position() else {
-        return;
-    };
-    let Ok(size) = window.outer_size() else {
-        return;
-    };
-    let is_maximized = window.is_maximized().unwrap_or(false);
-
-    let prev_saved = db
-        .get_setting(WINDOW_PLACEMENT_SETTING_KEY)
-        .ok()
-        .flatten()
-        .and_then(|raw| serde_json::from_str::<WindowPlacementDto>(&raw).ok());
-
-    let current_mon = window.current_monitor().ok().flatten().or_else(|| {
-        let center_x = pos.x.saturating_add((size.width as i32) / 2);
-        let center_y = pos.y.saturating_add((size.height as i32) / 2);
-        window
-            .available_monitors()
-            .ok()
-            .unwrap_or_default()
-            .into_iter()
-            .find(|m| {
-                let mp = m.position();
-                let ms = m.size();
-                center_x >= mp.x
-                    && center_x < mp.x.saturating_add(ms.width as i32)
-                    && center_y >= mp.y
-                    && center_y < mp.y.saturating_add(ms.height as i32)
-            })
-    });
-
-    let (mon_name, mon_x, mon_y, mon_w, mon_h) = match current_mon {
-        Some(ref m) => (
-            m.name().cloned(),
-            Some(m.position().x),
-            Some(m.position().y),
-            Some(m.size().width),
-            Some(m.size().height),
-        ),
-        None => (
-            prev_saved.as_ref().and_then(|p| p.monitor_name.clone()),
-            prev_saved.as_ref().and_then(|p| p.monitor_x),
-            prev_saved.as_ref().and_then(|p| p.monitor_y),
-            prev_saved.as_ref().and_then(|p| p.monitor_width),
-            prev_saved.as_ref().and_then(|p| p.monitor_height),
-        ),
-    };
-
-    let placement = if is_maximized {
-        let base_w = prev_saved
-            .as_ref()
-            .map(|p| p.width.max(960))
-            .unwrap_or(1280);
-        let base_h = prev_saved
-            .as_ref()
-            .map(|p| p.height.max(640))
-            .unwrap_or(820);
-        let anchor_x = mon_x
-            .map(|mx| {
-                let mw = mon_w.unwrap_or(1920).max(base_w);
-                mx.saturating_add(((mw as i32 - base_w as i32) / 2).max(24))
-            })
-            .unwrap_or(pos.x.max(-16_000));
-        let anchor_y = mon_y
-            .map(|my| {
-                let mh = mon_h.unwrap_or(1080).max(base_h);
-                my.saturating_add(((mh as i32 - base_h as i32) / 2).max(24))
-            })
-            .unwrap_or(pos.y.max(-16_000));
-        WindowPlacementDto {
-            x: anchor_x,
-            y: anchor_y,
-            width: base_w,
-            height: base_h,
-            maximized: true,
-            monitor_name: mon_name,
-            monitor_x: mon_x,
-            monitor_y: mon_y,
-            monitor_width: mon_w,
-            monitor_height: mon_h,
-        }
-    } else if is_valid_normal_window_bounds(pos.x, pos.y, size.width, size.height, false) {
-        WindowPlacementDto {
-            x: pos.x,
-            y: pos.y,
-            width: size.width,
-            height: size.height,
-            maximized: false,
-            monitor_name: mon_name,
-            monitor_x: mon_x,
-            monitor_y: mon_y,
-            monitor_width: mon_w,
-            monitor_height: mon_h,
-        }
-    } else {
-        let Some(mut prev) = prev_saved else {
-            return;
-        };
-        if pos.x > -25_000 && pos.y > -25_000 {
-            if let (Some(mx), Some(my)) = (mon_x, mon_y) {
-                let mw = mon_w.unwrap_or(1920).max(prev.width);
-                let mh = mon_h.unwrap_or(1080).max(prev.height);
-                prev.x = mx.saturating_add(((mw as i32 - prev.width as i32) / 2).max(0));
-                prev.y = my.saturating_add(((mh as i32 - prev.height as i32) / 2).max(0));
-                prev.monitor_name = mon_name;
-                prev.monitor_x = Some(mx);
-                prev.monitor_y = Some(my);
-                prev.monitor_width = mon_w;
-                prev.monitor_height = mon_h;
-            }
-            if let Ok(raw) = serde_json::to_string(&prev) {
-                let _ = db.set_setting(WINDOW_PLACEMENT_SETTING_KEY, &raw);
-            }
-        }
-        return;
-    };
-
-    if let Ok(raw) = serde_json::to_string(&placement) {
-        let _ = db.set_setting(WINDOW_PLACEMENT_SETTING_KEY, &raw);
-    }
+pub fn capture_and_save_window_placement(window: &tauri::WebviewWindow, _db: &Database) {
+    window.app_handle().state::<AppState>().window_placement.capture(window);
 }
 
-pub fn restore_window_placement_from_db(window: &tauri::WebviewWindow, db: &Database) {
-    let Some(raw) = db.get_setting(WINDOW_PLACEMENT_SETTING_KEY).ok().flatten() else {
-        return;
-    };
-    let Ok(saved) = serde_json::from_str::<WindowPlacementDto>(&raw) else {
-        return;
-    };
-
-    let monitors: Vec<MonitorDescriptorDto> = window
-        .available_monitors()
-        .ok()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|m| MonitorDescriptorDto {
-            name: m.name().cloned(),
-            x: m.position().x,
-            y: m.position().y,
-            width: m.size().width,
-            height: m.size().height,
-            scale_factor: m.scale_factor(),
-        })
-        .collect();
-
-    let restored = resolve_window_restore_placement(&saved, &monitors);
-
-    let _ = window.unmaximize();
-    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
-        restored.x,
-        restored.y,
-    )));
-    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
-        restored.width,
-        restored.height,
-    )));
-    if restored.maximized {
-        let _ = window.maximize();
-    }
+pub fn restore_window_placement_from_db(window: &tauri::WebviewWindow, _db: &Database) {
+    window.app_handle().state::<AppState>().window_placement.restore(window);
 }
 
 #[tauri::command]
@@ -1351,6 +1237,7 @@ pub fn window_set_mini_mode(
     use tauri::{LogicalSize, Size};
     if mini_mode {
         capture_and_save_window_placement(&window, &state.db);
+        state.window_placement.set_mini_mode(true);
         let _ = window.unmaximize();
         let h = if expanded_height.unwrap_or(false) {
             210.0
@@ -1361,17 +1248,10 @@ pub fn window_set_mini_mode(
         let _ = window.set_size(Size::Logical(LogicalSize::new(340.0, h)));
         let _ = window.set_always_on_top(true);
     } else {
-        let _ = window.set_min_size(Some(Size::Logical(LogicalSize::new(980.0, 660.0))));
+        let _ = window.set_min_size(Some(Size::Logical(LogicalSize::new(960.0, 640.0))));
         let _ = window.set_always_on_top(false);
-        if state
-            .db
-            .get_setting(WINDOW_PLACEMENT_SETTING_KEY)
-            .ok()
-            .flatten()
-            .is_some()
-        {
-            restore_window_placement_from_db(&window, &state.db);
-        } else {
+        state.window_placement.set_mini_mode(false);
+        if !state.window_placement.restore(&window) {
             let _ = window.set_size(Size::Logical(LogicalSize::new(1280.0, 820.0)));
         }
     }
@@ -1385,12 +1265,13 @@ pub fn window_minimize(window: tauri::WebviewWindow) -> AppResult<()> {
 }
 
 #[tauri::command]
-pub fn window_toggle_maximize(window: tauri::WebviewWindow) -> AppResult<bool> {
+pub fn window_toggle_maximize(window: tauri::WebviewWindow, state: State<'_, AppState>) -> AppResult<bool> {
     let is_max = window.is_maximized().unwrap_or(false);
     if is_max {
         let _ = window.unmaximize();
         Ok(false)
     } else {
+        state.window_placement.capture(&window);
         let _ = window.maximize();
         Ok(true)
     }
@@ -1420,6 +1301,7 @@ pub async fn window_close(
     if close_behavior == "minimize_to_tray" {
         let _ = window.hide();
     } else {
+        state.subtitle_tasks.shutdown();
         state.playback.shutdown().await;
         window.app_handle().exit(0);
     }

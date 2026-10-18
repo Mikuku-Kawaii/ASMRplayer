@@ -21,6 +21,7 @@ pub const MPV_FORMAT_NODE_MAP: c_int = 8;
 
 pub const MPV_EVENT_NONE: c_int = 0;
 pub const MPV_EVENT_SHUTDOWN: c_int = 1;
+pub const MPV_EVENT_LOG_MESSAGE: c_int = 2;
 pub const MPV_EVENT_START_FILE: c_int = 6;
 pub const MPV_EVENT_END_FILE: c_int = 7;
 pub const MPV_EVENT_FILE_LOADED: c_int = 8;
@@ -31,6 +32,15 @@ pub const MPV_END_FILE_REASON_STOP: c_int = 2;
 pub const MPV_END_FILE_REASON_QUIT: c_int = 3;
 pub const MPV_END_FILE_REASON_ERROR: c_int = 4;
 pub const MPV_END_FILE_REASON_REDIRECT: c_int = 5;
+pub const MPV_ERROR_AO_INIT_FAILED: c_int = -14;
+
+#[repr(C)]
+pub struct mpv_event_log_message {
+    pub prefix: *const c_char,
+    pub level: *const c_char,
+    pub text: *const c_char,
+    pub log_level: c_int,
+}
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -109,6 +119,7 @@ pub struct LibMpvApi {
     pub mpv_observe_property:
         unsafe extern "C" fn(*mut mpv_handle, u64, *const c_char, c_int) -> c_int,
     pub mpv_wait_event: unsafe extern "C" fn(*mut mpv_handle, f64) -> *mut mpv_event,
+    pub mpv_request_log_messages: unsafe extern "C" fn(*mut mpv_handle, *const c_char) -> c_int,
     pub mpv_wakeup: unsafe extern "C" fn(*mut mpv_handle),
     pub mpv_free_node_contents: unsafe extern "C" fn(*mut mpv_node),
 }
@@ -227,6 +238,7 @@ unsafe fn load_libmpv_api_once() -> Result<LibMpvApi, String> {
         mpv_get_property: sym(module, b"mpv_get_property\0")?,
         mpv_observe_property: sym(module, b"mpv_observe_property\0")?,
         mpv_wait_event: sym(module, b"mpv_wait_event\0")?,
+        mpv_request_log_messages: sym(module, b"mpv_request_log_messages\0")?,
         mpv_wakeup: sym(module, b"mpv_wakeup\0")?,
         mpv_free_node_contents: sym(module, b"mpv_free_node_contents\0")?,
     })

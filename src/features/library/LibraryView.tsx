@@ -1,4 +1,5 @@
-import { subscribeLibraryAffinity, subscribeSettingsUpdated } from "../../lib/api";
+import { ErrorNotice } from "../../components/ErrorNotice";
+import { subscribeDownloadsUpdated, subscribeLibraryAffinity, subscribeSettingsUpdated } from "../../lib/api";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -12,12 +13,12 @@ import {
   HardDrive,
   Radio,
   CheckCircle2,
-  AlertCircle,
   Globe,
   Download,
   Trash2,
   FolderTree,
   MoreVertical,
+  X,
 } from "lucide-react";
 import {
   WorkSummary,
@@ -31,18 +32,27 @@ import {
   formatDurationMs,
   normalizeAppError,
   AppError,
+  CollectionFilters,
 } from "../../lib/api";
 import { DownloadTaskModal } from "../../components/DownloadTaskModal";
-import { LibraryFilters, LibraryFilterSummary, matchesLibraryTags } from "./LibraryFilters";
+import { addLibraryTag, LibraryFilters, LibraryFilterSummary, matchesLibraryTags } from "./LibraryFilters";
 import { RemoveWorkDialog, skipsLibraryRemovalConfirmation } from "./RemoveWorkDialog";
 import { BulkOrganizer } from "./BulkOrganizer";
 import { ImportDialog } from "./ImportDialog";
 import { WorkContentBadges } from "../../components/WorkContentBadges";
+import { LibraryCollectionState, libraryCollectionDefaults } from "./SmartCollections";
 
 interface LibraryViewProps {
   filterMode: "all" | "local" | "favorites" | "recent";
   refreshTick?: number;
-  externalSearch?: { keyword: string; seq: number } | null;
+  savedVisibleCount?: number;
+  onVisibleCountChange?: React.Dispatch<React.SetStateAction<number>>;
+  searchQuery?: string;
+  onSearchQueryChange?: (value: string) => void;
+  selectedTags?: string[];
+  onSelectedTagsChange?: (value: string[]) => void;
+  collectionState?: LibraryCollectionState;
+  onCollectionStateChange?: (value: LibraryCollectionState) => void;
   canReturnToDetail?: boolean;
   onReturnToDetail?: () => void;
   onSelectWork: (workId: string) => void;
@@ -62,7 +72,14 @@ interface ContextMenuState {
 export const LibraryView: React.FC<LibraryViewProps> = ({
   filterMode,
   refreshTick,
-  externalSearch,
+  savedVisibleCount,
+  onVisibleCountChange,
+  searchQuery: savedSearchQuery,
+  onSearchQueryChange,
+  selectedTags: savedSelectedTags,
+  onSelectedTagsChange,
+  collectionState: savedCollectionState,
+  onCollectionStateChange,
   canReturnToDetail,
   onReturnToDetail,
   onSelectWork,
@@ -73,9 +90,28 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   const [works, setWorks] = useState<WorkSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [queryError, setQueryError] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [localSearchQuery, setLocalSearchQuery] = useState("");
+  const searchQuery = savedSearchQuery ?? localSearchQuery;
+  const setSearchQuery = onSearchQueryChange ?? setLocalSearchQuery;
+  const [localSelectedTags, setLocalSelectedTags] = useState<string[]>([]);
+  const selectedTags = savedSelectedTags ?? localSelectedTags;
+  const setSelectedTags = onSelectedTagsChange ?? setLocalSelectedTags;
   const tagsActive = selectedTags.length > 0;
+  const [localCollectionState, setLocalCollectionState] = useState<LibraryCollectionState>({ filters: null, selectedId: "" });
+  const collectionState = savedCollectionState ?? localCollectionState;
+  const setCollectionState = onCollectionStateChange ?? setLocalCollectionState;
+  const canFilterCardDetails = filterMode === "all" || filterMode === "favorites";
+  const collectionFilters = canFilterCardDetails ? collectionState.filters : null;
+  const addCardCondition = (change: Partial<CollectionFilters>) => setCollectionState({
+    filters: { ...(collectionFilters ?? libraryCollectionDefaults), keyword: searchQuery, tags: selectedTags, ...change },
+    selectedId: collectionState.selectedId,
+  });
+  const addCardVoice = (voice: string) => {
+    const voices = collectionFilters?.voiceActors ?? [];
+    if (voices.length < 16 && !voices.some(name => name.trim().toLocaleLowerCase() === voice.trim().toLocaleLowerCase())) {
+      addCardCondition({ voiceActors: [...voices, voice.trim()] });
+    }
+  };
   const [selecting, setSelecting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -84,7 +120,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     if (next.has(id)) next.delete(id); else if (next.size < 500) next.add(id);
     return next;
   });
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [localVisibleCount, setLocalVisibleCount] = useState(PAGE_SIZE);
+  const visibleCount = savedVisibleCount ?? localVisibleCount;
+  const setVisibleCount = onVisibleCountChange ?? setLocalVisibleCount;
+  const previousListQuery = useRef(JSON.stringify([filterMode, searchQuery, selectedTags, collectionFilters]));
   const [playingAllFavorites, setPlayingAllFavorites] = useState(false);
   const [clearingRecent, setClearingRecent] = useState(false);
   const clearRecentPending = useRef(false);
@@ -128,19 +167,15 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   );
   const removingWork = useRef(false);
 
-  // Sync external CV / Tag search keyword when triggered from WorkDetailView
-  useEffect(() => {
-    if (externalSearch && externalSearch.seq > 0) {
-      setSearchQuery(externalSearch.keyword);
-    }
-  }, [externalSearch]);
-
   const requestSeq = useRef(0);
   const loadWorks = useCallback(async () => {
     const seq = ++requestSeq.current;
     setLoading(true);
     try {
-      const list = await callCommand<WorkSummary[]>("list_works", {
+      const list = collectionFilters ? await callCommand<WorkSummary[]>("query_smart_collection", {
+        filters: { ...collectionFilters, keyword: searchQuery.trim(), tags: selectedTags,
+          ...(filterMode === "favorites" ? { collected: null, favorite: true } : {}) },
+      }) : await callCommand<WorkSummary[]>("list_works", {
         filter: filterMode,
         search: searchQuery.trim() || null,
       });
@@ -154,14 +189,17 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     } finally {
       if (seq === requestSeq.current) setLoading(false);
     }
-  }, [filterMode, searchQuery, onError, tagsActive, selectedTags]);
+  }, [filterMode, searchQuery, onError, tagsActive, selectedTags, collectionFilters]);
 
   useEffect(() => {
+    const query = JSON.stringify([filterMode, searchQuery, selectedTags, collectionFilters]);
+    if (previousListQuery.current === query) return;
     setVisibleCount(PAGE_SIZE);
+    previousListQuery.current = query;
     setWorks([]);
     setSelectedIds(new Set());
     setContextMenu(null);
-  }, [filterMode, searchQuery, selectedTags]);
+  }, [filterMode, searchQuery, selectedTags, collectionFilters, setVisibleCount]);
 
   useEffect(() => {
     void loadWorks();
@@ -173,17 +211,30 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     let previous: boolean | undefined;
     void subscribeSettingsUpdated(settings => {
       if (disposed || previous === (settings.nsfwEnabled ?? false)) return;
+      if (previous !== undefined) setVisibleCount(PAGE_SIZE);
       previous = settings.nsfwEnabled ?? false;
-      setWorks([]); setSelectedIds(new Set()); setContextMenu(null); setVisibleCount(PAGE_SIZE);
+      setWorks([]); setSelectedIds(new Set()); setContextMenu(null);
       void loadWorks();
     }).then(fn => { if (disposed) fn(); else stop = fn; }).catch(() => {});
     return () => { disposed = true; stop?.(); };
-  }, [loadWorks]);
+  }, [loadWorks, setVisibleCount]);
   useEffect(() => {
     let disposed = false; let stop: (() => void) | undefined;
     void subscribeLibraryAffinity(() => { if (!disposed) void loadWorks(); }).then(fn => { if (disposed) fn(); else stop = fn; });
     return () => { disposed = true; stop?.(); };
   }, [loadWorks]);
+  useEffect(() => {
+    if (!collectionFilters) return;
+    let disposed = false; let stop: (() => void) | undefined;
+    let completed = "";
+    void subscribeDownloadsUpdated(tasks => {
+      const next = tasks.filter(task => task.status === "completed").map(task => task.id).sort().join("|");
+      if (disposed || completed === next) return;
+      completed = next;
+      void loadWorks();
+    }).then(fn => { if (disposed) fn(); else stop = fn; }).catch(() => {});
+    return () => { disposed = true; stop?.(); };
+  }, [collectionFilters, loadWorks]);
 
   useEffect(() => {
     if (!contextMenu && !selecting) return;
@@ -591,7 +642,11 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         </div>
 
         <div className="top-bar-controls-row">
-          <LibraryFilters key={filterMode} value={selectedTags} onChange={setSelectedTags} scope={filterMode} />
+          <LibraryFilters key={filterMode} value={selectedTags} onChange={setSelectedTags} scope={filterMode === "all" && collectionFilters && collectionFilters.collected !== true ? "collection" : filterMode}
+            keyword={searchQuery} collectionState={collectionState} onCollectionChange={filterMode === "all" ? (filters, selectedId) => {
+              setCollectionState({ filters, selectedId });
+              if (filters) setSearchQuery(filters.keyword);
+            } : undefined} />
           <div className="search-input-wrap">
             <Search size={15} className="text-muted" />
             <input
@@ -629,9 +684,11 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         </div>
       </header>
 
-      <LibraryFilterSummary value={selectedTags} onChange={setSelectedTags} />
+      <LibraryFilterSummary value={selectedTags} onChange={setSelectedTags} filters={collectionFilters}
+        onFiltersChange={filters => setCollectionState({ ...collectionState, filters })}
+        onReset={canFilterCardDetails ? () => setCollectionState({ filters: null, selectedId: "" }) : undefined} />
       {loading && <p className="smart-collections-message" role="status">正在查询作品…</p>}
-      {queryError && <div className="smart-collections-message" role="alert">{queryError} <button className="btn btn-secondary btn-sm" type="button" disabled={loading} onClick={() => void loadWorks()}>重试查询</button></div>}
+      {queryError && <ErrorNotice message={queryError}><button className="btn btn-secondary btn-sm" type="button" disabled={loading} onClick={() => void loadWorks()}>重试查询</button></ErrorNotice>}
 
       {/* 本地目录导入预览二级弹窗 */}
       {importMode && (
@@ -647,8 +704,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               className="btn btn-ghost btn-sm"
               disabled={scanning}
               onClick={closeImport}
+              aria-label="关闭导入预览"
+              title="关闭导入预览"
             >
-              取消
+              <X size={16} />
             </button>
           </div>
           <div className="modal-path-row">
@@ -671,7 +730,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             </button>
           </div>
 
-          {importError && <p className="error-banner" role="alert">{importError}</p>}
+          {importError && <ErrorNotice message={importError} />}
           {preview && (
             <div className="preview-section">
               {importMode === "single_work" && (
@@ -711,14 +770,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               )}
 
               {preview.overlappingRoots.length > 0 && (
-                <div className="warning-banner">
-                  <AlertCircle size={15} />
-                  <span>
-                    注意：该路径与已导入根目录存在重叠（
-                    {preview.overlappingRoots.join(", ")}
-                    ），入库时将按唯一路径约束自动去重。
-                  </span>
-                </div>
+                <ErrorNotice tone="warning" message={`该路径与已导入根目录存在重叠（${preview.overlappingRoots.join(", ")}），入库时将按唯一路径约束自动去重。`} />
               )}
 
               {preview.candidates.length === 0 ? (
@@ -794,28 +846,13 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 </table>
               )}
 
-              <div className="modal-footer">
-                {scanning ? (
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => void handleCancelScan()}
-                  >
-                    取消扫描
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    disabled={previewing || selectedImportCount === 0}
-                    onClick={() => void handleExecuteImport()}
-                  >
-                    导入选中作品 ({selectedImportCount})
-                  </button>
-                )}
-              </div>
             </div>
           )}
+          <div className="modal-footer dialog-actions">
+            <button type="button" className="btn btn-ghost" disabled={scanning} onClick={closeImport}>取消</button>
+            {scanning ? <button type="button" className="btn btn-secondary btn-sm" onClick={() => void handleCancelScan()}>取消扫描</button>
+              : preview && <button type="button" className="btn btn-primary" disabled={previewing || selectedImportCount === 0} onClick={() => void handleExecuteImport()}>导入选中作品 ({selectedImportCount})</button>}
+          </div>
         </ImportDialog>
       )}
 
@@ -885,14 +922,19 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                         ).style.display = "none";
                       }}
                     />
-                    <WorkContentBadges nsfw={work.nsfw} hasSubtitle={work.hasSubtitle} />
+                    <WorkContentBadges nsfw={work.nsfw} hasSubtitle={work.hasSubtitle} hasRecognizedSubtitle={work.hasRecognizedSubtitle} />
                   </div>
                 )}
 
                 <div className="work-card-header">
-                  {!work.coverRef && <WorkContentBadges nsfw={work.nsfw} hasSubtitle={work.hasSubtitle} overlay={false} />}
+                  {!work.coverRef && <WorkContentBadges nsfw={work.nsfw} hasSubtitle={work.hasSubtitle} hasRecognizedSubtitle={work.hasRecognizedSubtitle} overlay={false} />}
                   <div className="work-badges">
-                    {(work.listeningStatus !== undefined || work.isListened !== undefined) && <span className={`badge badge-listening ${work.listeningStatus === "played" ? "is-played" : work.listeningStatus === "inProgress" || (!work.listeningStatus && work.isListened) ? "is-in-progress" : ""}`}><span className="ui-tag-label">{work.listeningStatus === "played" ? "听过" : work.listeningStatus === "inProgress" || (!work.listeningStatus && work.isListened) ? "在听" : "未听"}</span></span>}
+                    {(work.listeningStatus !== undefined || work.isListened !== undefined) && (canFilterCardDetails ? <button type="button"
+                      className={`badge badge-listening library-status-filter ${work.listeningStatus === "played" ? "is-played" : work.listeningStatus === "inProgress" || (!work.listeningStatus && work.isListened) ? "is-in-progress" : ""}`}
+                      title={`筛选收听状态：${work.listeningStatus === "played" ? "听过" : work.listeningStatus === "inProgress" || (!work.listeningStatus && work.isListened) ? "在听" : "未听"}`}
+                      onClick={event => { event.stopPropagation(); addCardCondition({ listening: work.listeningStatus ?? (work.isListened ? "inProgress" : "unplayed") }); }}>
+                      <span className="ui-tag-label">{work.listeningStatus === "played" ? "听过" : work.listeningStatus === "inProgress" || (!work.listeningStatus && work.isListened) ? "在听" : "未听"}</span></button>
+                      : <span className={`badge badge-listening ${work.listeningStatus === "played" ? "is-played" : work.listeningStatus === "inProgress" || (!work.listeningStatus && work.isListened) ? "is-in-progress" : ""}`}><span className="ui-tag-label">{work.listeningStatus === "played" ? "听过" : work.listeningStatus === "inProgress" || (!work.listeningStatus && work.isListened) ? "在听" : "未听"}</span></span>)}
                     {work.rjCode && (
                       <span className="badge badge-rj">{work.rjCode}</span>
                     )}
@@ -961,7 +1003,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     <span className="cv-list">
                       CV:{" "}
                       {work.voiceActors.map((va) => (
-                        <span key={va} className="cv-pill"><span className="ui-tag-label">{va}</span></span>
+                        canFilterCardDetails ? <button key={va} type="button" className="cv-pill cv-pill-btn" title={`筛选声优: ${va}`}
+                          onClick={event => { event.stopPropagation(); addCardVoice(va); }}><span className="ui-tag-label">{va}</span></button>
+                          : <span key={va} className="cv-pill"><span className="ui-tag-label">{va}</span></span>
                       ))}
                     </span>
                   )}
@@ -970,7 +1014,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 {work.tags.length > 0 && (
                   <div className="work-tags">
                     {work.tags.slice(0, 6).map((tag) => (
-                      <span key={tag} className="tag-pill"><span className="ui-tag-label">{tag}</span></span>
+                      <button key={tag} type="button" className="tag-pill tag-pill-btn" title={`筛选标签: ${tag}`}
+                        onClick={event => { event.stopPropagation(); setSelectedTags(addLibraryTag(selectedTags, tag)); }}><span className="ui-tag-label">{tag}</span></button>
                     ))}
                   </div>
                 )}
@@ -1090,7 +1135,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 onClick={() => void handleSyncWorkMeta(contextWork)}
               >
                 <RefreshCw size={15} />
-                <span>同步 asmr.one 封面与标签</span>
+                <span>同步 asmr.one 标题与封面</span>
               </button>
             )}
 

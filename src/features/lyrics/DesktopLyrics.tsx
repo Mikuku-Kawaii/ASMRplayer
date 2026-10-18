@@ -4,6 +4,7 @@ import { lyricsFonts } from "./lyricsAppearance";
 import { GripHorizontal, Lock, X } from "lucide-react";
 import { callCommand, defaultSnapshot, PlaybackSnapshot, SubtitleCueDto, subscribeActiveSubtitles, subscribePlaybackSnapshot, subscribePlaybackTick, normalizeAppError } from "../../lib/api";
 import { useLyricsSettings } from "./useLyricsSettings";
+import { subtitleLines } from "./subtitleDisplay";
 
 export function DesktopLyrics() {
   const { settings, update, error, setError, busy } = useLyricsSettings();
@@ -38,7 +39,7 @@ export function DesktopLyrics() {
   useEffect(() => { if (loaded) void callCommand("desktop_lyrics_ready").catch(e => setError(normalizeAppError(e).message)); }, [loaded, setError]); // ready once after preferences render
   const cues = subtitles?.versionId === snapshot.currentVersionId ? subtitles?.cues ?? [] : [];
   const cue = [...cues].reverse().find(c => c.startMs <= snapshot.positionMs);
-  const lines = (cue?.text ?? snapshot.currentTrackTitle ?? "播放音频后显示字幕").split(/\n|\s*\/\/\s*/).filter(Boolean);
+  const lines = subtitleLines(cue?.text ?? snapshot.currentTrackTitle ?? "播放音频后显示字幕", settings?.languageMode ?? (settings?.showTranslation ? "bilingual" : "original"));
   const displayedText = lines.join("\n");
   useLayoutEffect(() => {
     const box = textBox.current;
@@ -78,7 +79,7 @@ export function DesktopLyrics() {
       <button className="btn btn-icon" disabled={busy} aria-label="关闭桌面歌词" title="关闭桌面歌词" onClick={() => void update({ enabled: false })}><X size={18} /></button>
     </div>}
     <div ref={textBox} className="desktop-lyrics-text" key={`${snapshot.currentVersionId}-${cue?.index ?? "title"}`}>
-      <div>{lines[0]}</div>{settings.showTranslation && lines.length > 1 && <div className="desktop-lyrics-translation">{lines.slice(1).join("\n")}</div>}
+      <div>{lines[0]}</div>{lines.length > 1 && <div className="desktop-lyrics-translation">{lines.slice(1).join("\n")}</div>}
     </div>
     {error && <p role="alert" className="desktop-lyrics-error">{error}</p>}
   </main>;

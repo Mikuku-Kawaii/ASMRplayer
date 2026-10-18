@@ -59,7 +59,7 @@ export interface SmartCollection {
 }
 
 export interface OnlineFilter {
-  kind: "voiceActor" | "circle" | "tag";
+  kind: "voiceActor" | "circle" | "tag" | "age";
   value: string;
   exclude: boolean;
 }
@@ -72,6 +72,7 @@ export interface ProviderTag {
 }
 
 export interface WorkSummary {
+  hasRecognizedSubtitle?: boolean;
   nsfw?: boolean;
   hasSubtitle?: boolean;
   listeningStatus?: "unplayed" | "inProgress" | "played";
@@ -190,6 +191,7 @@ export interface DirectoryGroupOption {
 }
 
 export interface WorkDetailDto {
+  hasRecognizedSubtitle?: boolean;
   nsfw?: boolean;
   hasSubtitle?: boolean;
   id: string;
@@ -397,6 +399,7 @@ export interface PeqBandDto {
 
 export interface DspConfigDto {
   masterBypass: boolean;
+  loudnessNormalization?: boolean;
   userPreampDb: number;
   autoeqPreampDb: number;
   hpfEnabled: boolean;
@@ -453,6 +456,9 @@ export interface AudioStreamTelemetryDto {
   codec?: string | null;
   sampleRateHz?: number | null;
   sampleFormat?: string | null;
+  sourceBitDepth?: number | null;
+  sourceSampleRateHz?: number | null;
+  sourceBitrateKbps?: number | null;
   channels?: string | null;
   bitrateKbps?: number | null;
   activeDspSummary: string;
@@ -506,7 +512,8 @@ export interface PlaybackTickDto {
 
 export interface DownloadPreviewItemDto {
   sourceId: string;
-  versionId: string;
+  versionId: string | null;
+  attachmentId?: string | null;
   trackTitle: string;
   format: string;
   byteSize?: number | null;
@@ -529,7 +536,7 @@ export interface DownloadTaskDto {
   id: string;
   workId: string;
   workTitle: string;
-  versionId: string;
+  versionId: string | null;
   trackTitle: string;
   sourceId: string;
   status: string;
@@ -573,7 +580,7 @@ export interface IslandPlacementDto {
 }
 
 export type IslandForm = "compact" | "expanded" | "toast" | "menu";
-export interface IslandLayout { revision: number; form: IslandForm; scale: number; width: number; height: number; radius?: number; animate?: boolean; nativeGlass?: boolean }
+export interface IslandLayout { revision: number; form: IslandForm; scale: number; width: number; height: number; radius?: number; animate?: boolean; nativeGlass?: boolean; fontSize?: number; fontWeight?: number; subtitlePreference?: "chinese" | "original"; viewport?: { width: number; height: number; deviceScale: number } | null }
 export interface IslandPreferences {
   compactScale: number;
   expandedScale: number;
@@ -663,6 +670,7 @@ export interface BackupWorkDspOverrideRecordDto {
 }
 
 export interface UserBackupBundleDto {
+  subtitleDocuments?: { document: unknown; updatedAt: string }[];
   schemaVersion: number;
   exportedAt: string;
   favorites: BackupFavoriteRecordDto[];
@@ -677,6 +685,8 @@ export interface UserBackupBundleDto {
 }
 
 export interface BackupRestoreReportDto {
+  subtitlesRestored?: number;
+  subtitlesSkipped?: number;
   favoritesRestored: number;
   positionsRestored: number;
   bookmarksRestored: number;
@@ -769,6 +779,7 @@ export function formatBytes(bytes?: number | null): string {
 
 export const defaultDspConfig: DspConfigDto = {
   masterBypass: false,
+  loudnessNormalization: false,
   userPreampDb: 0,
   autoeqPreampDb: 0,
   hpfEnabled: true,
@@ -935,6 +946,9 @@ export const defaultSnapshot: PlaybackSnapshot = {
     codec: null,
     sampleRateHz: null,
     sampleFormat: null,
+    sourceBitDepth: null,
+    sourceSampleRateHz: null,
+    sourceBitrateKbps: null,
     channels: null,
     bitrateKbps: null,
     activeDspSummary: "HPF 50Hz · 防炸耳 -1.0dB",
@@ -1069,6 +1083,7 @@ export interface DesktopLyricsSettingsDto {
   enabled: boolean; locked: boolean; fontSize: number; color: "lavender" | "white" | "amber";
   fontFamily: "system" | "yahei" | "dengxian" | "simsun" | "kaiti" | "meiryo";
   backgroundEnabled: boolean; backgroundOpacity: number; showTranslation: boolean; revision: number;
+  languageMode?: "chinese" | "original" | "bilingual" | null;
 }
 export async function subscribeDesktopLyricsSettings(handler: (s: DesktopLyricsSettingsDto) => void): Promise<UnlistenFn> {
   if (!isTauriRuntime()) return () => {};

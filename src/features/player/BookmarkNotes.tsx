@@ -1,3 +1,4 @@
+import { ErrorNotice } from "../../components/ErrorNotice";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { BookmarkCheck, Download, Edit3, FolderTree, Play, Plus, Search, Trash2, Upload } from "lucide-react";
 import { Select } from "../../components/Select";
@@ -90,7 +91,7 @@ export function BookmarkNotes({ snapshot, onSnapshotChange, onOpenWorkDetail }: 
       <input id={`${id}-tags`} className="input-text" placeholder="用逗号分隔，最多 16 个" maxLength={1040} value={tags} disabled={busy||!snapshot.currentVersionId} onChange={e=>setTags(e.target.value)}/>
       <button type="submit" className="btn btn-primary btn-sm" disabled={busy||!snapshot.currentVersionId}><Plus size={14}/><span className="ui-icon-label">添加书签</span></button>
     </form>
-    {error && <div role="alert" className="error-banner">{error}<button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={()=>void load()}>重新加载</button></div>}
+    {error && <ErrorNotice message={error}><button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={()=>void load()}>重新加载</button></ErrorNotice>}
     {notice && <p role="status" className="text-muted">{notice}</p>}
     <ul className="bookmark-notes-list" aria-label="书签检索结果" aria-busy={loading}>
       {page.items.map(bm=><li key={bm.id} className="bookmark-note-card">

@@ -1,3 +1,4 @@
+import { ErrorNotice } from "../../components/ErrorNotice";
 import { ReactNode, useEffect, useRef, useState } from "react";
 import { BulkAction, BulkReport, PlaybackSnapshot, callCommand, normalizeAppError } from "../../lib/api";
 import { ContextMenu } from "../../components/ContextMenu";
@@ -131,6 +132,6 @@ export function BulkOrganizer({ context, onClose, children, selecting, onSelecti
       {item("返回操作菜单", () => setPage("actions"))}
     </>}
     {pending && <p className="bulk-menu-message" role="status">正在处理…</p>}
-    {error && <p role="alert" className="bulk-menu-message">{error}</p>}
+    {error && <ErrorNotice message={error} />}
   </ContextMenu>;
 }

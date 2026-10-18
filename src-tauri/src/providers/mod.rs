@@ -86,6 +86,28 @@ pub struct ProviderLeafNode {
     pub download_url: Option<String>,
 }
 
+fn upsert_download_attachment(
+    tx: &rusqlite::Transaction<'_>, work_id: &str, source_work_id: &str,
+    node: &ProviderLeafNode, now: &str,
+) -> AppResult<()> {
+    let existing: Option<String> = tx.query_row(
+        "SELECT id FROM attachments WHERE work_id=?1 AND provider=?2 AND remote_file_id=?3",
+        params![work_id, PROVIDER_ASMR_ONE, node.remote_file_id], |r| r.get(0),
+    ).optional()?;
+    if let Some(id) = existing {
+        tx.execute("UPDATE attachments SET title=?1,relative_path=?2,byte_size=?3 WHERE id=?4",
+            params![node.title,node.relative_path,node.byte_size,id])?;
+    } else {
+        let kind = match node.node_type.as_str() { "image" => "cover", "subtitle" => "subtitle", _ => "text" };
+        tx.execute(
+            "INSERT INTO attachments(id,work_id,attachment_type,title,relative_path,provider,source_work_id,remote_file_id,byte_size,created_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![Uuid::new_v4().to_string(),work_id,kind,node.title,node.relative_path,
+                PROVIDER_ASMR_ONE,source_work_id,node.remote_file_id,node.byte_size,now])?;
+    }
+    Ok(())
+}
+
 /// Normalizes user input (`"RJ01705068"`, `"01705068"`, `"1705068"`) into canonical numeric `source_work_id` (`"1705068"`).
 pub fn normalize_work_id_input(raw: &str) -> AppResult<String> {
     let trimmed = raw.trim();
@@ -978,36 +1000,8 @@ impl AsmrOneProvider {
                             ],
                         )?;
                     }
-                } else if matches!(node.node_type.as_str(), "subtitle" | "image" | "text") {
-                    let att_type = if node.node_type == "image" {
-                        "cover"
-                    } else {
-                        node.node_type.as_str()
-                    };
-                    let exists: Option<String> = tx
-                        .query_row(
-                            "SELECT id FROM attachments WHERE work_id = ?1 AND provider = ?2 AND remote_file_id = ?3",
-                            params![work_id, PROVIDER_ASMR_ONE, node.remote_file_id],
-                            |r| r.get(0),
-                        )
-                        .optional()?;
-                    if exists.is_none() {
-                        tx.execute(
-                            "INSERT INTO attachments (id, work_id, version_id, attachment_type, title, relative_path, provider, source_work_id, remote_file_id, subtitle_offset_ms, encoding, availability, created_at)
-                             VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, 0, 'UTF-8', 'available', ?9)",
-                            params![
-                                Uuid::new_v4().to_string(),
-                                work_id,
-                                att_type,
-                                node.title,
-                                node.relative_path,
-                                PROVIDER_ASMR_ONE,
-                                pwork.source_work_id,
-                                node.remote_file_id,
-                                now_str
-                            ],
-                        )?;
-                    }
+                } else {
+                    upsert_download_attachment(&tx, &work_id, &pwork.source_work_id, node, &now_str)?;
                 }
             }
 
@@ -1639,6 +1633,9 @@ impl AsmrOneProvider {
         subtitle_only: bool,
     ) -> AppResult<Page<ProviderWork>> {
         let query = build_filter_query(keyword, filters)?;
+        if !self.nsfw_enabled() && filters.iter().any(|filter| filter.kind == filters::OnlineFilterKind::Age && !filter.exclude) {
+            return Ok(Page { items: vec![], page: page.max(1), page_size: Self::ONLINE_PAGE_SIZE as u32, total_count: 0 });
+        }
         self.search_works(&query, page, order, sort, subtitle_only).await
     }
 
@@ -1772,8 +1769,32 @@ impl AsmrOneProvider {
         Ok(())
     }
 
+    /// Rehydrate all non-audio leaves from the saved tree, including works imported
+    /// before generic attachments were supported. Playback never needs these files.
+    pub async fn ensure_work_download_files(&self, work_id: &str, rj_or_id: Option<&str>) -> AppResult<()> {
+        self.ensure_work_online_tracks(work_id, rj_or_id).await?;
+        self.db.with_conn(|conn| {
+            let rows: Vec<(String, String)> = {
+                let mut stmt = conn.prepare("SELECT source_work_id,cached_tree_json FROM work_sources WHERE work_id=?1 AND provider=?2 AND cached_tree_json IS NOT NULL")?;
+                let values = stmt.query_map(params![work_id,PROVIDER_ASMR_ONE], |r| Ok((r.get(0)?,r.get(1)?)))?;
+                values.collect::<Result<_,_>>()?
+            };
+            let tx = conn.transaction()?;
+            let now = Utc::now().to_rfc3339();
+            for (remote_id, raw) in rows {
+                for node in parse_tracks_v2_json(&remote_id, &raw)? {
+                    if node.node_type != "audio" {
+                        upsert_download_attachment(&tx,work_id,&remote_id,&node,&now)?;
+                    }
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
     /// Fetches `workInfo` and cover from `asmr.one` for an existing work in SQLite (by `rj_or_id`
-    /// or its detected `rj_code`) and populates its cover, circle, voice actors (CV), and tags
+    /// or its detected `rj_code`) and populates its title, cover, circle, voice actors (CV), and tags
     /// without altering local track versions or overriding user `work_overrides` (R03, R09).
     pub async fn sync_work_from_asmr_one(
         &self,
@@ -1840,7 +1861,8 @@ impl AsmrOneProvider {
                      voice_actors_json = CASE WHEN ?3 != '[]' THEN ?3 ELSE voice_actors_json END,
                      tags_json = CASE WHEN ?4 != '[]' THEN ?4 ELSE tags_json END,
                      cover_ref = CASE WHEN ?6 = 1 THEN COALESCE(?5, cover_ref) ELSE COALESCE(cover_ref, ?5) END,
-                     updated_at = ?7, nsfw_detected = ?9, has_subtitle_metadata = ?10
+                     updated_at = ?7, nsfw_detected = ?9, has_subtitle_metadata = ?10,
+                     title = CASE WHEN TRIM(?11) != '' THEN ?11 ELSE title END
                  WHERE id = ?8",
                 params![
                     pwork.rj_code,
@@ -1852,7 +1874,8 @@ impl AsmrOneProvider {
                     now_str,
                     work_id,
                     pwork.nsfw,
-                    pwork.has_subtitle
+                    pwork.has_subtitle,
+                    pwork.title
                 ],
             )?;
 
@@ -1882,13 +1905,14 @@ impl AsmrOneProvider {
     }
 
     /// Best-effort automatic metadata & cover enrichment for local works that have an RJ code
-    /// but are missing cover, voice actors (CV), or tags.
+    /// but are missing a title, cover, voice actors (CV), or tags.
     pub async fn auto_enrich_local_works(&self) -> usize {
         let candidates: Vec<(String, String)> = match self.db.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, rj_code FROM works
                  WHERE rj_code IS NOT NULL AND rj_code != ''
-                   AND (voice_actors_json = '[]' OR tags_json = '[]' OR cover_ref IS NULL OR circle_name = '')
+                   AND (voice_actors_json = '[]' OR tags_json = '[]' OR cover_ref IS NULL OR circle_name = ''
+                        OR TRIM(title) = '' OR UPPER(TRIM(title)) = UPPER(rj_code))
                  ORDER BY updated_at DESC LIMIT 15",
             )?;
             let rows = stmt.query_map([], |r| {
@@ -1907,7 +1931,7 @@ impl AsmrOneProvider {
         let mut enriched_count = 0usize;
         for (wid, rj) in candidates {
             if self
-                .sync_work_from_asmr_one(&wid, Some(&rj), false)
+                .sync_work_from_asmr_one(&wid, Some(&rj), true)
                 .await
                 .is_ok()
             {
@@ -2075,6 +2099,20 @@ mod provider_tests {
 
         let detail = db.get_work_detail("w_local").unwrap();
         assert!(detail.nsfw && detail.has_subtitle);
+        let expected_title = serde_json::from_str::<Value>(include_str!("../../../tests/fixtures/provider/work_info_sample.json")).unwrap()["title"].as_str().unwrap().to_owned();
+        assert_eq!(detail.title, expected_title);
+        // Repair earlier imports whose other metadata was already enriched.
+        db.with_conn(|conn| { conn.execute("UPDATE works SET title=rj_code, cover_ref='old-local-cover.jpg' WHERE id='w_local'", [])?; Ok(()) }).unwrap();
+        assert_eq!(provider.auto_enrich_local_works().await, 1);
+        assert_eq!(db.get_work_detail("w_local").unwrap().title, expected_title);
+        assert_eq!(db.get_work_detail("w_local").unwrap().cover_ref, detail.cover_ref);
+        db.set_work_override("w_local", "title", "set", Some("用户自定义标题")).unwrap();
+        db.set_work_override("w_local", "cover_ref", "set", Some("https://example.invalid/custom-cover.jpg")).unwrap();
+        let custom = provider.sync_work_from_asmr_one("w_local", None, true).await.unwrap();
+        assert_eq!(custom.title, "用户自定义标题");
+        assert_eq!(custom.cover_ref.as_deref(), Some("https://example.invalid/custom-cover.jpg"));
+        db.reset_work_override("w_local", "title").unwrap();
+        db.reset_work_override("w_local", "cover_ref").unwrap();
         db.set_work_override("w_local", "nsfw", "set", Some("false")).unwrap();
         let refreshed = provider.sync_work_from_asmr_one("w_local", None, false).await.unwrap();
         assert!(!refreshed.nsfw, "sync must preserve the user's explicit age rating");

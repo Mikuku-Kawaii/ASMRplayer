@@ -1,3 +1,5 @@
+import { HelpHint } from "../../components/HelpHint";
+import { ErrorNotice } from "../../components/ErrorNotice";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { HardDrive, RefreshCw, Trash2, X } from "lucide-react";
@@ -59,25 +61,22 @@ export function StorageSettings() {
   const offline = overview?.entries.filter(e => e.category === "offline") ?? [];
   const filtered = offline.filter(e => e.path.toLowerCase().includes(query.toLowerCase()));
   return <section className="settings-card settings-group-card storage-settings" aria-label="存储用量与清理">
-    <div className="storage-heading"><h3><HardDrive size={18} /><span className="ui-icon-label">存储用量与清理</span></h3>
+    <div className="storage-heading"><div className="setting-label-help"><h3><HardDrive size={18} /><span className="ui-icon-label">存储用量与清理</span></h3><HelpHint label="存储统计与清理" text={<>只统计受管理文件的逻辑大小，实际磁盘释放量可能不同。清理需要先预览；导入目录、本地原件与正在使用的文件保留。</>} /></div>
       <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void run(refresh)}><RefreshCw size={14} /><span className="ui-icon-label">{busy && !preview ? "正在读取…" : "刷新用量"}</span></button></div>
-    <p className="settings-field-hint">只统计受管理文件的逻辑大小，实际磁盘释放量可能不同。清理需要先预览；导入目录、本地原件与正在使用的文件保留。</p>
-    {error && !preview && <p className="error-banner" role="alert">{error}</p>}
+    {error && !preview && <ErrorNotice message={error} />}
     {!overview && <p className="settings-field-hint" role="status">{busy ? "正在统计存储用量…" : "尚未读取存储用量，请刷新重试。"}</p>}
     {overview && <>
-      <div className="storage-categories">{categories.map(c => {
+      <div className="setting-label-help"><span>统计范围</span><HelpHint label="统计范围" text={<>数据库内另有 {formatBytes(overview.databaseMetadataBytes)} 的站点元数据与目录树（保留，不纳入文件清理）；数据库、日志及内存缓存不计入上方用量。无法访问或未登记的文件不估算大小。</>} /></div><div className="storage-categories">{categories.map(c => {
         const entries = overview.entries.filter(e => e.category === c.id);
         const bytes = entries.reduce((sum, e) => sum + e.bytes, 0);
         const eligible = entries.filter(e => !e.reason);
         return <div className="storage-category" key={c.id}>
-          <h4>{c.label}</h4><strong className="storage-size">{formatBytes(bytes)}</strong>
+          <div className="setting-label-help"><h4>{c.label}</h4><HelpHint label={c.label} text={<>{c.hint}</>} /></div><strong className="storage-size">{formatBytes(bytes)}</strong>
           <p className="settings-field-hint">{entries.length} 个文件 · 可清理 {formatBytes(eligible.reduce((sum, e) => sum + e.bytes, 0))}</p>
-          <p className="settings-field-hint storage-category-hint">{c.hint}</p>
           <button type="button" className="btn btn-secondary btn-sm" disabled={busy || !entries.length} aria-expanded={c.id === "offline" ? offlineOpen : undefined}
             onClick={() => c.id === "offline" ? setOfflineOpen(v => !v) : void prepare(c.id)}>{c.id === "offline" ? "管理离线文件" : `预览清理${c.id === "playback" ? "播放缓存" : c.id === "metadata" ? "元数据缓存" : "未完成下载"}`}</button>
         </div>;
       })}</div>
-      <p className="settings-field-hint">数据库内另有 {formatBytes(overview.databaseMetadataBytes)} 的站点元数据与目录树（保留，不纳入文件清理）；数据库、日志及内存缓存不计入上方用量。无法访问或未登记的文件不估算大小。</p>
       {overview.warnings.length > 0 && <details className="storage-details"><summary>有 {overview.warnings.length} 处无法完整统计</summary><ul>{overview.warnings.map((w,i) => <li key={i}>{w}</li>)}</ul></details>}
       {offlineOpen && <div className="storage-offline" role="region" aria-label="管理离线文件">
         <div className="storage-heading"><h4>选择要删除的下载副本</h4><span className="settings-field-hint">已选 {selected.size} 个</span></div>
@@ -135,8 +134,8 @@ function StoragePreviewDialog({ preview, category, busy, error, onClose, onConfi
     <div className="storage-file-list" tabIndex={0} aria-label="清理文件范围">{preview.entries.slice(0,limit).map(e => <div className="storage-preview-file" key={e.id}><span className="storage-path">{e.path}<small>{e.reason ? `保留 · ${e.reason}` : "将删除"}</small></span><span className="storage-file-size">{formatBytes(e.bytes)}</span></div>)}
       {!preview.entries.length && <p className="settings-field-hint">没有可清理的文件。</p>}
       {preview.entries.length > limit && <button type="button" className="btn btn-ghost btn-sm" onClick={() => setLimit(n => n + 50)}>显示更多文件（剩余 {preview.entries.length - limit} 个）</button>}</div>
-    {error && <p className="error-banner" role="alert">{error}</p>}
-    <footer className="storage-actions"><button ref={cancel} type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button>
+    {error && <ErrorNotice message={error} />}
+    <footer className="storage-actions dialog-actions"><button ref={cancel} type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button>
       <button type="button" className={`btn ${category === "offline" ? "btn-danger" : "btn-primary"}`} disabled={busy || !eligible.length} onClick={onConfirm}>{busy ? "正在清理…" : category === "offline" ? "删除所选离线副本" : "确认清理"}</button></footer>
   </dialog>, document.body);
 }

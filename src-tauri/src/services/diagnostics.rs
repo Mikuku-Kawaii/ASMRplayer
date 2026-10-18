@@ -78,6 +78,8 @@ const ERROR_CODES: &[ErrorCode] = &[
     ErrorCode::DiskFull,
     ErrorCode::FileLocked,
     ErrorCode::MediaDecodeFailed,
+    ErrorCode::AudioDeviceBusy,
+    ErrorCode::AudioOutputFailed,
     ErrorCode::MpvMissing,
     ErrorCode::MpvIpcError,
     ErrorCode::EncodingUnsupported,
@@ -288,6 +290,8 @@ mod tests {
     }
     #[test]
     fn missing_audio_and_bounded_recent_events_are_explicit_t1509() {
+        assert_eq!(error_category("[AudioDeviceBusy] 音频设备被占用"), json!("AUDIO_DEVICE_BUSY"));
+        assert_eq!(error_category("AUDIO_OUTPUT_FAILED"), json!("AUDIO_OUTPUT_FAILED"));
         let dir = tempdir().unwrap();
         let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
         let mut log = "X".repeat(160 * 1024);

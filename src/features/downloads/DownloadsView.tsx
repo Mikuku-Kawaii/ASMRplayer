@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   ShieldCheck,
+  ListX,
 } from "lucide-react";
 import {
   DownloadTaskDto,
@@ -24,6 +25,11 @@ interface DownloadsViewProps {
   onSelectWork: (workId: string) => void;
   onError: (err: AppError) => void;
 }
+type BulkAction = "resume" | "pause" | "cancel" | "clearCompleted";
+const bulkCommands: Record<BulkAction, string> = {
+  resume: "resume_all_download_tasks", pause: "pause_all_download_tasks", cancel: "cancel_all_download_tasks",
+  clearCompleted: "clear_completed_download_tasks",
+};
 
 export const DownloadsView: React.FC<DownloadsViewProps> = ({
   onSelectWork,
@@ -88,9 +94,12 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
 
   const [pending,setPending]=useState<string[]>([]);
   const active=useRef(new Set<string>());
+  const [bulkPending,setBulkPending]=useState<BulkAction | null>(null);
+  const bulkActive=useRef(false);
   const mutate=async(cmd:string,taskId:string,extra:Record<string,unknown>={})=>{
-    if(active.current.has(taskId))return;
+    if(bulkActive.current || active.current.has(taskId))return;
     active.current.add(taskId);setPending([...active.current]);
+    setLoading(false);
     const id=++request.current;
     try {
       const updated=await callCommand<DownloadTaskDto[]>(cmd,{taskId,...extra});
@@ -101,6 +110,22 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
   const handlePause=(id:string)=>mutate("pause_download_task",id);
   const handleResume=(id:string)=>mutate("resume_download_task",id);
   const handleCancel=(id:string)=>mutate("cancel_download_task",id);
+  const mutateAll=async(action:BulkAction)=>{
+    if(bulkActive.current || active.current.size)return;
+    bulkActive.current=true;setBulkPending(action);
+    const id=++request.current;
+    try {
+      const updated=await callCommand<DownloadTaskDto[]>(bulkCommands[action]);
+      if(mounted.current&&id===request.current)setTasks(updated);
+    }catch(e){
+      if(mounted.current){onError(normalizeAppError(e));await loadTasks();}
+    }finally{bulkActive.current=false;if(mounted.current)setBulkPending(null);}
+  };
+  const bulkDisabled=loading || bulkPending!==null || pending.length>0;
+  const canResume=tasks.some(task=>["paused","failed"].includes(task.status));
+  const canPause=tasks.some(task=>["queued","resolving","downloading","verifying","failed"].includes(task.status));
+  const canCancel=tasks.some(task=>!["completed","canceled"].includes(task.status));
+  const canClearCompleted=tasks.some(task=>task.status==="completed");
 
   const statusLabel = (s: string) => {
     switch (s) {
@@ -132,10 +157,27 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
           <div className="top-app-bar-title">
             <h2>离线下载任务管理</h2>
           </div>
-          <div className="action-group">
+          <div className="action-group downloads-toolbar-actions" aria-busy={bulkPending!==null}>
+            <button type="button" className="btn btn-primary btn-sm" disabled={bulkDisabled || !canResume} onClick={()=>void mutateAll("resume")}
+              title="继续所有已暂停或失败的任务，遵守下载时段与并发限制">
+              <Play size={14}/><span>全部继续</span>
+            </button>
+            <button type="button" className="btn btn-secondary btn-sm" disabled={bulkDisabled || !canPause} onClick={()=>void mutateAll("pause")}
+              title="暂停所有未完成任务，保留下载进度和 .part 临时文件">
+              <Pause size={14}/><span>全部暂停</span>
+            </button>
+            <button type="button" className="btn btn-ghost btn-sm" disabled={bulkDisabled || !canCancel} onClick={()=>void mutateAll("cancel")}
+              title="取消所有未完成任务并清理 .part 临时文件，保留已完成文件">
+              <XCircle size={14}/><span>全部取消</span>
+            </button>
+            <button type="button" className="btn btn-ghost btn-sm" disabled={bulkDisabled || !canClearCompleted} onClick={()=>void mutateAll("clearCompleted")}
+              title="仅从任务列表清除已完成记录，保留下载文件和音频库来源">
+              <ListX size={14}/><span>{bulkPending==="clearCompleted" ? "正在清除…" : "清除已完成任务"}</span>
+            </button>
             <button
               type="button"
               className="btn btn-secondary btn-sm"
+              disabled={bulkDisabled}
               onClick={() => void loadTasks()}
             >
               <RefreshCw size={14} />
@@ -238,7 +280,7 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
                       </span>
                     </div>
                   </td>
-                  <td><Select size="compact" aria-label={`${task.trackTitle} 下载优先级`} value={String(task.priority ?? 0)} disabled={pending.includes(task.id)||["completed","canceled"].includes(task.status)} options={[{value:"1",label:"优先"},{value:"0",label:"普通"},{value:"-1",label:"稍后"}]} onValueChange={value=>void mutate("set_download_priority",task.id,{priority:Number(value)})}/></td>
+                  <td><Select size="compact" aria-label={`${task.trackTitle} 下载优先级`} value={String(task.priority ?? 0)} disabled={bulkPending!==null || pending.includes(task.id)||["completed","canceled"].includes(task.status)} options={[{value:"1",label:"优先"},{value:"0",label:"普通"},{value:"-1",label:"稍后"}]} onValueChange={value=>void mutate("set_download_priority",task.id,{priority:Number(value)})}/></td>
                   <td>
                     <div className="tabular-nums">
                       {formatBytes(task.downloadedBytes)} /{" "}
@@ -261,7 +303,7 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
                         <button
                           type="button"
                           className="btn btn-secondary btn-sm"
-                          disabled={pending.includes(task.id)}
+                          disabled={bulkPending!==null || pending.includes(task.id)}
                           onClick={() => void handlePause(task.id)}
                           title="暂停下载并保留同目录 .part 分片"
                         >
@@ -273,7 +315,7 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
                         <button
                           type="button"
                           className="btn btn-primary btn-sm"
-                          disabled={pending.includes(task.id)}
+                          disabled={bulkPending!==null || pending.includes(task.id)}
                           onClick={() => void handleResume(task.id)}
                           title="继续下载，仍遵守当前下载时段与并发限制"
                         >
@@ -286,7 +328,7 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
                           <button
                             type="button"
                             className="btn btn-ghost btn-sm"
-                            disabled={pending.includes(task.id)}
+                            disabled={bulkPending!==null || pending.includes(task.id)}
                           onClick={() => void handleCancel(task.id)}
                             title="取消下载任务并自动清理未完成的 .part 临时文件"
                           >

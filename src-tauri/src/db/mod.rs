@@ -6,6 +6,7 @@ pub mod queue_plans;
 pub mod shortcuts;
 pub mod listening;
 pub mod affinity;
+pub mod subtitles;
 
 use crate::domain::{redact_sensitive, AppError, AppResult, ErrorCode};
 use chrono::Utc;
@@ -67,6 +68,10 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (15, "015_favorite_versions", include_str!("../../migrations/015_favorite_versions.sql")),
     (16, "016_detached_root_sources", include_str!("../../migrations/016_detached_root_sources.sql")),
     (17, "017_synced_content_flags", include_str!("../../migrations/017_synced_content_flags.sql")),
+    (18, "018_generated_subtitles", include_str!("../../migrations/018_generated_subtitles.sql")),
+    (19, "019_download_attachments", include_str!("../../migrations/019_download_attachments.sql")),
+    (20, "020_library_query_covering_indexes", include_str!("../../migrations/020_library_query_covering_indexes.sql")),
+    (21, "021_download_task_dismissals", include_str!("../../migrations/021_download_task_dismissals.sql")),
 ];
 
 #[derive(Clone)]
@@ -329,6 +334,30 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn attachment_download_upgrade_preserves_existing_audio_tasks() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        let mut conn = Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE _schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL);").unwrap();
+        for (version,name,sql) in MIGRATIONS.iter().filter(|(v,_,_)|*v<=18) {
+            conn.execute_batch(sql).unwrap();
+            conn.execute("INSERT INTO _schema_migrations VALUES(?1,?2,'now')",params![version,name]).unwrap();
+        }
+        conn.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('w','work','now','now');
+            INSERT INTO tracks(id,work_id,title,sort_key,created_at) VALUES('t','w','track','1','now');
+            INSERT INTO track_versions(id,track_id,created_at) VALUES('v','t','now');
+            INSERT INTO media_sources(id,version_id,source_kind,format,created_at,updated_at) VALUES('s','v','online_provider','mp3','now','now');
+            INSERT INTO downloads(id,work_id,version_id,source_id,status,temp_relative_path,target_relative_path,downloaded_bytes,etag,priority,next_retry_at,created_at,updated_at)
+            VALUES('d','w','v','s','paused','track.mp3.part','track.mp3',123,'validator',1,'later','now','now');").unwrap();
+        Database::run_migrations(&mut conn,&path,true).unwrap();
+        let row:(String,String,i64,String,i64,String) = conn.query_row(
+            "SELECT version_id,source_id,downloaded_bytes,etag,priority,next_retry_at FROM downloads WHERE id='d'",[],
+            |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).unwrap();
+        assert_eq!(row,("v".into(),"s".into(),123,"validator".into(),1,"later".into()));
+        assert!(conn.prepare("PRAGMA foreign_key_check").unwrap().query([]).unwrap().next().unwrap().is_none());
+    }
+
+    #[test]
     fn upgrade_backup_contains_uncheckpointed_wal_records_t1405() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("asmr_player.db");
@@ -391,6 +420,64 @@ mod tests {
         let applied_second =
             Database::run_migrations(&mut conn2, &data_dir.join("asmr_player.db"), true).unwrap();
         assert_eq!(applied_second, 0);
+    }
+
+    #[test]
+    fn t1540_download_task_dismissal_upgrade_preserves_history_and_is_idempotent() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("v20.db");
+        let mut conn = Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE _schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL);").unwrap();
+        for (version, name, sql) in MIGRATIONS.iter().filter(|(v, _, _)| *v <= 20) {
+            conn.execute_batch(sql).unwrap();
+            conn.execute("INSERT INTO _schema_migrations VALUES(?1,?2,'now')", params![version,name]).unwrap();
+        }
+        conn.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('w','Work','now','now');
+            INSERT INTO attachments(id,work_id,attachment_type,title,created_at) VALUES('a','w','text','notes','now');
+            INSERT INTO downloads(id,work_id,attachment_id,status,temp_relative_path,target_relative_path,downloaded_bytes,created_at,updated_at)
+            VALUES('d','w','a','completed','notes.part','notes',123,'now','now');").unwrap();
+        assert_eq!(Database::run_migrations(&mut conn, &path, true).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT downloaded_bytes FROM downloads WHERE id='d'",[],|r|r.get::<_,i64>(0)).unwrap(),123);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM download_task_dismissals",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        conn.execute("INSERT INTO download_task_dismissals VALUES('d','now')",[]).unwrap();
+        assert_eq!(Database::run_migrations(&mut conn, &path, true).unwrap(), 0);
+        conn.execute_batch(include_str!("../../migrations/021_download_task_dismissals.sql")).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM download_task_dismissals",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert!(conn.execute("INSERT INTO download_task_dismissals VALUES('unknown','now')",[]).is_err());
+        conn.execute("DELETE FROM downloads WHERE id='d'",[]).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM download_task_dismissals",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM attachments",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    }
+
+    #[test]
+    fn t1515_covering_index_upgrade_preserves_records_and_is_idempotent() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        let mut conn = Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE _schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL);").unwrap();
+        for (version, name, sql) in MIGRATIONS.iter().filter(|(v, _, _)| *v < 20) {
+            conn.execute_batch(sql).unwrap();
+            conn.execute("INSERT INTO _schema_migrations VALUES(?1,?2,'now')", params![version,name]).unwrap();
+        }
+        conn.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('w','Title','now','now');
+            INSERT INTO tracks(id,work_id,title,sort_key,created_at) VALUES('t','w','Track','1','now');
+            INSERT INTO track_versions(id,track_id,created_at) VALUES('v','t','now');
+            INSERT INTO playback_positions(version_id,position_ms,completed,ever_completed,updated_at) VALUES('v',1234,0,1,'now');").unwrap();
+        assert_eq!(Database::run_migrations(&mut conn, &path, true).unwrap(), MIGRATIONS.iter().filter(|(v, _, _)| *v >= 20).count());
+        assert_eq!(Database::run_migrations(&mut conn, &path, true).unwrap(), 0);
+        // The SQL itself can safely be replayed too; only indexes are replaced.
+        conn.execute_batch(include_str!("../../migrations/020_library_query_covering_indexes.sql")).unwrap();
+        for (index, expected) in [
+            ("idx_tracks_work_id", vec!["work_id", "logical_dir_path", "id"]),
+            ("idx_track_versions_track_id", vec!["track_id", "id"]),
+        ] {
+            let columns = conn.prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno").unwrap()
+                .query_map([index], |r| r.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+            assert_eq!(columns, expected);
+        }
+        let saved: (i64, bool) = conn.query_row("SELECT position_ms,ever_completed FROM playback_positions WHERE version_id='v'", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(saved, (1234, true));
+        assert!(conn.prepare("PRAGMA foreign_key_check").unwrap().query([]).unwrap().next().unwrap().is_none());
     }
 
     #[test]

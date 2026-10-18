@@ -60,6 +60,7 @@ pub struct BackupStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RestoreScope {
+    Subtitles,
     Favorites,
     Positions,
     Bookmarks,
@@ -175,6 +176,37 @@ mod tests {
     }
     fn bundle(s: &BackupService) -> UserBackupBundleDto {
         s.db.export_user_backup().unwrap()
+    }
+    #[test]
+    fn t1513_subtitle_backup_roundtrip_scope_validation_and_existing_edits_survive() {
+        use crate::db::subtitles::SubtitleDocument;
+        let (_dir,s)=fixture();
+        let mut doc=SubtitleDocument::new("v".into(),"external:fixture".into(),vec![SubtitleCueDto {index:19,start_ms:100,end_ms:900,text:"原文".into()}],true);
+        doc.original_corrections.insert(19,"用户修正".into()); doc.translation_corrections.insert(19,"译文修正".into());
+        s.db.save_subtitle_document(&doc).unwrap();
+        let exported=bundle(&s); assert_eq!(exported.subtitle_documents.len(),1);
+        let encrypted=encrypt_backup_bundle(&exported,"test-passphrase").unwrap();
+        let exported=decrypt_backup_bundle(&encrypted,"test-passphrase").unwrap();
+        s.db.with_conn(|c|{c.execute("DELETE FROM subtitle_documents",[])?;Ok(())}).unwrap();
+        let p=preview(&s,&exported); assert_eq!(p.matched.unwrap().subtitles_restored,1);
+        s.restore(p.token.as_deref().unwrap(),vec![RestoreScope::Bookmarks]).unwrap();
+        assert!(s.db.subtitle_document("v",&doc.source_key).unwrap().is_none());
+        let p=preview(&s,&exported);
+        let result=s.restore(p.token.as_deref().unwrap(),vec![RestoreScope::Subtitles]).unwrap();
+        assert_eq!(result.report.subtitles_restored,1);
+        assert_eq!(s.db.subtitle_document("v",&doc.source_key).unwrap().unwrap().rendered(),doc.rendered());
+        // A stale inference checkpoint cannot erase corrections restored in the meantime.
+        let mut stale=doc.clone(); stale.original_corrections.clear(); stale.translation_corrections.clear(); stale.translations.insert(19,"旧自动译文".into());
+        s.db.save_subtitle_document(&stale).unwrap();
+        assert_eq!(s.db.subtitle_document("v",&doc.source_key).unwrap().unwrap().rendered(),doc.rendered());
+        let p=preview(&s,&exported); assert_eq!(p.matched.unwrap().subtitles_skipped,1);
+        let result=s.restore(p.token.as_deref().unwrap(),vec![RestoreScope::Subtitles]).unwrap(); assert_eq!(result.report.subtitles_restored,0);
+        let mut bad=exported.clone(); bad.subtitle_documents[0].document.original[0].end_ms=0;
+        assert!(!preview(&s,&bad).compatible);
+        let mut unmatched=exported.clone(); unmatched.subtitle_documents[0].document.version_id="missing-version".into();
+        assert_eq!(preview(&s,&unmatched).matched.unwrap().subtitles_skipped,1);
+        let mut legacy=serde_json::to_value(&exported).unwrap(); legacy.as_object_mut().unwrap().remove("subtitleDocuments");
+        let legacy:UserBackupBundleDto=serde_json::from_value(legacy).unwrap(); assert!(legacy.subtitle_documents.is_empty());
     }
     fn preview(s: &BackupService, b: &UserBackupBundleDto) -> RestorePreview {
         s.preview(Some(serde_json::to_string(b).unwrap()), None, None)
@@ -412,6 +444,13 @@ fn save(conn: &rusqlite::Connection, state: &State) -> AppResult<()> {
     Ok(())
 }
 fn validate(bundle: &UserBackupBundleDto) -> AppResult<()> {
+    let mut subtitle_keys = HashSet::new();
+    for record in &bundle.subtitle_documents {
+        record.document.validate()?;
+        if DateTime::parse_from_rfc3339(&record.updated_at).is_err() || !subtitle_keys.insert((&record.document.version_id, &record.document.source_key)) {
+            return Err(invalid("备份字幕时间无效或文档重复"));
+        }
+    }
     if bundle.schema_version != 1 {
         return Err(invalid("不支持此备份格式版本，请使用匹配版本的播放器"));
     }
@@ -463,6 +502,7 @@ fn validate(bundle: &UserBackupBundleDto) -> AppResult<()> {
 fn counts(b: &UserBackupBundleDto) -> Vec<RestoreCount> {
     use RestoreScope::*;
     [
+        (Subtitles, b.subtitle_documents.len()),
         (Favorites, b.favorites.len() + b.favorite_versions.len()),
         (Positions, b.playback_positions.len()),
         (Bookmarks, b.bookmarks.len()),
@@ -478,6 +518,7 @@ fn counts(b: &UserBackupBundleDto) -> Vec<RestoreCount> {
 }
 fn select(mut b: UserBackupBundleDto, scopes: &[RestoreScope]) -> UserBackupBundleDto {
     use RestoreScope::*;
+    if !scopes.contains(&Subtitles) { b.subtitle_documents.clear(); }
     if !scopes.contains(&Favorites) {
         b.favorites.clear();
         b.favorite_versions.clear();

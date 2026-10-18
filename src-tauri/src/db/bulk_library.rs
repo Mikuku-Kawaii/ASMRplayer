@@ -6,22 +6,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use uuid::Uuid;
 
-pub(super) fn listening_states(
-    conn: &Connection,
-) -> AppResult<std::collections::HashMap<String, bool>> {
-    let mut states = std::collections::HashMap::new();
-    let mut stmt = conn.prepare("SELECT work_id FROM work_playback_state UNION SELECT t.work_id FROM tracks t JOIN track_versions v ON v.track_id=t.id JOIN playback_positions p ON p.version_id=v.id WHERE p.position_ms>0 OR p.completed=1")?;
-    for id in stmt.query_map([], |r| r.get::<_, String>(0))? {
-        states.insert(id?, true);
-    }
-    let mut stmt = conn.prepare("SELECT work_id,listened FROM work_listening_marks")?;
-    for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))? {
-        let (id, value) = row?;
-        states.insert(id, value);
-    }
-    Ok(states)
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum BulkAction {

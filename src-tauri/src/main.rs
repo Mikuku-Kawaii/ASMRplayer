@@ -79,15 +79,19 @@ pub fn run() {
                 downloads.clone(),
             );
 
-            playback.attach_app_handle(app.handle().clone());
             downloads.attach_app_handle(app.handle().clone());
             let updater = UpdateService::new(db.clone(), app.handle().clone())?;
             let bg_updater = updater.clone();
             let bg_backups = session.backups.clone();
             let island = services::island::IslandService::new(db.clone(), app.handle().clone());
+            let recognition = services::recognition::RecognitionService::new(db.clone(), data_dir.clone(), &app.config().identifier);
+            let subtitle_tasks = services::subtitle_tasks::SubtitleTaskService::new(db.clone(), recognition.clone(), playback.clone(), provider.clone());
+            subtitle_tasks.spawn_automatic();
             // WebViews can invoke commands as soon as they load. Register every
             // service before creating either window or doing any window initialization.
             app.manage(AppState {
+                window_placement: services::window_placement::WindowPlacementService::new(db.clone()),
+                recognition, subtitle_tasks,
                 db: db.clone(), library: library.clone(), provider: provider.clone(),
                 playback: playback.clone(), downloads: downloads.clone(), session,
                 updater, island: island.clone(),
@@ -99,6 +103,9 @@ pub fn run() {
                         .zoom_hotkeys_enabled(false).visible(false).build()?;
                 }
             }
+            // SMTC GetForWindow needs the main HWND. All windows use create=false,
+            // so binding before this loop silently left the native session absent.
+            playback.attach_app_handle(app.handle().clone());
             if let Some(island_win) = app.get_webview_window("island") {
                 island.prepare_window(&island_win).map_err(|e| e.message)?;
             }
@@ -217,6 +224,7 @@ pub fn run() {
                         }
                         let pb = app_handle.state::<AppState>().playback.clone();
                         let handle_clone = app_handle.clone();
+                        app_handle.state::<AppState>().subtitle_tasks.shutdown();
                         tauri::async_runtime::spawn(async move {
                             pb.shutdown().await;
                             handle_clone.exit(0);
@@ -247,6 +255,18 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
+            WindowEvent::ScaleFactorChanged { .. } if window.label() == "island" => {
+                if let Some(state) = window.app_handle().try_state::<AppState>() {
+                    let island = state.island.clone();
+                    // Layout queries call into the UI thread. Never wait for
+                    // the layout lock from a native window callback.
+                    tauri::async_runtime::spawn_blocking(move || {
+                        if let Err(error) = island.refresh_viewport() {
+                            eprintln!("Island DPI layout: {error}");
+                        }
+                    });
+                }
+            }
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                 if window.label() == "island" {
                     if let WindowEvent::Moved(position) = event {
@@ -296,6 +316,7 @@ pub fn run() {
                     api.prevent_close();
                     let pb = state.playback.clone();
                     let handle_clone = app_handle.clone();
+                    state.subtitle_tasks.shutdown();
                     tauri::async_runtime::spawn(async move {
                         pb.shutdown().await;
                         handle_clone.exit(0);
@@ -305,6 +326,50 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            commands::recognition::get_editable_subtitle,
+            commands::recognition::preview_subtitle_sync,
+            commands::recognition::sync_recognized_subtitles,
+            commands::recognition::edit_subtitle_cue,
+            commands::recognition::export_subtitle_document,
+            commands::recognition::get_subtitle_readiness,
+            commands::recognition::prepare_subtitle_tasks,
+            commands::recognition::start_subtitle_tasks,
+            commands::recognition::inspect_subtitle_tasks,
+            commands::recognition::delete_generated_subtitles,
+            commands::recognition::import_local_subtitle,
+            commands::recognition::preview_script_alignment,
+            commands::recognition::list_local_scripts,
+            commands::recognition::read_online_script,
+            commands::recognition::read_local_script,
+            commands::recognition::export_script_alignment,
+            commands::recognition::download_recognition_runtime,
+            commands::recognition::get_subtitle_task,
+            commands::recognition::start_subtitle_task,
+            commands::recognition::cancel_subtitle_task,
+            commands::recognition::get_recognition_snapshot,
+            commands::recognition::save_recognition_settings,
+            commands::recognition::save_subtitle_preferences,
+            commands::recognition::get_subtitle_work_context,
+            commands::recognition::add_subtitle_glossary_term,
+            commands::recognition::apply_subtitle_correction_rules,
+            commands::recognition::save_deepseek_key,
+            commands::recognition::clear_deepseek_key,
+            commands::recognition::check_deepseek_connection,
+            commands::recognition::check_ollama_connection,
+            commands::recognition::install_ollama,
+            commands::recognition::download_recognition_model,
+            commands::recognition::download_whisper_model,
+            commands::recognition::download_ct2_model,
+            commands::recognition::check_ct2_model,
+            commands::recognition::download_sensevoice_fp16,
+            commands::recognition::delete_recognition_model,
+            commands::recognition::delete_ollama_model,
+            commands::recognition::check_sensevoice_gpu,
+            commands::recognition::import_recognition_model,
+            commands::recognition::download_translation_model,
+            commands::recognition::download_translation_model_alternative,
+            commands::recognition::import_translation_gguf,
+            commands::recognition::cancel_model_download,
             commands::get_interface_scale,
             commands::set_interface_scale,
             commands::get_window_maximized,
@@ -387,6 +452,8 @@ pub fn run() {
             commands::preview_queue_plan,
             commands::apply_queue_plan,
             commands::restart_player_engine,
+            commands::get_engine_maintenance,
+            commands::set_engine_maintenance,
             commands::set_sleep_timer,
             commands::set_ab_loop,
             commands::clear_ab_loop,
@@ -417,6 +484,10 @@ pub fn run() {
             commands::pause_download_task,
             commands::resume_download_task,
             commands::cancel_download_task,
+            commands::resume_all_download_tasks,
+            commands::pause_all_download_tasks,
+            commands::cancel_all_download_tasks,
+            commands::clear_completed_download_tasks,
             commands::associate_works,
             commands::associate_versions,
             commands::undo_association,
@@ -442,6 +513,7 @@ pub fn run() {
             commands::get_dsp_state,
             commands::update_dsp_config,
             commands::apply_dsp_preset,
+            commands::set_loudness_normalization,
             commands::import_autoeq_text,
             commands::clear_autoeq_bands,
             commands::save_custom_dsp_preset,
@@ -555,6 +627,9 @@ fn run_smoke_test(work_dir: &str, data_dir_str: &str) -> Result<(), String> {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() == 4 && args[1] == "--sensevoice-gpu-worker" {
+        std::process::exit(services::sensevoice_gpu::worker_main(std::path::Path::new(&args[2]), &args[3]));
+    }
     if args.len() >= 4 && args[1] == "--smoke-test" {
         match run_smoke_test(&args[2], &args[3]) {
             Ok(()) => std::process::exit(0),

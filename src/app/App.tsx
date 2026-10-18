@@ -1,3 +1,5 @@
+import { SubtitleActions } from "../features/player/useSubtitleActions";
+import { useActiveSubtitles } from "../features/lyrics/useActiveSubtitles";
 import { useSubtitleFollow } from "../features/lyrics/useSubtitleFollow";
 import { BrandButton } from "./BrandButton";
 import React, { useEffect, useState, useRef, useCallback } from "react";
@@ -19,6 +21,8 @@ import {
   SkipBack,
   SkipForward,
   Maximize2,
+  CloudDownload,
+  FolderOpen,
   Subtitles,
   ListMusic,
   AppWindow,
@@ -27,18 +31,16 @@ import {
 import {
   PlaybackSnapshot,
   PlaybackTickDto,
-  SubtitleCueDto,
-  AutoMatchedSubtitleDto,
   WorkDetailDto,
   defaultSnapshot,
   callCommand,
   formatDurationMs,
-  findBestSubtitleInAttachments,
   subscribePlaybackSnapshot,
   subscribePlaybackTick,
   subscribeIslandVisibility,
   subscribeWindowMaximized,
   normalizeAppError,
+  isTauriRuntime,
   AppError,
 } from "../lib/api";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -47,6 +49,8 @@ import { RightDrawer } from "../features/player/RightDrawer";
 import { LibraryView } from "../features/library/LibraryView";
 import { WorkDetailView } from "../features/library/WorkDetailView";
 import { OnlineView } from "../features/online/OnlineView";
+import { usePagePreferences } from "./usePagePreferences";
+import { usePageScroll } from "./usePageScroll";
 import { DownloadsView } from "../features/downloads/DownloadsView";
 import { SettingsView } from "../features/settings/SettingsView";
 import { useUpdater } from "../features/settings/useUpdater";
@@ -108,10 +112,25 @@ const AppShell: React.FC = () => {
   const [immersiveCoverUrl, setImmersiveCoverUrl] = useState<string | null>(
     null
   );
-  const [immersiveCues, setImmersiveCues] = useState<SubtitleCueDto[]>([]);
   const [isFetchingStageSubtitles, setIsFetchingStageSubtitles] =
     useState<boolean>(false);
   const [subtitleRefreshTick, setSubtitleRefreshTick] = useState<number>(0);
+  const immersiveCues = useActiveSubtitles(snapshot.currentVersionId, subtitleRefreshTick);
+  const { onlinePage, setOnlinePage, settingsSection, setSettingsSection, visibleCounts, setVisibleCounts,
+    pageSearches, setPageSearches, onlineSearch, setOnlineSearch,
+    pageFilters, setPageFilters, onlineFilters, setOnlineFilters, libraryCollection, setLibraryCollection } = usePagePreferences();
+  const changeVisibleCount = useCallback((page: string, update: React.SetStateAction<number>) => {
+    setVisibleCounts(previous => ({ ...previous, [page]: typeof update === "function" ? update(previous[page] ?? 24) : update }));
+  }, [setVisibleCounts]);
+  const setLibraryVisibleCount = useCallback((update: React.SetStateAction<number>) => changeVisibleCount("library", update), [changeVisibleCount]);
+  const setFavoritesVisibleCount = useCallback((update: React.SetStateAction<number>) => changeVisibleCount("favorites", update), [changeVisibleCount]);
+  const setRecentVisibleCount = useCallback((update: React.SetStateAction<number>) => changeVisibleCount("recent", update), [changeVisibleCount]);
+  const updatePageFilters = (page: keyof typeof pageFilters, value: string[]) => {
+    setPageFilters(previous => ({ ...previous, [page]: value }));
+  };
+  const updatePageSearch = (page: keyof typeof pageSearches, value: string) => {
+    setPageSearches(previous => ({ ...previous, [page]: value }));
+  };
 
   // External CV / Tag search payload from WorkDetailView
   const [externalSearch, setExternalSearch] = useState<{
@@ -119,7 +138,13 @@ const AppShell: React.FC = () => {
     seq: number;
   } | null>(null);
 
+  const searchRequestSeqRef = useRef(0);
+  const handleOnlineSearchHandled = useCallback((seq: number) => {
+    setExternalSearch(current => current?.seq === seq ? null : current);
+  }, []);
+
   const mainRef = useRef<HTMLElement | null>(null);
+  usePageScroll(mainRef, selectedWorkId ? `detail:${selectedWorkId}` : activeNav === "settings" ? null : activeNav);
   const detailHistoryRef = useRef<
     Array<{ workId: string | null; scrollTop: number; nav?: NavPage }>
   >([]);
@@ -136,7 +161,7 @@ const AppShell: React.FC = () => {
       } else if (next.state === "error") {
         setGlobalError({
           code: "MPV_ENGINE_ERROR",
-          message: "播放引擎异常中断，可点击「重启引擎」无损恢复当前进度",
+          message: "播放引擎异常中断，可尝试重启引擎后继续播放",
           retryable: true,
           hint: null,
         });
@@ -200,76 +225,20 @@ const AppShell: React.FC = () => {
     };
   }, [applySnapshot, applyTick]);
 
-  // Load work cover & synchronized subtitle cues for Immersive Stage & Mini-Player
   useEffect(() => {
     let cancelled = false;
-    setImmersiveCues([]);
-    if (!snapshot.currentWorkId) {
-      setImmersiveCoverUrl(null);
-      setImmersiveCues([]);
-      return;
-    }
-    void callCommand<WorkDetailDto | null>("get_work_detail", {
-      workId: snapshot.currentWorkId,
-    })
-      .then(async (detail) => {
-        if (cancelled || !detail) return;
-        setImmersiveCoverUrl(detail.coverRef ?? null);
-
-        if (snapshot.currentVersionId) {
-          try {
-            const autoMatched = await callCommand<AutoMatchedSubtitleDto | null>(
-              "auto_match_subtitle_for_version",
-              { versionId: snapshot.currentVersionId }
-            );
-            if (cancelled) return;
-            if (autoMatched && Array.isArray(autoMatched.cues)) {
-              setImmersiveCues(autoMatched.cues);
-              return;
-            }
-          } catch {
-            // Fallback to client-side attachment matching below
-          }
-        }
-
-        const subAtt = findBestSubtitleInAttachments(
-          detail.attachments,
-          snapshot.currentVersionId,
-          snapshot.currentTrackTitle
-        );
-        if (subAtt) {
-          const cues = await callCommand<SubtitleCueDto[] | null>(
-            "load_subtitle_cues",
-            {
-              attachmentId: subAtt.id,
-              offsetMs: subAtt.subtitleOffsetMs ?? 0,
-            }
-          );
-          if (!cancelled && Array.isArray(cues)) {
-            setImmersiveCues(cues);
-          }
-        } else {
-          setImmersiveCues([]);
-        }
-      })
-      .catch(() => {
-        // Non-Tauri unit test environment fallback
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    snapshot.currentWorkId,
-    snapshot.currentVersionId,
-    snapshot.currentTrackTitle,
-    subtitleRefreshTick,
-  ]);
+    setImmersiveCoverUrl(null);
+    if (snapshot.currentWorkId) void callCommand<WorkDetailDto | null>("get_work_detail", { workId: snapshot.currentWorkId })
+      .then(detail => { if (!cancelled) setImmersiveCoverUrl(detail?.coverRef ?? null); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [snapshot.currentWorkId]);
 
   const lastMediaSessionPosSyncRef = useRef<number>(0);
 
-  // Sync Web MediaSession metadata & transport/seek action handlers (decoupled from snapshot.state so Pause never resets metadata)
+  // Desktop transport belongs to the host's HWND-bound SMTC session. The Web
+  // MediaSession is only a browser-preview fallback, never a second OS session.
   useEffect(() => {
-    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) {
+    if (isTauriRuntime() || typeof navigator === "undefined" || !("mediaSession" in navigator)) {
       return;
     }
     const mode = snapshot.smtcMode ?? "full";
@@ -365,7 +334,7 @@ const AppShell: React.FC = () => {
 
   // Sync MediaSession playbackState and timeline position (throttled to ~1s during playback, immediate on state/duration change, preserving position on pause)
   useEffect(() => {
-    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) {
+    if (isTauriRuntime() || typeof navigator === "undefined" || !("mediaSession" in navigator)) {
       return;
     }
     const mode = snapshot.smtcMode ?? "full";
@@ -426,9 +395,6 @@ const AppShell: React.FC = () => {
         nav: activeNav,
       });
       setSelectedWorkId(workId);
-      if (mainRef.current) {
-        mainRef.current.scrollTop = 0;
-      }
     },
     [selectedWorkId, activeNav]
   );
@@ -450,7 +416,7 @@ const AppShell: React.FC = () => {
 
   // Jump from WorkDetailView CV/Tag pill to search while preserving detail history stack
   const handleSearchKeywordFromDetail = useCallback(
-    (keyword: string, preferOnline?: boolean) => {
+    (keyword: string) => {
       const trimmed = keyword.trim();
       if (!trimmed) return;
       setIsImmersiveOpen(false);
@@ -462,16 +428,11 @@ const AppShell: React.FC = () => {
         });
       }
       setSelectedWorkId(null);
-      const targetNav: NavPage =
-        activeNav === "online" || preferOnline ? "online" : "library";
-      setActiveNav(targetNav);
-      setExternalSearch((prev) => ({
+      setActiveNav("online");
+      setExternalSearch({
         keyword: trimmed,
-        seq: (prev?.seq ?? 0) + 1,
-      }));
-      if (mainRef.current) {
-        mainRef.current.scrollTop = 0;
-      }
+        seq: ++searchRequestSeqRef.current,
+      });
     },
     [selectedWorkId, activeNav]
   );
@@ -647,8 +608,9 @@ const AppShell: React.FC = () => {
   const handleRestartEngine = async () => {
     try {
       const next = await callCommand<PlaybackSnapshot>("restart_player_engine");
-      applySnapshot(next);
+      if (next.eventSeq < lastEventSeqRef.current) return;
       setGlobalError(null);
+      applySnapshot(next);
     } catch (e) {
       setGlobalError(normalizeAppError(e));
     }
@@ -1112,10 +1074,11 @@ const AppShell: React.FC = () => {
                   )}
                   <button
                     type="button"
-                    className="btn btn-icon" title="字幕设置" aria-label="字幕设置"
+                    className="btn btn-icon" title="字幕台本" aria-label="字幕台本"
+                    data-drawer-trigger="subtitles"
                     onClick={() => handleToggleDrawer("subtitles")}
                   >
-                    <Settings size={19} aria-hidden="true" />
+                    <Subtitles size={19} aria-hidden="true" />
                   </button>
                   <button
                     type="button"
@@ -1131,33 +1094,33 @@ const AppShell: React.FC = () => {
                 {immersiveCues.length === 0 ? (
                   <div className="immersive-empty-lyrics">
                     <p>当前音轨暂无已匹配的同步字幕 (.lrc / .srt / .vtt)</p>
-                    <div className="track-actions">
-                      {snapshot.currentWorkId && (
+                    <SubtitleActions tiles versionIds={snapshot.currentVersionId ? [snapshot.currentVersionId] : []}>
                         <button
                           type="button"
-                          className="btn btn-primary btn-sm"
-                          disabled={isFetchingStageSubtitles}
+                          className="btn btn-primary"
+                          disabled={!snapshot.currentWorkId || isFetchingStageSubtitles}
                           onClick={() =>
                             void handleFetchOnlineSubtitlesInStage()
                           }
                         >
-                          <Subtitles size={14} />
-                          <span>
+                          <CloudDownload size={30} aria-hidden="true" />
+                          <span className="ui-icon-label">
                             {isFetchingStageSubtitles
                               ? "正在抓取字幕…"
                               : "抓取云端字幕"}
                           </span>
                         </button>
-                      )}
                       <button
                         type="button"
-                        className="btn btn-secondary btn-sm"
+                        className="btn btn-secondary"
+                        title="打开字幕抽屉或匹配本地字幕"
+                        data-drawer-trigger="subtitles"
                         onClick={() => handleToggleDrawer("subtitles")}
                       >
-                        <Subtitles size={14} />
-                        <span>打开字幕抽屉或匹配本地字幕</span>
+                        <FolderOpen size={30} aria-hidden="true" />
+                        <span className="ui-icon-label">打开字幕台本</span>
                       </button>
-                    </div>
+                    </SubtitleActions>
                   </div>
                 ) : (
                   <ul className="immersive-lyrics-list">
@@ -1244,9 +1207,16 @@ const AppShell: React.FC = () => {
           >
             {activeNav === "library" ? (
               <LibraryView
+                key="library"
+                collectionState={libraryCollection}
+                onCollectionStateChange={setLibraryCollection}
+                savedVisibleCount={visibleCounts.library} onVisibleCountChange={setLibraryVisibleCount}
+                selectedTags={pageFilters.library}
+                onSelectedTagsChange={value => updatePageFilters("library", value)}
+                searchQuery={pageSearches.library}
+                onSearchQueryChange={value => updatePageSearch("library", value)}
                 filterMode="all"
                 refreshTick={libraryRefreshTick}
-                externalSearch={externalSearch}
                 canReturnToDetail={canReturnToDetail}
                 onReturnToDetail={handleBackFromDetail}
                 onSelectWork={handleOpenWorkDetail}
@@ -1260,6 +1230,12 @@ const AppShell: React.FC = () => {
               />
             ) : activeNav === "favorites" ? (
               <LibraryView
+                key="favorites"
+                savedVisibleCount={visibleCounts.favorites} onVisibleCountChange={setFavoritesVisibleCount}
+                selectedTags={pageFilters.favorites}
+                onSelectedTagsChange={value => updatePageFilters("favorites", value)}
+                searchQuery={pageSearches.favorites}
+                onSearchQueryChange={value => updatePageSearch("favorites", value)}
                 filterMode="favorites"
                 refreshTick={libraryRefreshTick}
                 canReturnToDetail={canReturnToDetail}
@@ -1275,6 +1251,12 @@ const AppShell: React.FC = () => {
               />
             ) : activeNav === "recent" ? (
               <LibraryView
+                key="recent"
+                savedVisibleCount={visibleCounts.recent} onVisibleCountChange={setRecentVisibleCount}
+                selectedTags={pageFilters.recent}
+                onSelectedTagsChange={value => updatePageFilters("recent", value)}
+                searchQuery={pageSearches.recent}
+                onSearchQueryChange={value => updatePageSearch("recent", value)}
                 filterMode="recent"
                 refreshTick={libraryRefreshTick}
                 canReturnToDetail={canReturnToDetail}
@@ -1290,7 +1272,13 @@ const AppShell: React.FC = () => {
               />
             ) : activeNav === "online" ? (
               <OnlineView
+                savedPage={onlinePage} onPageChange={setOnlinePage}
+                filterState={onlineFilters}
+                onFilterStateChange={setOnlineFilters}
+                searchState={onlineSearch}
+                onSearchStateChange={setOnlineSearch}
                 externalSearch={externalSearch}
+                onExternalSearchHandled={handleOnlineSearchHandled}
                 canReturnToDetail={canReturnToDetail}
                 onReturnToDetail={handleBackFromDetail}
                 onOpenWorkDetail={handleOpenWorkDetail}
@@ -1307,7 +1295,8 @@ const AppShell: React.FC = () => {
                 onError={setGlobalError}
               />
             ) : (
-              <SettingsView onError={setGlobalError} />
+              <SettingsView onError={setGlobalError} initialSection={settingsSection} onSectionChange={setSettingsSection}
+                searchQuery={pageSearches.settings} onSearchQueryChange={value => updatePageSearch("settings", value)} />
             )}
           </div>
         </main>
@@ -1318,6 +1307,7 @@ const AppShell: React.FC = () => {
           snapshot={snapshot}
           onSnapshotChange={applySnapshot}
           onOpenWorkDetail={handleOpenWorkDetail}
+          onOpenRecognitionSettings={() => { setIsImmersiveOpen(false); updatePageSearch("settings", ""); setSettingsSection("recognition-translation"); setSelectedWorkId(null); setActiveNav("settings"); setDrawerTab("none"); }}
           onSubtitlesChanged={() => setSubtitleRefreshTick((t) => t + 1)}
           onError={setGlobalError}
         />
