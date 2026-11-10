@@ -25,8 +25,8 @@ export interface SubtitleWorkContext { versionId: string; workId: string; title:
 export interface SubtitlePreferencesDto {
   recognitionEngine: "sensevoice" | "sensevoice_fp16" | "whisper" | "faster_whisper" | "kotoba_whisper";
   recognitionContext: boolean;
+  rerecognitionContext?: "standard" | "extended";
   language: string;
-  quietSpeech: boolean;
   translationStyle: string;
   translationPunctuation: string;
   glossary: SubtitleTerm[];
@@ -35,8 +35,8 @@ export interface SubtitlePreferencesDto {
   corrections: SubtitleTerm[];
 }
 export const defaultSubtitlePreferences: SubtitlePreferencesDto = {
-  recognitionEngine: "sensevoice", recognitionContext: true,
-  language: "ja", quietSpeech: false, translationStyle: "faithful", translationPunctuation: "standard",
+  recognitionEngine: "sensevoice", recognitionContext: true, rerecognitionContext: "standard",
+  language: "ja", translationStyle: "faithful", translationPunctuation: "standard",
   glossary: [], workGlossaries: {}, correctionsEnabled: false, corrections: [],
 };
 export interface ModelJobDto {

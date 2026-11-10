@@ -5,6 +5,14 @@ description: "Google Material Design 3 (M3) frontend UI design system and UI cop
 
 # ASMR Player · Google M3 Frontend UI & Copywriting Standards
 
+## 设计融合：产品界面与宣传页面
+
+沿用本项目 Material Design 3、既有图标、字体与 Token；外部参考的字体黑名单、禁止 Material 图标、固定暗色板、统一玻璃导航不适用于本项目。通过真实内容、封面构图、字阶和主要操作建立识别度，不用新样式覆盖播放状态或用户主题。
+
+产品界面先完成播放／浏览任务和反馈；独立宣传页才使用“一个受众、一个核心承诺、一个主要转化动作”的结构。证明紧邻对应主张，缺少数据时省略或标为示例，不编造推荐语、百分比或音质效果。按排版、留白、层级、颜色、动效、微交互、响应式、原创性逐项查看实际页面，修复具体差距后复查；通过不等于已获奖。
+
+方法参考：[Elaya AI Design Skills](https://github.com/elayadesign/ai-design-skills/tree/38bbe5765600b9178b5395a823c9f6c8d2b8e730)；以上为面向本技能的适配，现有项目契约与用户明确要求优先。
+
 ## When To Load This Skill
 
 Load this skill whenever working on any frontend UI, styling, or user-facing text in ASMR Player, including:

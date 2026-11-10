@@ -1,0 +1,6 @@
+<!-- Generated from lucide-react 0.468.0; ISC. See licenses/Lucide-LICENSE.txt. Do not hand-edit. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M5,3 H19 A2,2 0 0,1 21,5 V19 A2,2 0 0,1 19,21 H5 A2,2 0 0,1 3,19 V5 A2,2 0 0,1 5,3 Z" android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="1.75" android:strokeLineCap="round" android:strokeLineJoin="round"/>
+    <path android:pathData="M8 12h8" android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="1.75" android:strokeLineCap="round" android:strokeLineJoin="round"/>
+    <path android:pathData="M12 8v8" android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="1.75" android:strokeLineCap="round" android:strokeLineJoin="round"/>
+</vector>

@@ -207,6 +207,7 @@ pub(super) fn covered_translations(
                         &p.translation,
                         settings,
                     )
+                    || super::local_translation::fabricated_fragment_quote(&p.source, &p.translation, settings)
                     || validate_translation_text(&p.translation).is_err()
                     || p.translation.chars().all(|c| {
                         c.is_whitespace() || super::super::speech_engine::is_punctuation(c)

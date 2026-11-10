@@ -90,6 +90,7 @@ pub fn run() {
             // WebViews can invoke commands as soon as they load. Register every
             // service before creating either window or doing any window initialization.
             app.manage(AppState {
+                device_sync: services::device_sync::SyncService::with_source(db.clone(),provider.clone()),
                 window_placement: services::window_placement::WindowPlacementService::new(db.clone()),
                 recognition, subtitle_tasks,
                 db: db.clone(), library: library.clone(), provider: provider.clone(),
@@ -97,6 +98,8 @@ pub fn run() {
                 updater, island: island.clone(),
                 desktop_lyrics: services::desktop_lyrics::DesktopLyricsService::new(db.clone(), app.handle().clone()),
             });
+            app.state::<AppState>().device_sync.attach_app_handle(app.handle().clone());
+            app.state::<AppState>().device_sync.start_automatic();
             for config in &app.config().app.windows {
                 if app.get_webview_window(&config.label).is_none() {
                     tauri::WebviewWindowBuilder::from_config(app, config)?
@@ -255,6 +258,7 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
+            WindowEvent::Focused(true) if window.label() == "main" => { window.state::<AppState>().device_sync.foreground(); }
             WindowEvent::ScaleFactorChanged { .. } if window.label() == "island" => {
                 if let Some(state) = window.app_handle().try_state::<AppState>() {
                     let island = state.island.clone();
@@ -326,6 +330,8 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            commands::device_sync::device_sync_command,
+            commands::device_sync::supabase_sync_reply,
             commands::recognition::get_editable_subtitle,
             commands::recognition::preview_subtitle_sync,
             commands::recognition::sync_recognized_subtitles,
@@ -447,6 +453,8 @@ pub fn run() {
             commands::move_in_queue,
             commands::clear_queue,
             commands::list_queue_plans,
+            commands::playlists::playlist_command,
+            commands::immersion::immersion_command,
             commands::save_queue_plan,
             commands::rename_queue_plan,
             commands::preview_queue_plan,
@@ -478,6 +486,7 @@ pub fn run() {
             commands::delete_work_downloaded_files,
             commands::enqueue_downloads,
             commands::list_download_tasks,
+            commands::open_download_directory,
             commands::get_download_policy,
             commands::set_download_policy,
             commands::set_download_priority,
@@ -493,6 +502,8 @@ pub fn run() {
             commands::undo_association,
             commands::list_association_history,
             commands::get_app_settings,
+            commands::get_theme_preset,
+            commands::set_theme_preset,
             commands::get_shortcut_bindings,
             commands::save_shortcut_bindings,
             commands::update_app_settings,

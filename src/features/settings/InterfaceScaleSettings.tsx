@@ -1,3 +1,4 @@
+import { SettingsSaveNote } from "./SettingsSaveNote";
 import { HelpHint } from "../../components/HelpHint";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -41,6 +42,7 @@ export function InterfaceScaleSettings() {
     }
   }
   return <>
+    <SettingsSaveNote busy={pending} error={error}>自动保存 · 立即调整主窗口缩放</SettingsSaveNote>
     <div className="settings-row">
       <span className="setting-label-help"><span id="interface-scale-label">界面缩放</span><HelpHint label={"界面缩放"} text={<>主窗口 · 每次调整 10%{value && ` · 当前系统缩放 ${Math.round(value.systemScale * 100)}%`}</>} /></span>
       <div className="island-display-actions">

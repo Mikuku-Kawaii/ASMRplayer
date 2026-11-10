@@ -1,8 +1,16 @@
+import { settingsSections, resolveSettingsSection } from "./settingsCategories";
+import { notifyTimelineMarksChanged } from "../player/timelineMarks";
+import { SettingsSearchResults } from "./SettingsSearchResults";
+import { indexSettings, revealSetting, type SettingsSearchEntry } from "./settingsSearch";
+import { ErrorNotice } from "../../components/ErrorNotice";
 import { SettingsDisclosure } from "./SettingsDisclosure";
+import { DownloadPolicyPanel } from "../downloads/DownloadPolicyPanel";
 import { HelpHint } from "../../components/HelpHint";
 import { DesktopLyricsSettings } from "./DesktopLyricsSettings";
 import { usePageScroll } from "../../app/usePageScroll";
 import { InterfaceScaleSettings } from "./InterfaceScaleSettings";
+import { ThemeSettings } from "./ThemeSettings";
+import { TypographySettings } from "./TypographySettings";
 import { EngineMaintenanceSettings } from "./EngineMaintenanceSettings";
 import { Select } from "../../components/Select";
 import { Toast } from "../../components/Toast";
@@ -18,8 +26,9 @@ import {
   CheckCircle2,
   AlertTriangle,
   Cpu,
-  ShieldAlert,
+  Palette,
   Globe,
+  ShieldAlert,
   EyeOff,
   Eye,
   AppWindow,
@@ -42,6 +51,7 @@ import { IslandDisplaySettings } from "./IslandDisplaySettings";
 import { ShortcutSettings } from "./ShortcutSettings";
 import { StorageSettings } from "./StorageSettings";
 import { BackupSettings } from "./BackupSettings";
+import { DeviceSyncSettings } from "./DeviceSyncSettings";
 import { DiagnosticSettings } from "./DiagnosticSettings";
 import { RecognitionSettings } from "./RecognitionSettings";
 
@@ -53,35 +63,56 @@ interface SettingsViewProps {
   onSearchQueryChange?: (value: string) => void;
 }
 
-const settingsSections = [
-  { id:"privacy-window", members:["privacy-window", "shortcuts"], title:"通用与快捷键", hint:"隐私、窗口与键位", icon:ShieldAlert, keywords:"全年龄 关闭 托盘 NSFW SMTC 键盘 热键 命令 搜索 界面 缩放 大小 DPI 比例" },
-  { id:"desktop-island", members:["desktop-island", "desktop-lyrics"], title:"桌面显示", hint:"灵动岛与桌面歌词", icon:AppWindow, keywords:"大小 屏幕 比例 吸附 全屏 音量 提示 字幕 字号 字重 粗细 双语 日文 中文 锁定 穿透 字体 颜色 透明度" },
-  { id:"audio-engine", members:["audio-engine"], title:"音频与播放", hint:"输出与硬件加速", icon:Volume2, keywords:"独占 引擎 GPU 定时 重启 空闲 音轨 性能" },
-  { id:"recognition-translation", members:["recognition-translation"], title:"识别与翻译", hint:"字幕偏好、模型与 API", icon:Cpu, keywords:"字幕 语音 转文字 SenseVoice FP16 GPU CUDA NVIDIA INT8 Whisper Ollama Qwen DeepSeek DS 密钥 本地 翻译 模型 下载 自动识别 自动翻译 词库 人名 术语 纠错 语言 轻声 呼气 拟声词 忠实 自然 柔和 标点 思考 温度 输出长度 token 参数 计费" },
-  { id:"network-online", members:["network-online"], title:"网络与在线", hint:"镜像、代理与账户", icon:Globe, keywords:"api token 令牌 预设" },
-  { id:"storage-library", members:["storage-library", "storage", "backup-sync"], title:"媒体库与数据", hint:"目录、清理与备份", icon:FolderOpen, keywords:"本地 下载 路径 实时 监控 扫描 存储 用量 空间 缓存 磁盘 恢复 同步 加密 WebDAV 导入 导出 保留" },
-  { id:"updates", members:["updates", "cache-diagnostics"], title:"更新与诊断", hint:"版本、日志与排查", icon:RefreshCw, keywords:"软件 历史 检查 升级 说明 系统 错误 脱敏 报告" },
-];
-
 export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSection = "privacy-window", onSectionChange, searchQuery, onSearchQueryChange }) => {
   const [localSection, setLocalSection] = useState(initialSection);
-  const section = onSectionChange ? initialSection : localSection;
+  const section = resolveSettingsSection(onSectionChange ? initialSection : localSection);
   const setSection = onSectionChange ?? setLocalSection;
   useEffect(() => { setLocalSection(initialSection); }, [initialSection]);
   const [localSearch, setLocalSearch] = useState("");
   const search = searchQuery ?? localSearch;
   const setSearch = onSearchQueryChange ?? setLocalSearch;
   const query = search.trim().toLowerCase();
-  const visible = (id: string) => settingsSections.some(x => x.members.includes(id) && (query
-    ? `${x.title} ${x.hint} ${x.keywords}`.toLowerCase().includes(query)
-    : section === x.id));
-  const recognitionVisible = visible("recognition-translation");
+  const visible = (id: string) => settingsSections.some(x => x.members.includes(id) && section === x.id);
+  const recognitionVisible = section === "recognition" || section === "translation";
   const [recognitionVisited, setRecognitionVisited] = useState(recognitionVisible);
+  const [downloadPolicyVisited, setDownloadPolicyVisited] = useState(section === "library");
   useEffect(() => {
-    if (recognitionVisible) setRecognitionVisited(true);
-  }, [recognitionVisible]);
+    if (section === "library" || query) setDownloadPolicyVisited(true);
+  }, [section, query]);
+  useEffect(() => {
+    if (recognitionVisible || query) setRecognitionVisited(true);
+  }, [recognitionVisible, query]);
   const contentRef = useRef<HTMLDivElement>(null);
-  usePageScroll(contentRef, `settings:${section}:${query}`);
+  const panelsRef = useRef<HTMLDivElement>(null);
+  const [located, setLocated] = useState<SettingsSearchEntry | null>(null);
+  usePageScroll(contentRef, query ? "settings:search" : located ? `settings:target:${located.key}` : `settings:${section}`);
+  useEffect(() => {
+    if (!located) return;
+    located.element.classList.add("settings-search-hit");
+    const frame = revealSetting(located);
+    return () => { cancelAnimationFrame(frame); located.element.classList.remove("settings-search-hit"); };
+  }, [located]);
+  const [targetField, setTargetField] = useState<string | null>(initialSection === "download-policy" ? "download-concurrency" : null);
+  const navigate = (id: string, field?: string) => { setLocated(null); setTargetField(field ?? null); setSection(resolveSettingsSection(id)); setSearch(""); };
+  useEffect(() => {
+    if (!targetField || !panelsRef.current) return;
+    const find = () => {
+      const entry = indexSettings(panelsRef.current!, settingsSections).find(item => item.target.id === targetField);
+      // Wait for the owning category/form, but let revealSetting open a
+      // collapsed disclosure containing the requested field.
+      const group = entry?.target.closest("[data-settings-group]");
+      if (entry && group && !group.closest("[hidden]")) { setLocated(entry); setTargetField(null); }
+    };
+    find();
+    const observer = new MutationObserver(find);
+    observer.observe(panelsRef.current, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"] });
+    return () => observer.disconnect();
+  }, [targetField, section]);
+  const [loadError, setLoadError] = useState("");
+  const [saveState, setSaveState] = useState<"idle" | "dirty" | "saving" | "saved" | "error">("idle");
+  const [saveError, setSaveError] = useState("");
+  const saveRevision = useRef(0);
+  const failedOverrides = useRef<Record<string, unknown>>({});
   const [settings, setSettings] = useState<AppSettingsDto | null>(null);
   const [roots, setRoots] = useState<LibraryRootDto[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
@@ -121,6 +152,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
   const [relocatePath, setRelocatePath] = useState("");
 
   const loadAll = useCallback(async () => {
+    setLoadError("");
     try {
       const [s, r, l] = await Promise.all([
         callCommand<AppSettingsDto>("get_app_settings"),
@@ -148,9 +180,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
       setRoots(r);
       setLogs(l);
     } catch (e) {
+      setLoadError(normalizeAppError(e).message);
       onError(normalizeAppError(e));
     }
   }, [onError]);
+
+  const reloadRestoredData = useCallback(() => {
+    notifyTimelineMarksChanged();
+    return loadAll();
+  }, [loadAll]);
 
   useEffect(() => {
     void loadAll();
@@ -196,7 +234,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
         clearTimeout(textAutoSaveTimerRef.current);
         textAutoSaveTimerRef.current = null;
       }
-      overrides = { ...pendingTextRef.current, ...overrides };
+      const revision = ++saveRevision.current;
+      setSaveState("saving"); setSaveError("");
+      overrides = { ...failedOverrides.current, ...pendingTextRef.current, ...overrides };
       pendingTextRef.current = {};
       const nextDownloadDir = (overrides?.downloadDir ?? downloadDir).trim();
       const nextApiBaseUrl = (overrides?.apiBaseUrl ?? apiBaseUrl).trim();
@@ -251,17 +291,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
         }));
         saveQueueRef.current = save.catch(() => {});
         const updated = await save;
+        if (revision === saveRevision.current) {
+          failedOverrides.current = {}; setSaveState("saved");
+        }
         if (updated) {
           setSettings(updated);
-          setAudioExclusive(updated.audioExclusive ?? false);
+          if (revision === saveRevision.current) setAudioExclusive(updated.audioExclusive ?? false);
         }
         if (nextAuthToken && nextAuthToken !== "__CLEAR__") {
-          setAuthTokenInput("");
+          setAuthTokenInput(current => current.trim() === nextAuthToken ? "" : current);
         }
       } catch (err) {
+        if (revision === saveRevision.current) {
+          failedOverrides.current = { ...overrides };
+          setSaveState("error"); setSaveError(normalizeAppError(err).message);
+        }
         onError(normalizeAppError(err));
-        if (overrides?.audioExclusive !== undefined) {
-          void callCommand<AppSettingsDto>("get_app_settings").then((s) => setAudioExclusive(s.audioExclusive ?? false)).catch(() => {});
+        if (overrides?.audioExclusive !== undefined && revision === saveRevision.current) {
+          void callCommand<AppSettingsDto>("get_app_settings").then(s => {
+            if (revision === saveRevision.current) setAudioExclusive(s.audioExclusive ?? false);
+          }).catch(() => {});
         }
       }
     },
@@ -313,6 +362,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
       if (textAutoSaveTimerRef.current) {
         clearTimeout(textAutoSaveTimerRef.current);
       }
+      ++saveRevision.current; setSaveState("dirty");
       pendingTextRef.current = { ...pendingTextRef.current, ...overrides };
       textAutoSaveTimerRef.current = setTimeout(() => {
         void persistSettingsRef.current();
@@ -383,23 +433,39 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
     }
   };
 
-
   return (
     <div className="page-container settings-page-container">
       <header className="settings-page-header">
-        <h2>设置</h2>
-        <label className="settings-search"><Search size={18} aria-hidden="true" /><input type="search" value={search} onChange={e => { setSearch(e.target.value); }} placeholder="搜索设置…" aria-label="搜索设置" /></label>
+        <div className="settings-heading"><h2>设置</h2>{saveState !== "idle" && <span className="settings-save-indicator" role="status">
+          {saveState === "dirty" ? "等待保存…" : saveState === "saving" ? "正在保存…" : saveState === "saved" ? "已保存" : saveState === "error" ? "保存失败" : ""}
+        </span>}</div>
+        <label className="settings-search"><Search size={18} aria-hidden="true" /><input type="search" value={search} onChange={e => { setSearch(e.target.value); }} placeholder="搜索字段、模型、提示词…" aria-label="搜索设置" onKeyDown={e => {
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+          if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setSearch(""); }
+          if (query && (e.key === "ArrowDown" || e.key === "Enter")) {
+            e.preventDefault();
+            const first = contentRef.current?.querySelector<HTMLButtonElement>(".settings-search-result");
+            if (e.key === "Enter") first?.click(); else first?.focus();
+          }
+        }} />{query && <button className="btn btn-ghost btn-sm" type="button" onClick={() => setSearch("")} aria-label="清除设置搜索">清除</button>}</label>
       </header>
+      <div className="settings-category-compact"><label htmlFor="settings-category">设置分类</label><Select id="settings-category" value={section} options={settingsSections.map(item => ({ value: item.id, label: item.title }))} onValueChange={navigate} /></div>
       <div className="settings-workspace">
         <nav className="settings-category-nav" aria-label="设置分类">
-          {settingsSections.map(({id,title,hint,icon:Icon}) => <button key={id} type="button" aria-current={!query && section === id ? "page" : undefined} onClick={() => { setSection(id); setSearch(""); }}><Icon size={20} aria-hidden="true" /><span><strong>{title}</strong><small>{hint}</small></span></button>)}
+          {["使用偏好", "资源与系统"].map(group => <div className="settings-nav-group" key={group}>
+            <p className="settings-nav-group-label">{group}</p>
+            {settingsSections.filter(item => item.group === group).map(({id,title,icon:Icon}) => <button key={id} type="button" aria-current={!query && section === id ? "page" : undefined} onClick={() => navigate(id)}><Icon size={20} aria-hidden="true" /><strong>{title}</strong></button>)}
+          </div>)}
         </nav>
         <div className="settings-content" ref={contentRef} role="region" aria-label="设置内容" tabIndex={0}>
       {savedNotice && <Toast key={savedNotice.id} message={savedNotice.message} onClose={() => setSavedNotice(null)} />}
-      {query && !settingsSections.some(x => visible(x.id)) && <p className="settings-field-hint" role="status">没有找到相关设置，试试“字幕”“音频”或“网络”。</p>}
-      <div hidden={!visible("updates")}><UpdateSettings onError={onError} /></div>
+      {query && <SettingsSearchResults root={panelsRef} categories={settingsSections} query={query} onSelect={entry => { setSection(entry.category); setSearch(""); setLocated(entry); }} />}
+      <div className="settings-panels" ref={panelsRef} hidden={!!query}>
+      {loadError && <ErrorNotice message={loadError}><button type="button" className="btn btn-secondary" onClick={() => void loadAll()}>重新读取通用设置</button></ErrorNotice>}
+      {!settings && !loadError && <p role="status">正在读取通用设置…</p>}
+
       {/* Load on first visit, then retain drafts and disclosure state across categories. */}
-      <div hidden={!recognitionVisible}>{(recognitionVisible || recognitionVisited) && <RecognitionSettings />}</div>
+      <div hidden={!recognitionVisible}>{(recognitionVisible || recognitionVisited) && <RecognitionSettings page={section === "translation" ? "translation" : "recognition"} onOpenGlossary={() => navigate("recognition", "subtitle-glossary")} />}</div>
 
       {/* 模块化设置表单 — 功能相近聚合为同一分组卡片，功能相异拆分为独立分组卡片 */}
       <form
@@ -409,29 +475,62 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
           void persistSettings();
         }}
         className="settings-modular-stack"
-        hidden={!["privacy-window","desktop-island","audio-engine","network-online","storage-library","desktop-lyrics"].some(visible)}
+        hidden={!settings || !["appearance","privacy","desktop-island","audio-engine","network-online","storage-library","desktop-lyrics"].some(visible)}
       >
-        {/* 分组 1：内容安全、隐私防护与窗口行为 */}
+        {saveState === "error" && <ErrorNotice message={saveError}><button type="button" className="btn btn-secondary btn-sm" onClick={() => void persistSettings()}>重试保存</button></ErrorNotice>}
+        {/* 分组 1：外观与窗口 */}
         <section
           className="settings-card settings-group-card"
-          data-settings-group="privacy-window" hidden={!visible("privacy-window")}
-          aria-label="内容安全、隐私防护与窗口行为"
+          data-settings-group="appearance" hidden={!visible("appearance")}
+          aria-label="外观与窗口"
         >
           <div className="settings-group-header">
             <div className="settings-group-title-wrap">
               <span className="settings-group-icon">
-                <ShieldAlert size={16} />
+                <Palette size={16} />
               </span>
-              <div className="setting-label-help"><h3>内容安全、隐私防护与窗口行为</h3><HelpHint label={"内容安全、隐私防护与窗口行为"} text={<>
-                  集中管理 NSFW 敏感内容默认过滤、Windows 锁屏/媒体浮窗防社死脱敏及窗口关闭驻留策略
+              <div className="setting-label-help"><h3>外观与窗口</h3><HelpHint label={"外观与窗口"} text={<>
+                  设置主题、字体、界面缩放与关闭窗口后的行为
                 </>} /></div>
             </div>
-            <span className="badge badge-tech">隐私与内容边界</span>
+
           </div>
 
           <div className="settings-group-body">
+            <ThemeSettings />
+            <TypographySettings />
             <InterfaceScaleSettings />
-            {/* NSFW 敏感内容显示开关（默认关闭） */}
+
+            <div className="settings-row">
+              <span className="setting-label-help"><label htmlFor="setting-close">点击窗口关闭按钮时</label><HelpHint label={"点击窗口关闭按钮时"} text={<>
+                  选择点击右上角关闭按钮时最小化到托盘继续播放，或彻底退出进程
+                </>} /></span>
+              <Select
+                id="setting-close"
+                className="settings-control-wide"
+                value={closeBehavior}
+                onValueChange={(value) => {
+                  const nextVal = value as "minimize_to_tray" | "quit";
+                  setCloseBehavior(nextVal);
+                  void persistSettings({ closeBehavior: nextVal });
+                }}
+                options={[
+                  { value: "minimize_to_tray", label: "隐藏到系统托盘并保持后台播放" },
+                  { value: "quit", label: "保存播放状态并退出应用" },
+                ]}
+              />
+            </div>
+          </div>
+        </section>
+
+        <section className="settings-card settings-group-card" data-settings-group="privacy" hidden={!visible("privacy")} aria-label="内容与隐私">
+          <div className="settings-group-header">
+            <div className="settings-group-title-wrap">
+              <span className="settings-group-icon"><ShieldAlert size={16} aria-hidden="true" /></span>
+              <div className="setting-label-help"><h3>内容与隐私</h3><HelpHint label="内容与隐私" text="管理成人向内容显示、系统媒体信息与灵动岛封面和标题隐私" /></div>
+            </div>
+          </div>
+          <div className="settings-group-body">
             <div className="settings-row">
               <span className="setting-label-help"><label>成人向内容</label><HelpHint label={"NSFW 敏感/成人向内容显示开关（默认关闭）"} text={<>
                   默认关闭以自动过滤在线浏览、搜索与列表中的 R18 / NSFW 敏感作品；开启后展示全部内容
@@ -459,7 +558,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
                 </button>
               </div>
             </div>
-
             <div className="settings-row">
               <span className="setting-label-help"><label>
                   系统媒体信息
@@ -517,30 +615,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
                 </button>
               </div>
             </div>
-
             <div className="settings-row">
-              <span className="setting-label-help"><label htmlFor="setting-close">点击窗口关闭按钮时</label><HelpHint label={"点击窗口关闭按钮时"} text={<>
-                  选择点击右上角关闭按钮时最小化到托盘继续助眠播放，或彻底退出进程
+              <span className="setting-label-help"><label>隐藏封面与标题</label><HelpHint label={"灵动岛防社死隐私脱敏模式"} text={<>
+                  隐藏敏感同人插画封面，将曲目名称统一显示为中性占位文本 "ASMR Audio Track"
                 </>} /></span>
-              <Select
-                id="setting-close"
-                className="settings-control-wide"
-                value={closeBehavior}
-                onValueChange={(value) => {
-                  const nextVal = value as "minimize_to_tray" | "quit";
-                  setCloseBehavior(nextVal);
-                  void persistSettings({ closeBehavior: nextVal });
-                }}
-                options={[
-                  { value: "minimize_to_tray", label: "隐藏到系统托盘并保持后台播放" },
-                  { value: "quit", label: "保存播放状态、回收 mpv 进程并退出应用" },
-                ]}
-              />
+              <div>
+                <button
+                  type="button"
+                  className={`dsp-scope-toggle-btn ${
+                    islandPrivacyMode ? "is-lit" : "is-dim"
+                  }`}
+                  aria-pressed={islandPrivacyMode}
+                  id="island-privacy-toggle" aria-label="切换灵动岛隐私脱敏模式"
+                  onClick={() => {
+                    const nextVal = !islandPrivacyMode;
+                    setIslandPrivacyMode(nextVal);
+                    void callCommand("island_set_privacy_mode", { enabled: nextVal }).catch(() => {});
+                    void persistSettings({ islandPrivacyMode: nextVal });
+                  }}
+                >
+                  {islandPrivacyMode ? <EyeOff size={14} /> : <Eye size={14} />}
+                  <span>
+                    {islandPrivacyMode
+                      ? "已开启隐私模式"
+                      : "显示封面与标题"}
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
         </section>
-
-        {/* 分组：桌面灵动岛偏好设置 (T1308) */}
+        {/* 桌面组件 */}
         <section
           className="settings-card settings-group-card"
           data-settings-group="desktop-island" hidden={!visible("desktop-island")}
@@ -559,7 +664,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
 
           <div className="settings-group-body">
             {/* 1. 全屏独占避让开关 */}
-            <SettingsDisclosure title="屏幕与外观" description="选择显示屏幕，调整灵动岛大小、字号与字重"><IslandDisplaySettings /></SettingsDisclosure>
+            <IslandDisplaySettings />
             <div className="settings-row">
               <span className="setting-label-help"><label>全屏时自动隐藏</label><HelpHint label={"全屏独占避让（全屏视频与游戏时自动淡出隐藏）"} text={<>
                   当检测到其他软件（全屏游戏、全屏看剧）进入全屏独占时，灵动岛自动平滑淡出隐藏，退出全屏后恢复显示
@@ -679,76 +784,32 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
               onToggle={enabled => { setIslandToastEnabled(enabled); void persistSettings({ islandToastEnabled: enabled }); }}
               onDurationCommit={seconds => { setIslandToastDurationSec(seconds); void persistSettings({ islandToastDurationSec: seconds }); }} />
 
-            {/* 6. 灵动岛隐私脱敏模式开关 */}
-            <div className="settings-row">
-              <span className="setting-label-help"><label>隐藏封面与标题</label><HelpHint label={"灵动岛防社死隐私脱敏模式"} text={<>
-                  隐藏敏感同人插画封面，将曲目名称统一显示为中性占位文本 "ASMR Audio Track"
-                </>} /></span>
-              <div>
-                <button
-                  type="button"
-                  className={`dsp-scope-toggle-btn ${
-                    islandPrivacyMode ? "is-lit" : "is-dim"
-                  }`}
-                  aria-pressed={islandPrivacyMode}
-                  aria-label="切换灵动岛隐私脱敏模式"
-                  onClick={() => {
-                    const nextVal = !islandPrivacyMode;
-                    setIslandPrivacyMode(nextVal);
-                    void callCommand("island_set_privacy_mode", { enabled: nextVal }).catch(() => {});
-                    void persistSettings({ islandPrivacyMode: nextVal });
-                  }}
-                >
-                  {islandPrivacyMode ? <EyeOff size={14} /> : <Eye size={14} />}
-                  <span>
-                    {islandPrivacyMode
-                      ? "已开启隐私模式"
-                      : "显示封面与标题"}
-                  </span>
-                </button>
-              </div>
-            </div>
+            <button type="button" className="btn btn-ghost settings-related-link" onClick={() => navigate("privacy", "island-privacy-toggle")}>设置封面与标题隐私</button>
+
           </div>
         </section>
 
-        {/* 分组 2：音频引擎、硬件直通与解码加速 */}
-        <div hidden={!visible("desktop-lyrics")}><DesktopLyricsSettings /></div>
+        {/* 分组 2：音频输出 */}
+        <div data-settings-group="desktop-lyrics" hidden={!visible("desktop-lyrics")}><DesktopLyricsSettings /></div>
         <section
           className="settings-card settings-group-card"
           data-settings-group="audio-engine" hidden={!visible("audio-engine")}
-          aria-label="音频引擎、硬件直通与解码加速"
+          aria-label="音频输出"
         >
           <div className="settings-group-header">
             <div className="settings-group-title-wrap">
               <span className="settings-group-icon">
                 <Cpu size={16} />
               </span>
-              <div className="setting-label-help"><h3>音频引擎、硬件直通与解码加速</h3><HelpHint label={"音频引擎、硬件直通与解码加速"} text={<>
-                  管理 mpv 音频宿主状态、WASAPI 声卡独占原生采样率直通以及 WebView2 / 解码硬件加速
+              <div className="setting-label-help"><h3>音频输出</h3><HelpHint label={"音频输出"} text={<>
+                  查看播放引擎状态，配置独占输出与媒体解码选项
                 </>} /></div>
             </div>
             <span className="badge badge-tech">高保真声学核心</span>
           </div>
 
           <div className="settings-group-body">
-            <div className="settings-row">
-              <span className="setting-label-help"><label>libmpv 进程内引擎状态 (mpv-2.dll)</label><HelpHint label={"libmpv 进程内引擎状态 (mpv-2.dll)"} text={<>
-                  通过主进程内 FFI 原生调用 libmpv C-API 驱动无损解码、200% 音量上限与 8 级 lavfi 音效链路（无独立子进程）
-                </>} /></span>
-              <div>
-                {settings?.mpvAvailable ? (
-                  <span className="badge badge-downloaded">
-                    <CheckCircle2 size={12} />
-                    <span>引擎就绪 ({settings.mpvPath})</span>
-                  </span>
-                ) : (
-                  <span className="badge badge-warn">
-                    <AlertTriangle size={12} />
-                    <span>未检测到 libmpv 动态库 (mpv-2.dll)</span>
-                  </span>
-                )}
-              </div>
-            </div>
+            <p className="settings-save-note">自动保存 · 独占输出立即切换；硬件加速在下次引擎启动时使用。</p>
 
             <div className="settings-row">
               <span className="setting-label-help"><label>WASAPI 独占输出</label><HelpHint label={"WASAPI 独占直通模式（绕过系统混音器重采样）"} text={<>
@@ -777,8 +838,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
             </div>
 
             <div className="settings-row">
-              <span className="setting-label-help"><label>硬件加速</label><HelpHint label={"启用硬件加速（GPU 界面渲染与媒体解码加速）"} text={<>
-                  开启 GPU 光栅化与 AVX2 多线程硬解加速，显著降低高分屏与长音频播放时的 CPU 占用
+              <span className="setting-label-help"><label>硬件加速</label><HelpHint label={"硬件加速生效范围"} text={<>
+                  保存播放器解码配置，在下一次引擎创建时使用；不会立即重启引擎，也不改变界面渲染设置。实际效果取决于媒体格式与硬件。
                 </>} /></span>
               <div>
                 <button
@@ -805,23 +866,46 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
           </div>
         </section>
 
-        <section className="settings-card" hidden={!visible("audio-engine")} aria-label="引擎定期维护">
-          <h3>定期重启引擎</h3>
-          <EngineMaintenanceSettings />
+        <section data-settings-group="audio-engine" className="settings-card settings-group-card" hidden={!visible("audio-engine")} aria-label="引擎定期维护">
+          <div className="settings-group-header"><div className="settings-group-title-wrap">
+            <span className="settings-group-icon"><RefreshCw size={16} aria-hidden="true" /></span>
+            <h3>引擎状态与定期维护</h3>
+          </div></div>
+          <div className="settings-group-body">
+            <div className="settings-row">
+              <span className="setting-label-help"><label>libmpv 进程内引擎状态 (mpv-2.dll)</label><HelpHint label={"libmpv 进程内引擎状态 (mpv-2.dll)"} text={<>
+                  通过主进程内 FFI 原生调用 libmpv C-API 驱动无损解码、200% 音量上限与 8 级 lavfi 音效链路（无独立子进程）
+                </>} /></span>
+              <div>
+                {settings?.mpvAvailable ? (
+                  <span className="badge badge-downloaded">
+                    <CheckCircle2 size={12} />
+                    <span>引擎就绪 ({settings.mpvPath})</span>
+                  </span>
+                ) : (
+                  <span className="badge badge-warn">
+                    <AlertTriangle size={12} />
+                    <span>未检测到 libmpv 动态库 (mpv-2.dll)</span>
+                  </span>
+                )}
+              </div>
+            </div>
+            <h4>定期重启引擎</h4><EngineMaintenanceSettings />
+          </div>
         </section>
 
-        {/* 分组 3：在线源站、网络代理与远程挂载 */}
+        {/* 分组 3：网络与账户 */}
         <section
           className="settings-card settings-group-card"
           data-settings-group="network-online" hidden={!visible("network-online")}
-          aria-label="在线源站、网络代理与远程挂载"
+          aria-label="网络与账户"
         >
           <div className="settings-group-header">
             <div className="settings-group-title-wrap">
               <span className="settings-group-icon">
                 <Globe size={16} />
               </span>
-              <div className="setting-label-help"><h3>在线源站、网络代理与远程挂载</h3><HelpHint label={"在线源站、网络代理与远程挂载"} text={<>
+              <div className="setting-label-help"><h3>网络与账户</h3><HelpHint label={"网络与账户"} text={<>
                   独立配置 asmr.one 镜像节点、HTTP/SOCKS5 网络代理、站点访问凭据及局域网 WebDAV/NAS 流式地址
                 </>} /></div>
             </div>
@@ -953,18 +1037,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
           </div>
         </section>
 
-        {/* 分组 4：本地存储、目录实时监听与音频库根目录 */}
+        {/* 分组 4：媒体库与下载 */}
         <section
           className="settings-card settings-group-card"
           data-settings-group="storage-library" hidden={!visible("storage-library")}
-          aria-label="本地存储、目录实时监听与音频库根目录"
+          aria-label="媒体库与下载"
         >
           <div className="settings-group-header">
             <div className="settings-group-title-wrap">
               <span className="settings-group-icon">
                 <HardDrive size={16} />
               </span>
-              <div className="setting-label-help"><h3>本地存储、目录实时监听与音频库根目录</h3><HelpHint label={"本地存储、目录实时监听与音频库根目录"} text={<>
+              <div className="setting-label-help"><h3>媒体库与下载</h3><HelpHint label={"媒体库与下载"} text={<>
                   统一管理离线下载存放目录、后台目录指纹增量监听以及外接硬盘盘符变更后的无损重定位
                 </>} /></div>
             </div>
@@ -972,6 +1056,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
           </div>
 
           <div className="settings-group-body">
+            <button type="button" className="btn btn-ghost settings-related-link" onClick={() => navigate("network", "setting-webdav")}>设置远程挂载连接</button>
             <div className="settings-row">
               <span className="setting-label-help"><label htmlFor="setting-dl-dir">离线下载根目录</label><HelpHint label={"离线下载根目录"} text={<>
                   在线作品下载完成后的本地存放根目录（下载中自动隔离为 .part 临时文件）
@@ -1145,11 +1230,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
             </SettingsDisclosure>
           </div>
         </section>
+        <div data-settings-group="download-policy" hidden={!visible("download-policy")}>
+          {(downloadPolicyVisited || section === "library") && <DownloadPolicyPanel />}
+        </div>
       </form>
 
-      <div hidden={!visible("storage")}><StorageSettings /></div>
-      <div hidden={!visible("backup-sync")}><BackupSettings onRestored={loadAll} /></div>
-      <div hidden={!visible("cache-diagnostics")}><DiagnosticSettings /></div>
+      <div hidden={section !== "library" && section !== "maintenance"}><StorageSettings page={section === "maintenance" ? "maintenance" : "media"} /></div>
+      <div data-settings-group="updates" hidden={!visible("updates")}><UpdateSettings onError={onError} /></div>
+      <div data-settings-group="backup-sync" hidden={!visible("backup-sync")}><BackupSettings onRestored={reloadRestoredData} /></div>
+      <div data-settings-group="device-sync" hidden={!visible("device-sync")}><DeviceSyncSettings active={visible("device-sync")} onSynced={reloadRestoredData} /></div>
+      <div data-settings-group="cache-diagnostics" hidden={!visible("cache-diagnostics")}><DiagnosticSettings /></div>
 
       {/* 分组 6：脱敏诊断日志 */}
       <section
@@ -1190,7 +1280,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
         </SettingsDisclosure></div>
       </section>
 
-      <div hidden={!visible("shortcuts")}><ShortcutSettings smtcMode={settings?.smtcMode} /></div>
+      <div data-settings-group="shortcuts" hidden={!visible("shortcuts")}><ShortcutSettings smtcMode={settings?.smtcMode} /></div>
+        </div>
         </div>
       </div>
     </div>

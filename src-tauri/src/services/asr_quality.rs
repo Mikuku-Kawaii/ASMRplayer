@@ -135,7 +135,7 @@ fn signals(
     }
     found
 }
-fn reliable_segments(result: &RecognitionEvidence, duration: i64) -> bool {
+pub(crate) fn reliable_segments(result: &RecognitionEvidence, duration: i64) -> bool {
     !result.segments.is_empty()
         && result.segments.iter().all(|s| {
             s.start.is_finite()
@@ -333,6 +333,7 @@ pub fn recognize(
     let mut selected = 0;
     let mut retry_failed = false;
     let mut context_spill = false;
+    let mut context_disagrees = false;
     if suspicious || empty || fragment || boundary || timing_problem {
         // The PCM cache may be wider, but every backend request stays <= 20s.
         let padding = region.context_samples.min(128000)
@@ -348,10 +349,11 @@ pub fn recognize(
                 let ownership: Vec<_> = retry.result.segments.iter().map(|s| {
                     let begin = retry.start_ms + (s.start * 1000.) as i64;
                     let end = retry.start_ms + (s.end * 1000.) as i64;
-                    let initial = compact(&attempts[0].result.text);
-                    let anchored = initial.chars().count() >= 2 && compact(&s.text).contains(&initial);
+                    // Text overlap is not an audio anchor: a repeated word may
+                    // belong to a different sentence entirely. Never accept a
+                    // segment crossing ownership merely because it quotes the core.
                     (begin < end_ms && end > start_ms,
-                        begin >= start_ms && end <= end_ms || anchored)
+                        begin >= start_ms && end <= end_ms)
                 }).collect();
                 let owns = ownership.iter().any(|(overlaps, anchored)| *overlaps && *anchored);
                 let spills = ownership.iter().any(|(overlaps, anchored)| *overlaps && !*anchored);
@@ -359,13 +361,19 @@ pub fn recognize(
                     context_spill = true;
                     retry.signals.push("context_outside_owned_audio".into());
                 }
+                let owned_text: String = retry.result.segments.iter().zip(&ownership)
+                    .filter(|(_, (overlaps, contained))| *overlaps && *contained)
+                    .map(|(s, _)| s.text.as_str()).collect();
+                context_disagrees = compact(if reliable { &owned_text } else { &retry.result.text })
+                    != compact(&attempts[0].result.text);
+                if context_disagrees { retry.signals.push("context_disagreement".into()); }
                 // A changed result is usable only with decoder timing and fewer risk signals.
                 // Agreement alone does not clear an existing suspicion.
                 if reliable
                     && owns
                     && !spills
                     && !retry.result.text.trim().is_empty()
-                    && retry.signals.len() < attempts[0].signals.len().max(1)
+                    && retry.signals.iter().filter(|s| s.as_str() != "context_disagreement").count() < attempts[0].signals.len().max(1)
                     && (suspicious || empty || fragment || timing_problem)
                 {
                     selected = 1;
@@ -389,6 +397,7 @@ pub fn recognize(
     let timed = reliable_segments(&chosen.result, chosen.end_ms - chosen.start_ms);
     let unresolved = suspicious
         || context_spill
+        || context_disagrees && selected == 0
         || chosen.result.text.trim().is_empty()
         || retry_failed
         || (fragment || boundary) && !timed
@@ -640,6 +649,38 @@ mod tests {
         assert!(cues[0].record.attempts[1].signals.iter().any(|s| s == "context_outside_owned_audio"));
     }
     #[test]
+    fn matching_text_across_a_boundary_is_not_an_audio_anchor() {
+        for original in ["うん", "ごめん", "カモニウム"] {
+            let audio=vec![0.01; 10*16000];
+            let mut input=region(&audio);
+            input.begin=4*16000; input.end=6*16000; input.context_samples=4*16000;
+            let mut calls=0;
+            let output=recognize(input,&AtomicBool::new(false),|_,without_prompt| {
+                calls+=1;
+                assert_eq!(without_prompt,calls>1);
+                Ok(if calls==1 {text(original)} else {timed(&format!("前の台詞 {original} 次の台詞"),0.,10.)})
+            }).unwrap();
+            assert_eq!(calls,2);
+            assert_eq!(output[0].text,original);
+            assert_eq!((output[0].start_ms,output[0].end_ms),(4000,6000));
+            assert_eq!(output[0].record.selected_attempt,0);
+            assert!(output[0].record.pending_audio_review);
+            assert!(output[0].record.attempts[1].signals.iter().any(|s|s=="context_outside_owned_audio"));
+        }
+    }
+    #[test]
+    fn contextual_disagreement_keeps_owned_original_and_both_records() {
+        let audio=vec![0.01; 6*16000];
+        let mut input=region(&audio); input.begin=2*16000;input.end=4*16000;
+        let mut calls=0;
+        let output=recognize(input,&AtomicBool::new(false),|_,_| {
+            calls+=1;Ok(if calls==1 {timed("本当の台詞",0.,2.)} else {timed("別の文章",2.,4.)})
+        }).unwrap();
+        assert_eq!(output[0].text,"本当の台詞");
+        assert!(output[0].record.pending_audio_review);
+        assert_eq!(output[0].record.attempts.len(),2);
+    }
+    #[test]
     fn sustained_word_recovery_uses_audio_context_and_decoder_time_not_a_word_patch() {
         let audio = vec![0.01; 64000];
         let mut input = region(&audio);
@@ -652,13 +693,13 @@ mod tests {
             Ok(if calls.len() == 1 {
                 text("おや")
             } else {
-                timed("おやすみ", 0.5, 3.5)
+                timed("おやすみ", 1., 3.)
             })
         })
         .unwrap();
         assert_eq!(calls, vec![(32000, false), (64000, true)]);
         assert_eq!(output[0].text, "おやすみ");
-        assert_eq!((output[0].start_ms, output[0].end_ms), (500, 3500));
+        assert_eq!((output[0].start_ms, output[0].end_ms), (1000, 3000));
         assert_eq!(output[0].record.attempts[0].result.text, "おや");
         assert_eq!(output[0].record.selected_attempt, 1);
     }

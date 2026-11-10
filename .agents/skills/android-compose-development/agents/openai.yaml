@@ -1,0 +1,3 @@
+interface:
+  display_name: "Android Compose 开发"
+  short_description: "整合 Compose 状态、导航、系统边距、性能与平台验证"

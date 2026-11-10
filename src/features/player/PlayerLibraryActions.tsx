@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Heart, HeartPulse, LibraryBig } from "lucide-react";
+import { Bookmark, Flag, Heart } from "lucide-react";
 import { AppError, callCommand, MediaAffinity, normalizeAppError, subscribeLibraryAffinity } from "../../lib/api";
 
 export function PlayerLibraryActions({ versionId, onError, variant = "icons", localPlayback = false }: { versionId?: string | null; onError: (e: AppError) => void; variant?: "icons" | "island-menu"; localPlayback?: boolean }) {
@@ -38,13 +38,13 @@ export function PlayerLibraryActions({ versionId, onError, variant = "icons", lo
     finally { gate.current = false; setBusy(false); }
   }
   const actions = [
-    { key: "toggle_collected", label: localLibrary ? "本地音频库" : value?.isCollected ? "移出音频库" : "移入我的音频库", active: !localLibrary && value?.isCollected, disabled: localLibrary, Icon: LibraryBig },
+    { key: "toggle_collected", label: localLibrary ? "本地音频库" : value?.isCollected ? "移出音频库" : "移入我的音频库", active: !localLibrary && value?.isCollected, disabled: localLibrary, Icon: Bookmark },
     { key: "toggle_favorite", label: value?.isFavorite ? "取消喜爱作品" : "喜爱作品", active: value?.isFavorite, disabled: false, Icon: Heart },
-    { key: "toggle_version_favorite", label: value?.isVersionFavorite ? "取消喜爱单曲" : "喜爱单曲", active: value?.isVersionFavorite, disabled: false, Icon: HeartPulse },
+    { key: "toggle_version_favorite", label: value?.isVersionFavorite ? "取消书签" : "添加书签", active: value?.isVersionFavorite, disabled: false, Icon: Flag },
   ];
-  const menuLabels: Record<string, string> = { toggle_collected: "移入音频库", toggle_favorite: "添加喜爱", toggle_version_favorite: "添加单曲喜爱" };
-  return <div className={menu ? "island-menu-column" : "player-library-actions"} role="group" aria-label="音频库与喜爱">{actions.map(({ key, label, active, disabled, Icon }) => {
+  const menuLabels: Record<string, string> = { toggle_collected: "移入音频库", toggle_favorite: "添加喜爱", toggle_version_favorite: "添加书签" };
+  return <div className={menu ? "island-menu-column" : "player-library-actions"} role="group" aria-label="音频库、喜爱与书签">{actions.map(({ key, label, active, disabled, Icon }) => {
     const text = menu && !active && !disabled ? menuLabels[key] ?? label : label;
-    return <button key={key} type="button" className={`${menu ? "island-menu-item" : "btn btn-icon"} ${key !== "toggle_collected" ? "favorite-action" : ""} ${active ? "active" : ""}`} title={text} aria-label={text} aria-pressed={!!active} disabled={!value || busy || disabled} onClick={() => void run(key)}><Icon size={menu ? 14 : 21} aria-hidden="true" />{menu && <span>{text}</span>}</button>;
+    return <button key={key} type="button" className={`${menu ? "island-menu-item" : "btn btn-icon"} ${key !== "toggle_collected" ? "favorite-action" : ""} ${active ? "active" : ""}`} title={text} aria-label={text} aria-pressed={!!active} disabled={!value || busy || disabled} onClick={() => void run(key)}><Icon size={menu ? 14 : 21} fill={active ? "currentColor" : "none"} aria-hidden="true" />{menu && <span>{text}</span>}</button>;
   })}</div>;
 }

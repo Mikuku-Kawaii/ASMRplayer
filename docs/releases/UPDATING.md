@@ -50,3 +50,35 @@ pwsh -NoProfile -File scripts/test-startup-responsiveness.ps1 -Executable <隔�
 窗口验收同时检查：设置中的界面缩放在 50%、100%、150% 下即时生效，重启后保持选择，灵动岛与桌面歌词保持各自尺寸；最大化时双击标题栏只还原一次，再次双击只最大化一次，右上角图标同步更新。界面缩放是应用附加比例，100% 仍遵循当前显示器的 Windows DPI。
 
 
+
+## Android 与 PC 共用更新清单
+
+Android 和 Windows 读取同一个 `releases/latest/download/latest.json`。保留原 `windows-x86_64` / NSIS / MSI 条目，增加 `platforms.android-universal`：
+
+```json
+{
+  "signature": "Tauri base64 Minisign signature",
+  "url": "https://github.com/Mikuku-Kawaii/ASMRplayer/releases/download/v1.4.0/ASMR.Player_1.4.0_14_universal.apk",
+  "versionCode": 14,
+  "minSdk": 23,
+  "size": 12345678,
+  "sha256": "64 lowercase hex characters"
+}
+```
+
+这是字段示例，不是已发布版本。Android 版本名从根 package.json 生成，Tauri 公钥从 tauri.conf.json 编入 BuildConfig，避免两套配置漂移。每次共同发布先同步 package.json、Cargo.toml、tauri.conf.json 的稳定版本；Android 另外指定大于上一发行版的 versionCode。当前纯 Kotlin/Java 包使用 universal APK；不向清单提供 AAB。应用安装身份必须一直使用同一包名和 Android keystore；Android 证书不能用 PC 更新私钥代替。
+
+本地准备（PowerShell 7，JDK 17、Android SDK 36 和 build-tools 已安装）：
+
+1. 按既有流程准备 Windows 发行包。设置 `ANDROID_HOME`、`JAVA_HOME`，以及 `ANDROID_KEYSTORE_FILE`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`。keystore 和密码保存在私有位置，不进入源码或日志。
+2. 设置已有更新签名的 `TAURI_SIGNING_PRIVATE_KEY_PATH`（或 `TAURI_SIGNING_PRIVATE_KEY`）及必要的 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。脚本不生成/替换现有正式密钥。
+3. 执行 `pwsh -File scripts/prepare-android-release.ps1 -VersionCode <递增整数>`。脚本构建签名 release APK，以 apksigner 验证，读取实际包名、版本和 minSdk，拒绝 debuggable 包，再调用 `tauri signer sign --app-version`；验签后合并到同版本 `output/release/v版本/latest.json`，保留 Windows 条目，并刷新 SHA256SUMS。
+4. PC 与 Android 的本地构建顺序可以互换：PC 清单生成器会重新验证同目录 android-release.json 对应的 APK 后保留 Android 条目。该文件是本地构建元数据，不必上传。准备两端同版本产物后一起上传 EXE/MSI/APK 和唯一的 latest.json 到同一 Release，确认后发布。
+
+GitHub Actions 保留默认 Windows 构建，并支持可选联合发行：手动运行勾选 `build_android`，填写递增的 `android_version_code`（或仓库变量 `ANDROID_VERSION_CODE`）；标签构建使用仓库变量 `ANDROID_SIGNED_RELEASE_CI=true` 启用 Android，同时保留原 `SIGNED_RELEASE_CI` 总开关。
+
+启用前配置 `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD` 四个 Secret，复用既有 Tauri 更新签名 Secret。keystore 必须是持续使用的正式安装密钥，不因新版本更换。工作流提前检查配置，安装 JDK 17/SDK 36，运行 Android JVM/lint 与清单测试，再构建签名 APK 并合并已有 Windows latest.json；临时 keystore 在 finally 中删除，不进 artifact。联合 artifact 名称为 signed-windows-android-release，纯 Windows 名称保持不变。标签运行仍只创建待审查 draft，手动运行仍不创建 Release。
+
+本地实现不等于远端已启用：本轮没有写入 GitHub Secrets、开启变量或发布版本。启用前先手动构建核验附件与安装升级；实际远端验收另行记录。若只发布 Windows 清单，Android 不会误报更新；不要在已有联合 Release 中用缺少 Android 条目的清单覆盖它。
+
+Android 正式版启动及约每 24 小时自动检查，下载由用户发起，安装先保存播放会话与数据库，再交给系统安装器确认；REQUEST_INSTALL_PACKAGES 授权入口通过后端返回给 UI。自动下载/静默安装不在此契约内。安装器仍会验证 APK；包签名不一致需正确签名重发，不能通过卸载应用绕过（卸载会删除数据）。发布到 Google Play 时需采用对应商店更新渠道，当前实现面向 GitHub APK 分发。

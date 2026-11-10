@@ -1,6 +1,6 @@
 [package]
 name = "asmr-player"
-version = "1.3.0"
+version = "26.11.10"
 description = "Windows ASMR Desktop Player for local audio libraries and asmr.one works"
 authors = ["ASMR Player Contributors"]
 license = "MIT"
@@ -19,7 +19,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.40", features = ["full"] }
 rusqlite = { version = "0.32", features = ["bundled", "backup"] }
-reqwest = { version = "0.12", features = ["json", "stream", "socks", "gzip"] }
+reqwest = { version = "0.12", features = ["json", "stream", "socks", "gzip", "blocking"] }
+ring = "0.17"
+base64 = "0.22"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2.0"

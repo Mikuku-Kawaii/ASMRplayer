@@ -405,7 +405,7 @@ mod session_tests {
         let audio_bytes = fs::read(&fixture_mp3).unwrap();
 
         Mock::given(method("GET"))
-            .and(path("/api/workInfo/1705068"))
+            .and(path("/api/workInfo/01705068"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": 1705068,
                 "title": "R10 在线转离线测试作品",

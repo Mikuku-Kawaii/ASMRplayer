@@ -1,0 +1,4 @@
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="276dp" android:minHeight="156dp" android:initialLayout="@layout/playback_widget"
+    android:resizeMode="horizontal|vertical" android:widgetCategory="home_screen" android:updatePeriodMillis="0"
+    android:configure="com.asmrplayer.android.widget.WidgetConfigurationActivity" android:widgetFeatures="reconfigurable|configuration_optional" android:description="@string/widget_description" />

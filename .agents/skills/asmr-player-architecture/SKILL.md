@@ -1,9 +1,17 @@
 ---
 name: asmr-player-architecture
-description: "ASMR Player architecture principles, domain invariants, and engineering guardrails. MUST USE for any architecture design request, and whenever working on PlaybackService, MpvController (Windows Named Pipe IPC), four-layer content/version modeling (works/tracks/versions/sources), AsmrOneProvider, DownloadService (Range 206 resume & .part safety), LibraryService scanning, Tauri commands/events, or React player control surfaces."
+description: 开发或审查 ASMRplayer 的播放、下载、库扫描、领域模型与 Tauri 接口；当前引擎使用进程内 libmpv，历史 IPC 方案须先核对源码。
 ---
 
 # ASMR Player Architecture & Engineering Guardrails
+
+## 设计融合与当前实现边界
+
+本技能限于 ASMRplayer。当前播放引擎以 `src-tauri/src/player/libmpv_ffi.rs` 的进程内 libmpv C API 为准；下文 Named Pipe、mpv sidecar、MpvController IPC 是历史方案，不据此恢复独立播放进程。接口改动先核对现有源码与项目 AGENTS。
+
+从界面主任务反推已有状态所有者、命令和事件边界。营销演示里的逐步加载、计数增长和循环故事只能使用隔离样例，不进入真实播放／下载状态机；动画时长不决定业务提交、取消或资源释放。视觉新意由视图层实现，不为展示效果新增后端字段、通用 metadata 或服务层。
+
+方法参考：[Elaya AI Design Skills](https://github.com/elayadesign/ai-design-skills/tree/38bbe5765600b9178b5395a823c9f6c8d2b8e730)；以上为面向本技能的适配，现有项目契约与用户明确要求优先。
 
 ## When To Load This Skill
 

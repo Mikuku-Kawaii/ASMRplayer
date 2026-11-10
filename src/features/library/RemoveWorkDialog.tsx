@@ -1,7 +1,7 @@
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Trash2, X } from "lucide-react";
+import { Check, Trash2, X } from "lucide-react";
 import { normalizeAppError, WorkSummary } from "../../lib/api";
 
 export const SKIP_LIBRARY_REMOVAL_KEY = "asmr-player.skip-library-index-removal-confirmation";
@@ -80,11 +80,11 @@ export function RemoveWorkDialog({ work, onConfirm, onClose }: {
       <p id={descriptionId} className="library-remove-description">将移除作品索引、播放队列项与关联记录。<strong>本地导入的原始音频文件会保留。</strong></p>
       <div className="library-remove-options">
         {work.hasDownloaded && <label className="library-dialog-check">
-          <input type="checkbox" checked={deleteFiles} disabled={pending} onChange={event => { setDeleteFiles(event.target.checked); if (event.target.checked) setSkipNext(false); }} />
+            <input type="checkbox" checked={deleteFiles} disabled={pending} onChange={event => { setDeleteFiles(event.target.checked); if (event.target.checked) setSkipNext(false); }} /><Check className="library-checkbox-mark" aria-hidden="true" />
           <span>同时删除已下载文件<small>仅删除软件下载目录内的副本及未完成下载文件。</small></span>
         </label>}
         <label className="library-dialog-check">
-          <input type="checkbox" checked={skipNext} disabled={pending || deleteFiles} onChange={event => setSkipNext(event.target.checked)} />
+            <input type="checkbox" checked={skipNext} disabled={pending || deleteFiles} onChange={event => setSkipNext(event.target.checked)} /><Check className="library-checkbox-mark" aria-hidden="true" />
           <span>下次不再提醒<small>之后直接移除作品索引，保留音频文件。</small></span>
         </label>
       </div>

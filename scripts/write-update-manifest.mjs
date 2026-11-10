@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyUpdaterSignature } from "./verify-updater-signature.mjs";
+import { addAndroidUpdate } from "./android-update-manifest.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
@@ -38,7 +39,18 @@ for (const [type, filename] of [
   hashes.push(`${createHash("sha256").update(bytes).digest("hex")}  ${assetName}`);
 }
 const notes = await readFile(path.join(root, "docs/releases", `${tag}.md`), "utf8");
-await writeFile(path.join(output, "latest.json"), JSON.stringify({ version, notes, pub_date: new Date().toISOString(), platforms }, null, 2) + "\n");
+let manifest = { version, notes, pub_date: new Date().toISOString(), platforms };
+let androidMetadata;
+try { androidMetadata = JSON.parse(await readFile(path.join(output, "android-release.json"), "utf8")); }
+catch (error) { if (error.code !== "ENOENT") throw error; }
+if (androidMetadata) {
+  const { assetName } = androidMetadata;
+  if (!/^[A-Za-z0-9._-]+\.apk$/.test(assetName)) throw new Error("Invalid Android asset name");
+  manifest = addAndroidUpdate(manifest, await readFile(path.join(output, assetName)),
+    await readFile(path.join(output, `${assetName}.sig`), "utf8"), config.plugins.updater.pubkey, androidMetadata, assetName);
+  hashes.push(`${manifest.platforms["android-universal"].sha256}  ${assetName}`);
+}
+await writeFile(path.join(output, "latest.json"), JSON.stringify(manifest, null, 2) + "\n");
 await writeFile(path.join(output, "SHA256SUMS.txt"), hashes.join("\n") + "\n");
 try {
   await copyFile(path.join(root, "THIRD_PARTY_NOTICES.md"), path.join(output, "THIRD_PARTY_NOTICES.md"));

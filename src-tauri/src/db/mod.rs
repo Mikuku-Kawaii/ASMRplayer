@@ -3,6 +3,7 @@ pub mod smart_collections;
 pub mod bulk_library;
 pub mod bookmark_notes;
 pub mod queue_plans;
+pub mod playlists;
 pub mod shortcuts;
 pub mod listening;
 pub mod affinity;
@@ -72,6 +73,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (19, "019_download_attachments", include_str!("../../migrations/019_download_attachments.sql")),
     (20, "020_library_query_covering_indexes", include_str!("../../migrations/020_library_query_covering_indexes.sql")),
     (21, "021_download_task_dismissals", include_str!("../../migrations/021_download_task_dismissals.sql")),
+    (22, "022_playlists", include_str!("../../migrations/022_playlists.sql")),
 ];
 
 #[derive(Clone)]
@@ -436,7 +438,8 @@ mod tests {
             INSERT INTO attachments(id,work_id,attachment_type,title,created_at) VALUES('a','w','text','notes','now');
             INSERT INTO downloads(id,work_id,attachment_id,status,temp_relative_path,target_relative_path,downloaded_bytes,created_at,updated_at)
             VALUES('d','w','a','completed','notes.part','notes',123,'now','now');").unwrap();
-        assert_eq!(Database::run_migrations(&mut conn, &path, true).unwrap(), 1);
+        assert_eq!(Database::run_migrations(&mut conn, &path, true).unwrap(),
+            MIGRATIONS.iter().filter(|(version, _, _)| *version > 20).count());
         assert_eq!(conn.query_row("SELECT downloaded_bytes FROM downloads WHERE id='d'",[],|r|r.get::<_,i64>(0)).unwrap(),123);
         assert_eq!(conn.query_row("SELECT COUNT(*) FROM download_task_dismissals",[],|r|r.get::<_,i64>(0)).unwrap(),0);
         conn.execute("INSERT INTO download_task_dismissals VALUES('d','now')",[]).unwrap();

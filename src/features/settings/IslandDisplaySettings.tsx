@@ -1,3 +1,5 @@
+import { SettingsSaveNote } from "./SettingsSaveNote";
+import { SettingsDisclosure } from "./SettingsDisclosure";
 import { HelpHint } from "../../components/HelpHint";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { Select } from "../../components/Select";
@@ -31,7 +33,7 @@ export function IslandDisplaySettings() {
     window.addEventListener("focus", onFocus);
     return () => { disposed = true; unlisten?.(); invalidate(); window.removeEventListener("focus", onFocus); };
   }, [refresh, invalidate]);
-  async function change(value: { compactScale?: number; expandedScale?: number; monitorId?: string; fontSize?: number; fontWeight?: number; subtitlePreference?: "chinese" | "original" }) {
+  async function change(value: { compactScale?: number; expandedScale?: number; monitorId?: string; fontSize?: number; fontWeight?: number; subtitlePreference?: "chinese" | "original"; expandMode?: "focus" | "click" }) {
     if (changing.current) return;
     changing.current = true;
     const id = ++request.current;
@@ -44,6 +46,18 @@ export function IslandDisplaySettings() {
   }
   const disconnected = preferences?.monitorId && !preferences.monitors.some(m => m.id === preferences.monitorId);
   return <>
+    <SettingsSaveNote busy={pending} error={error}>自动保存 · 立即更新桌面灵动岛</SettingsSaveNote>
+    <div className="settings-row">
+      <span className="setting-label-help"><span id="island-expand-mode-label">展开方式</span><HelpHint label="展开方式" text="聚焦展开：鼠标移入展开，移出收起；拖动时松手后收起。键盘聚焦也可展开。点击展开：点击后保持展开，使用收起按钮或 Esc 收起。" /></span>
+      <div className="settings-segmented-control" role="group" aria-labelledby="island-expand-mode-label">
+        {([{ value: "focus", label: "聚焦展开" }, { value: "click", label: "点击展开" }] as const).map(({ value, label }) => {
+          const selected = value === (preferences?.layout.expandMode ?? "click");
+          return <button key={value} type="button" className="btn btn-secondary" aria-pressed={!!preferences && selected} disabled={!preferences || pending}
+            onClick={() => { if (!selected) void change({ expandMode: value }); }}>{label}</button>;
+        })}
+      </div>
+    </div>
+    <SettingsDisclosure title="屏幕与外观" description="选择显示屏幕，调整灵动岛大小、字号与字重" defaultOpen>
     <div className="settings-row">
       <span className="setting-label-help"><span id="island-subtitle-preference-label">字幕优先级</span><HelpHint label="字幕优先级" text="优先显示所选语言；只有一种字幕时显示现有内容。展开后另一种语言显示在下方。" /></span>
       <div className="settings-segmented-control" role="group" aria-labelledby="island-subtitle-preference-label">
@@ -90,6 +104,7 @@ export function IslandDisplaySettings() {
         options={[{ value: "400", label: "常规" }, { value: "500", label: "中等" }, { value: "600", label: "半粗" }, { value: "700", label: "粗体（默认）" }, { value: "800", label: "特粗" }]}
         onValueChange={value => void change({ fontWeight: Number(value) })} />
     </div>
+    </SettingsDisclosure>
     {error && <ErrorNotice message={error} />}
   </>;
 }

@@ -519,9 +519,13 @@ impl RecognitionService {
         } else {
             value["message"]["content"].as_str()
         };
-        let text =
+        let translated =
             parse_translation(content.ok_or_else(|| invalid("翻译服务未返回正文，请重试"))?)?;
-        apply_translation_punctuation(text, &settings.preferences.translation_punctuation)
+        if local_translation::is_untranslated_copy(text, &translated, &settings)
+            || local_translation::fabricated_fragment_quote(text, &translated, &settings) {
+            return Err(invalid("译文照搬了未确认的原文片段，请核对原文后重试"));
+        }
+        apply_translation_punctuation(translated, &settings.preferences.translation_punctuation)
     }
     pub fn new(db: Database, data_dir: PathBuf, identifier: &str) -> Self {
         Self {
@@ -933,14 +937,20 @@ fn apply_translation_punctuation(text: String, punctuation: &str) -> AppResult<S
     if punctuation != "minimal" {
         return Ok(text);
     }
-    let text: String = text.chars().map(|c| {
+    // The uncertainty marker carries review state; it is not stylistic punctuation.
+    let text = text.split("〔原文不清〕").map(|part| part.chars().map(|c| {
         if super::speech_engine::is_punctuation(c) { ' ' } else { c }
-    }).collect();
+    }).collect::<String>()).collect::<Vec<_>>().join("〔原文不清〕");
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.is_empty() {
         return Err(invalid("翻译服务只返回了标点，请重试"));
     }
     Ok(text)
+}
+
+#[test]
+fn uncertainty_marker_survives_minimal_punctuation() {
+    assert_eq!(apply_translation_punctuation("不会，〔原文不清〕。".into(), "minimal").unwrap(), "不会 〔原文不清〕");
 }
 
 fn validate_translation_text(text: &str) -> AppResult<String> {
@@ -1172,7 +1182,6 @@ mod tests {
             ..Default::default()
         };
         settings.preferences.language = "ja".into();
-        settings.preferences.quiet_speech = true;
         settings.preferences.translation_style = "soft".into();
         settings
             .preferences

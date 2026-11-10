@@ -1,5 +1,8 @@
+import { SeekFiveIcon } from "../../components/SeekFiveIcon";
+import { PlayerVolumeControl } from "./PlayerVolumeControl";
 import { PlayerLibraryActions } from "./PlayerLibraryActions";
 import { DesktopLyricsToggle } from "./DesktopLyricsToggle";
+import { useTimelineMarks } from "./timelineMarks";
 import React, { useState, useEffect, useRef } from "react";
 import { useShortcuts } from "../commands/ShortcutProvider";
 import { shortcutTitle } from "../../lib/shortcuts";
@@ -8,15 +11,12 @@ import {
   Pause,
   SkipBack,
   SkipForward,
-  Rewind,
-  FastForward,
-  Volume2,
-  VolumeX,
   Repeat,
   Repeat1,
   Moon,
   ListMusic,
-  Bookmark,
+  MapPin,
+  ListEnd,
   Subtitles,
   Radio,
   HardDrive,
@@ -26,6 +26,7 @@ import {
   MoreHorizontal,
   ChevronUp,
   AudioLines,
+  Sparkles,
 } from "lucide-react";
 import {
   PlaybackSnapshot,
@@ -44,8 +45,8 @@ const DEFAULT_WAVEFORM_PEAKS: number[] = Array.from({ length: 64 }, (_, i) => {
 interface PlayerBarProps {
   snapshot: PlaybackSnapshot;
   onSnapshotChange: (snap: PlaybackSnapshot) => void;
-  activeDrawerTab: "none" | "queue" | "bookmarks" | "subtitles" | "dsp" | "audio";
-  onToggleDrawer: (tab: "queue" | "bookmarks" | "subtitles" | "dsp" | "audio") => void;
+  activeDrawerTab: "none" | "queue" | "playlists" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio";
+  onToggleDrawer: (tab: "queue" | "playlists" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio") => void;
   onOpenWorkDetail?: (workId: string) => void;
   isImmersiveOpen?: boolean;
   onToggleImmersive?: () => void;
@@ -69,7 +70,6 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
   // Optimistic seek slider position while dragging
   const [draggingPosMs, setDraggingPosMs] = useState<number | null>(null);
   const [abPointA, setAbPointA] = useState<number | null>(null);
-  const [prevVolume, setPrevVolume] = useState<number>(85);
   const [moreMenuOpen, setMoreMenuOpen] = useState<boolean>(false);
   const [workCoverUrl, setWorkCoverUrl] = useState<string | null>(null);
   const [coverLoadFailed, setCoverLoadFailed] = useState<boolean>(false);
@@ -79,6 +79,8 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
   const [loudnessBusy, setLoudnessBusy] = useState(false);
   const loudnessPending = useRef(false);
   const moreMenuRef = useRef<HTMLDivElement | null>(null);
+  const marksLayer = useRef<HTMLDivElement | null>(null);
+  const savedMarks = useTimelineMarks(snapshot.currentVersionId);
 
   useEffect(() => {
     let cancelled = false;
@@ -166,6 +168,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
     displayPosMs,
     maxDurationMs > 0 ? maxDurationMs : 1000
   );
+  const marks = maxDurationMs > 0 ? savedMarks.filter(ms => ms >= 0 && ms <= maxDurationMs) : [];
   const seekProgressPct =
     maxDurationMs > 0
       ? Math.max(0, Math.min(100, (clampedPosMs / maxDurationMs) * 100))
@@ -220,10 +223,27 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
     }
   };
 
-  const handleVolumeChange = async (vol: number) => {
-    if (vol > 0) {
-      setPrevVolume(vol);
+  // Use the same range gesture for taps and drags, including taps on a mark.
+  const commitPointerSeek = (input: HTMLInputElement) => {
+    const requested = input.valueAsNumber;
+    const layer = marksLayer.current;
+    let target = requested;
+    if (layer && marks.length) {
+      const width = layer.getBoundingClientRect().width;
+      const nearest = marks.reduce((a, b) => Math.abs(b - requested) < Math.abs(a - requested) ? b : a);
+      if (width > 0 && Math.abs(nearest - requested) * width / maxDurationMs <= 10) {
+        target = nearest;
+        if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+          layer.querySelector(`[data-ms="${nearest}"]`)?.animate(
+            [{ scale: "1" }, { scale: "1.7", offset: 0.35 }, { scale: "1" }], { duration: 180 }
+          );
+        }
+      }
     }
+    void handleSeekCommit(target);
+  };
+
+  const handleVolumeChange = async (vol: number) => {
     try {
       const next = await callCommand<PlaybackSnapshot>("set_volume", {
         volume: vol,
@@ -234,10 +254,6 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
     }
   };
 
-  const handleToggleMute = async () => {
-    const targetVol = snapshot.volume > 0 ? 0 : prevVolume > 0 ? prevVolume : 85;
-    await handleVolumeChange(targetVol);
-  };
 
   const handleCycleLoopMode = async () => {
     const order: Array<"none" | "single" | "queue"> = [
@@ -493,7 +509,6 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
       {/* 中栏：对称纯净的传输图标行 + 带 64 点波形包络的时间轴进度条 */}
       <div className="player-center">
         <div className="player-controls-row">
-          <DesktopLyricsToggle onError={onError} />
           <button
             type="button"
             className={`btn-icon ${
@@ -505,11 +520,12 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
           >
             {snapshot.loopMode === "single" ? (
               <Repeat1 size={16} />
+            ) : snapshot.loopMode === "none" ? (
+              <ListEnd size={16} />
             ) : (
               <Repeat size={16} />
             )}
           </button>
-
           <button
             type="button"
             className="btn-icon"
@@ -520,7 +536,6 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
           >
             <SkipBack size={17} />
           </button>
-
           <button
             type="button"
             className="btn-icon"
@@ -529,12 +544,11 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
             aria-label="快退 5 秒"
             title={shortcutTitle("快退 5 秒", bindings.seek_back)}
           >
-            <Rewind size={16} />
+            <SeekFiveIcon direction="back" />
           </button>
-
           <button
             type="button"
-            className="btn-play-main"
+            className="btn-play-main transport-main"
             onClick={() => void handleTogglePause()}
             disabled={!snapshot.currentVersionId && snapshot.queue.length === 0}
             aria-label={isPlaying ? "暂停" : "播放"}
@@ -542,7 +556,6 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
           >
             {isPlaying ? <Pause size={20} /> : <Play size={20} />}
           </button>
-
           <button
             type="button"
             className="btn-icon"
@@ -551,9 +564,8 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
             aria-label="快进 5 秒"
             title={shortcutTitle("快进 5 秒", bindings.seek_forward)}
           >
-            <FastForward size={16} />
+            <SeekFiveIcon direction="forward" />
           </button>
-
           <button
             type="button"
             className="btn-icon"
@@ -564,17 +576,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
           >
             <SkipForward size={17} />
           </button>
-          <button
-            type="button"
-            className={`btn-icon ${activeDrawerTab === "queue" ? "active-icon-btn" : ""}`}
-            data-drawer-trigger="queue"
-            onClick={() => onToggleDrawer("queue")}
-            aria-label="播放队列"
-            aria-expanded={activeDrawerTab === "queue"}
-            title={shortcutTitle(`播放队列 (${snapshot.queue.length})`, bindings.queue)}
-          >
-            <ListMusic size={17} />
-          </button>
+          <DesktopLyricsToggle onError={onError} />
         </div>
 
         <div className="player-progress-row">
@@ -595,6 +597,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
               type="range"
               className="seek-slider"
               aria-label="播放进度"
+              aria-description={marks.length ? `有 ${marks.length} 个时间标记，点击标记可跳转` : undefined}
               min={0}
               max={maxDurationMs > 0 ? maxDurationMs : 1000}
               value={clampedPosMs}
@@ -605,16 +608,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
               }
               disabled={!snapshot.currentVersionId}
               onChange={(e) => setDraggingPosMs(Number(e.target.value))}
-              onMouseUp={(e) =>
-                void handleSeekCommit(
-                  Number((e.target as HTMLInputElement).value)
-                )
-              }
-              onTouchEnd={(e) =>
-                void handleSeekCommit(
-                  Number((e.target as HTMLInputElement).value)
-                )
-              }
+              onPointerUp={(e) => commitPointerSeek(e.currentTarget)}
               onKeyUp={(e) => {
                 if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
                   void handleSeekCommit(
@@ -623,6 +617,9 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
                 }
               }}
             />
+            {marks.length > 0 && <div className="timeline-marks" ref={marksLayer} aria-hidden="true">
+              {marks.map(ms => <i key={ms} data-ms={ms} style={{ left: `${ms / maxDurationMs * 100}%` }} />)}
+            </div>}
           </div>
           <span className="time-label">
             {formatDurationMs(snapshot.durationMs)}
@@ -639,9 +636,21 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
         </div>
       </div>
 
-      {/* 右栏：收纳为单一触发按钮 + 右侧弹出式二级控制菜单（或点击关闭已打开的抽屉） */}
+      {/* 音量直接可达，其余音效与抽屉入口收纳在工具菜单。 */}
       <div className="player-right" ref={moreMenuRef}>
         <PlayerLibraryActions versionId={snapshot.currentVersionId} localPlayback={snapshot.activeSource?.sourceKind === "local_imported" || snapshot.activeSource?.sourceKind === "local_downloaded"} onError={onError} />
+        <button
+          type="button"
+          className={`btn-icon ${activeDrawerTab === "queue" ? "active-icon-btn" : ""}`}
+          data-drawer-trigger="queue"
+          onClick={() => { onToggleDrawer("queue"); setMoreMenuOpen(false); }}
+          aria-label="播放队列"
+          aria-expanded={activeDrawerTab === "queue"}
+          title={shortcutTitle(`播放队列 (${snapshot.queue.length})`, bindings.queue)}
+        >
+          <ListMusic size={17} />
+        </button>
+        <PlayerVolumeControl volume={snapshot.volume} onChange={handleVolumeChange} />
         <button
           type="button"
           className={`btn-right-menu-trigger ${
@@ -656,14 +665,12 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
           title={
             activeDrawerTab !== "none"
               ? "点击关闭当前右侧面板"
-              : "展开右侧控制与音效二级菜单（音量、音效、队列、书签、字幕、睡眠定时）"
+              : "展开右侧控制与音效二级菜单（歌单、音效、队列、标记、字幕、睡眠定时）"
           }
         >
           <SlidersHorizontal size={15} />
           <span className="btn-trigger-label">控制与音效</span>
-          <span className="trigger-vol-badge">
-            {snapshot.volume === 0 ? "静音" : `${Math.round(snapshot.volume)}%`}
-          </span>
+
           {moreMenuOpen || activeDrawerTab !== "none" ? (
             <ChevronUp size={14} />
           ) : (
@@ -677,123 +684,86 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
           role="menu"
           aria-label="播放辅助工具二级菜单"
         >
-          {/* 1. 音量调节行 */}
-          <div className="popover-volume-row">
-            <button
-              type="button"
-              className="btn-icon-sm"
-              onClick={() => void handleToggleMute()}
-              aria-label={snapshot.volume === 0 ? "取消静音" : "静音"}
-              title={
-                snapshot.volume === 0
-                  ? "取消静音"
-                  : `静音 (当前 ${Math.round(snapshot.volume)}%)`
-              }
-            >
-              {snapshot.volume === 0 ? (
-                <VolumeX size={15} />
-              ) : (
-                <Volume2 size={15} />
-              )}
-            </button>
-            <input
-              type="range"
-              className="volume-slider"
-              aria-label="音量"
-              min={0}
-              max={200}
-              value={Math.round(snapshot.volume)}
-              style={
-                {
-                  "--vol-pct": `${Math.max(
-                    0,
-                    Math.min(100, (snapshot.volume / 200) * 100)
-                  ).toFixed(1)}%`,
-                } as React.CSSProperties
-              }
-              onChange={(e) => void handleVolumeChange(Number(e.target.value))}
-            />
-            <span className="popover-volume-val">
-              {Math.round(snapshot.volume)}%
-            </span>
+          <div role="group" aria-label="歌单与字幕">
+            <div className="player-more-section-label">歌单与字幕</div>
+            <div className="popover-drawer-grid">
+              <button type="button" role="menuitem" className={`popover-drawer-btn ${activeDrawerTab === "playlists" ? "active" : ""}`} data-drawer-trigger="playlists" onClick={() => { onToggleDrawer("playlists"); setMoreMenuOpen(false); }} aria-label="歌单"><ListMusic size={14} /><span>歌单</span></button>
+              <button
+                type="button"
+                role="menuitem"
+                className={`popover-drawer-btn ${
+                  activeDrawerTab === "subtitles" ? "active" : ""
+                }`}
+                data-drawer-trigger="subtitles"
+                onClick={() => {
+                  onToggleDrawer("subtitles");
+                  setMoreMenuOpen(false);
+                }}
+                aria-label="字幕台本"
+              >
+                <Subtitles size={14} />
+                <span>字幕台本</span>
+              </button>
+            </div>
           </div>
-
           <div className="player-more-divider" />
-          <div className="player-more-section-label">音效与面板</div>
-
-          {/* 音效与面板快捷入口 */}
-          <div className="popover-drawer-grid">
-            <button
-              type="button"
-              role="menuitem"
-              className={`popover-drawer-btn ${
-                dspActive ? "active" : ""
-              }`}
-              data-drawer-trigger="dsp"
-              onClick={() => {
-                onToggleDrawer("dsp");
-                setMoreMenuOpen(false);
-              }}
-              aria-label="专业音效与防炸耳 (DSP / EQ)"
-              title={`专业音效与防炸耳 (${
-                dspActive
-                  ? snapshot.audioTelemetry?.activeDspSummary || "DSP 已开启"
-                  : "原声直通"
-              })`}
-            >
-              <SlidersHorizontal size={14} />
-              <span>音效</span>
-            </button>
-
-            <button
-              type="button"
-              role="menuitem"
-              className={`popover-drawer-btn ${
-                snapshot.audioExclusive ? "active" : ""
-              }`}
-              data-drawer-trigger="audio"
-              onClick={() => {
-                onToggleDrawer("audio");
-                setMoreMenuOpen(false);
-              }}
-              aria-label="WASAPI 独占"
-              title={`WASAPI 独占${snapshot.audioExclusive ? "已开启，当前设备可能无法供其他程序播放" : "已关闭"}；点击打开输出设备设置`}
-            >
-              <Headphones size={14} />
-              <span>WASAPI 独占</span>
-            </button>
-
-            <button
-              type="button"
-              role="menuitemcheckbox"
-              className={`popover-drawer-btn ${loudnessActive ? "active" : ""}`}
-              aria-checked={loudnessActive}
-              aria-busy={loudnessBusy}
-              disabled={loudnessBusy}
-              onClick={() => void toggleLoudness()}
-              aria-label="响度均衡"
-              title="实时调整响度，目标 −23 LUFS，均衡阶段峰值上限 −2 dBTP；会改变动态并以 48 kHz 处理。默认关闭，原声直通时停用。"
-            >
-              <AudioLines size={14} />
-              <span>响度均衡</span>
-            </button>
-
-            <button
-              type="button"
-              role="menuitem"
-              className={`popover-drawer-btn ${
-                activeDrawerTab === "subtitles" ? "active" : ""
-              }`}
-              data-drawer-trigger="subtitles"
-              onClick={() => {
-                onToggleDrawer("subtitles");
-                setMoreMenuOpen(false);
-              }}
-              aria-label="字幕台本"
-            >
-              <Subtitles size={14} />
-              <span>字幕台本</span>
-            </button>
+          <div role="group" aria-label="音效与输出">
+            <div className="player-more-section-label">音效与输出</div>
+            <div className="popover-drawer-grid">
+              <button
+                type="button"
+                role="menuitem"
+                className={`popover-drawer-btn ${
+                  dspActive ? "active" : ""
+                }`}
+                data-drawer-trigger="dsp"
+                onClick={() => {
+                  onToggleDrawer("dsp");
+                  setMoreMenuOpen(false);
+                }}
+                aria-label="专业音效与防炸耳 (DSP / EQ)"
+                title={`专业音效与防炸耳 (${
+                  dspActive
+                    ? snapshot.audioTelemetry?.activeDspSummary || "DSP 已开启"
+                    : "原声直通"
+                })`}
+              >
+                <SlidersHorizontal size={14} />
+                <span>音效</span>
+              </button>
+              <button
+                type="button"
+                role="menuitemcheckbox"
+                className={`popover-drawer-btn ${loudnessActive ? "active" : ""}`}
+                aria-checked={loudnessActive}
+                aria-busy={loudnessBusy}
+                disabled={loudnessBusy}
+                onClick={() => void toggleLoudness()}
+                aria-label="响度均衡"
+                title="实时调整响度，目标 −23 LUFS，均衡阶段峰值上限 −2 dBTP；会改变动态并以 48 kHz 处理。默认关闭，原声直通时停用。"
+              >
+                <AudioLines size={14} />
+                <span>响度均衡</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className={`popover-drawer-btn ${
+                  snapshot.audioExclusive ? "active" : ""
+                }`}
+                data-drawer-trigger="audio"
+                onClick={() => {
+                  onToggleDrawer("audio");
+                  setMoreMenuOpen(false);
+                }}
+                aria-label="WASAPI 独占"
+                title={`WASAPI 独占${snapshot.audioExclusive ? "已开启，当前设备可能无法供其他程序播放" : "已关闭"}；点击打开输出设备设置`}
+              >
+                <Headphones size={14} />
+                <span>WASAPI 独占</span>
+              </button>
+              <button type="button" role="menuitem" className={`popover-drawer-btn ${activeDrawerTab === "immersion" ? "active" : ""}`} data-drawer-trigger="immersion" onClick={() => { onToggleDrawer("immersion"); setMoreMenuOpen(false); }} aria-label="沉浸设置"><Sparkles size={14} /><span>沉浸设置</span></button>
+            </div>
           </div>
 
           <div className="player-more-divider" />
@@ -831,8 +801,8 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
           </button>
 
           <button type="button" role="menuitem" className={`player-more-item ${activeDrawerTab === "bookmarks" ? "active" : ""}`}
-            data-drawer-trigger="bookmarks" aria-label="版本书签与循环" onClick={() => { onToggleDrawer("bookmarks"); setMoreMenuOpen(false); }}>
-            <span className="player-more-item-left"><Bookmark size={14} /><span>书签与循环面板</span></span>
+            data-drawer-trigger="bookmarks" aria-label="版本标记与循环" onClick={() => { onToggleDrawer("bookmarks"); setMoreMenuOpen(false); }}>
+            <span className="player-more-item-left"><MapPin size={14} /><span>标记与循环面板</span></span>
           </button>
 
           <button
@@ -846,6 +816,8 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
             <span className="player-more-item-left">
               {snapshot.loopMode === "single" ? (
                 <Repeat1 size={14} />
+              ) : snapshot.loopMode === "none" ? (
+                <ListEnd size={14} />
               ) : (
                 <Repeat size={14} />
               )}

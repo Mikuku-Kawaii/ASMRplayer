@@ -10,6 +10,16 @@ use std::path::Path;
 use std::sync::LazyLock;
 use uuid::Uuid;
 
+pub(crate) const WORK_SOURCE_FLAGS_SQL: &str = "SELECT t.work_id,
+                MAX(ms.source_kind IN ('local_imported','local_downloaded')),
+                MAX(ms.source_kind='local_imported'), MAX(ms.source_kind='local_downloaded'),
+                MAX(ms.source_kind='online_provider'), MAX(ms.availability='available'),
+                MAX(ms.availability='offline_disk')
+                FROM json_each(?1) selected
+                CROSS JOIN tracks t ON t.work_id=selected.value
+                CROSS JOIN track_versions v ON v.track_id=t.id
+                CROSS JOIN media_sources ms ON ms.version_id=v.id GROUP BY t.work_id";
+
 fn adult_label(value: &str) -> bool {
     let normalized: String = value.trim().to_uppercase().chars()
         .filter(|c| !c.is_whitespace() && !matches!(c, '-' | '－' | '−' | '+' | '＋')).collect();
@@ -631,7 +641,6 @@ impl Database {
     pub fn list_works(&self, filter: &str, search: Option<&str>) -> AppResult<Vec<WorkSummary>> {
         let recognized_works = self.recognized_subtitle_works(None)?;
         self.with_conn(|conn| {
-            let (listening_states, listening_statuses) = super::listening::library_states(conn)?;
             // 1. Preload all user overrides in a single query (T901: eliminates N queries)
             let mut all_overrides: HashMap<String, BTreeMap<String, (String, Option<String>)>> =
                 HashMap::new();
@@ -708,35 +717,13 @@ impl Database {
                 }
             }
 
-            // 3. Single CTE query aggregating media_sources & latest work_sources (T901: eliminates 2N queries)
-            // T1515: Covering scans avoid per-source table lookups. Deduplicate
-            // kind/availability pairs before computing six flags for each work.
+            // Resolve metadata/search first; hydrate only matching works below.
             let mut stmt = conn.prepare_cached(
-                "WITH source_kinds AS (
-                    SELECT DISTINCT t.work_id, ms.source_kind, ms.availability
-                    FROM tracks t
-                    CROSS JOIN track_versions tv ON tv.track_id = t.id
-                    CROSS JOIN media_sources ms ON ms.version_id = tv.id
-                 ), src_agg AS (
-                    SELECT ms.work_id,
-                           MAX(CASE WHEN ms.source_kind IN ('local_imported', 'local_downloaded') THEN 1 ELSE 0 END) AS has_local,
-                           MAX(CASE WHEN ms.source_kind = 'local_imported' THEN 1 ELSE 0 END) AS has_local_imported,
-                           MAX(CASE WHEN ms.source_kind = 'local_downloaded' THEN 1 ELSE 0 END) AS has_downloaded,
-                           MAX(CASE WHEN ms.source_kind = 'online_provider' THEN 1 ELSE 0 END) AS has_online_src,
-                           MAX(CASE WHEN ms.availability = 'available' THEN 1 ELSE 0 END) AS any_available,
-                           MAX(CASE WHEN ms.availability = 'offline_disk' THEN 1 ELSE 0 END) AS any_offline_disk
-                    FROM source_kinds ms
-                    GROUP BY ms.work_id
-                 ),
-                 latest_ws AS (
+                "WITH latest_ws AS (
                     SELECT ws.work_id, ws.source_work_id, ws.raw_metadata_json
                     FROM work_sources ws
-                    WHERE ws.id = (
-                        SELECT ws2.id FROM work_sources ws2
-                        WHERE ws2.work_id = ws.work_id
-                        ORDER BY ws2.refreshed_at DESC
-                        LIMIT 1
-                    )
+                    WHERE ws.id = (SELECT ws2.id FROM work_sources ws2
+                        WHERE ws2.work_id = ws.work_id ORDER BY ws2.refreshed_at DESC LIMIT 1)
                  )
                  SELECT w.id, w.title, w.description, w.rj_code, w.circle_name,
                         w.voice_actors_json, w.tags_json, w.cover_ref, w.updated_at,
@@ -746,13 +733,8 @@ impl Database {
                         t_last.title AS last_track_title,
                         lws.source_work_id,
                         lws.raw_metadata_json,
-                        COALESCE(sa.has_local, 0),
-                        COALESCE(sa.has_downloaded, 0),
-                        COALESCE(sa.has_online_src, 0),
-                        COALESCE(sa.any_available, 0),
-                        COALESCE(sa.any_offline_disk, 0),
                         CASE WHEN c.work_id IS NOT NULL THEN 1 ELSE 0 END AS is_col,
-                        COALESCE(sa.has_local_imported, 0), w.nsfw_detected, w.has_subtitle_metadata
+                        w.nsfw_detected, w.has_subtitle_metadata
                  FROM works w
                  LEFT JOIN favorites f ON f.work_id = w.id
                  LEFT JOIN collected_works c ON c.work_id = w.id
@@ -761,7 +743,6 @@ impl Database {
                  LEFT JOIN track_versions tv_last ON tv_last.id = wps.last_version_id
                  LEFT JOIN tracks t_last ON t_last.id = tv_last.track_id
                  LEFT JOIN latest_ws lws ON lws.work_id = w.id
-                 LEFT JOIN src_agg sa ON sa.work_id = w.id
                  ORDER BY CASE WHEN ?1 = 'recent' THEN wps.last_played_at ELSE w.updated_at END DESC",
             )?;
 
@@ -784,14 +765,8 @@ impl Database {
                     r.get::<_, Option<String>>(14)?,
                     r.get::<_, Option<String>>(15)?,
                     r.get::<_, i64>(16)? == 1,
-                    r.get::<_, i64>(17)? == 1,
-                    r.get::<_, i64>(18)? == 1,
-                    r.get::<_, i64>(19)? == 1,
-                    r.get::<_, i64>(20)? == 1,
-                    r.get::<_, i64>(21)? == 1,
-                    r.get::<_, i64>(22)? == 1,
-                    r.get::<_, bool>(23)?,
-                    r.get::<_, bool>(24)?,
+                    r.get::<_, bool>(17)?,
+                    r.get::<_, bool>(18)?,
                 ))
             })?;
 
@@ -822,13 +797,7 @@ impl Database {
                     last_track_title,
                     source_work_id,
                     raw_metadata_json,
-                    has_local,
-                    has_downloaded,
-                    has_online_src,
-                    any_available,
-                    any_offline_disk,
                     is_collected,
-                    has_local_imported,
                     nsfw_detected,
                     has_subtitle_metadata,
                 ) = row?;
@@ -843,13 +812,7 @@ impl Database {
                     continue;
                 }
 
-                let has_online = source_work_id.is_some() || has_online_src;
-                if filter == "local" && !has_local {
-                    continue;
-                }
-                if filter == "online" && !has_online {
-                    continue;
-                }
+                let has_online = source_work_id.is_some();
 
                 let ov_map = all_overrides.get(&id);
                 let online_meta: Option<Value> = raw_metadata_json
@@ -891,20 +854,12 @@ impl Database {
                     }
                 }
 
-                let availability = if any_available {
-                    "available".to_string()
-                } else if any_offline_disk {
-                    "offline_disk".to_string()
-                } else {
-                    "missing".to_string()
-                };
-
                 results.push(WorkSummary {
                     has_recognized_subtitle,
                     nsfw,
                     has_subtitle,
-                    listening_status: listening_statuses.get(&id).copied().unwrap_or_default(),
-                    is_listened: listening_states.get(&id).copied().unwrap_or(false),
+                    listening_status: ListeningStatus::default(),
+                    is_listened: false,
                     id,
                     title,
                     rj_code,
@@ -912,11 +867,11 @@ impl Database {
                     voice_actors,
                     tags,
                     cover_ref,
-                    has_local,
+                    has_local: false,
                     has_online,
-                    has_local_imported,
-                    has_downloaded,
-                    availability,
+                    has_local_imported: false,
+                    has_downloaded: false,
+                    availability: "missing".into(),
                     is_collected,
                     is_favorite,
                     last_version_id,
@@ -929,6 +884,26 @@ impl Database {
                 if filter == "recent" && results.len() == 100 { break; }
             }
 
+            let scope = serde_json::to_string(&results.iter().map(|w| &w.id).collect::<Vec<_>>())
+                .map_err(|e| AppError::new(ErrorCode::DatabaseError, e.to_string()))?;
+            let (listened, statuses) = super::listening::library_states(conn, &scope)?;
+            let mut sources = conn.prepare_cached(WORK_SOURCE_FLAGS_SQL)?;
+            let flags = sources.query_map([&scope], |r| Ok((r.get::<_,String>(0)?,
+                (r.get::<_,bool>(1)?,r.get::<_,bool>(2)?,r.get::<_,bool>(3)?,
+                 r.get::<_,bool>(4)?,r.get::<_,bool>(5)?,r.get::<_,bool>(6)?))))?
+                .collect::<Result<HashMap<_,_>,_>>()?;
+            for work in &mut results {
+                work.listening_status = statuses.get(&work.id).copied().unwrap_or_default();
+                work.is_listened = listened.get(&work.id).copied().unwrap_or(false);
+                if let Some(&(local, imported, downloaded, online, available, offline)) = flags.get(&work.id) {
+                    work.has_local = local;
+                    work.has_local_imported = imported;
+                    work.has_downloaded = downloaded;
+                    work.has_online |= online;
+                    work.availability = if available { "available" } else if offline { "offline_disk" } else { "missing" }.into();
+                }
+            }
+            results.retain(|w| (filter != "local" || w.has_local) && (filter != "online" || w.has_online));
             Ok(results)
         })
     }

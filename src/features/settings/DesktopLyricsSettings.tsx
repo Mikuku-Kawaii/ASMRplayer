@@ -1,3 +1,4 @@
+import { SettingsSaveNote } from "./SettingsSaveNote";
 import { HelpHint } from "../../components/HelpHint";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { Captions, RotateCcw } from "lucide-react";
@@ -26,6 +27,7 @@ export function DesktopLyricsSettings() {
   return <section className="settings-card settings-group-card" aria-label="桌面歌词设置">
     <div className="settings-group-header"><div className="settings-group-title-wrap"><span className="settings-group-icon"><Captions size={18} /></span><div className="setting-label-help"><h3>桌面歌词</h3><HelpHint label={"桌面歌词"} text={<>独立置顶显示当前字幕；锁定后固定当前位置，右键可调整显示。</>} /></div></div></div>
     <div className="settings-group-body">
+    <SettingsSaveNote busy={busy} error={error}>自动保存 · 立即更新桌面歌词；滑块松开或移开焦点后保存</SettingsSaveNote>
       {([['enabled','开启桌面歌词'],['locked','锁定当前位置'],['backgroundEnabled','显示歌词背景']] as const).map(([key,label]) => <div className="settings-row" key={key}><span className="setting-label-help"><label htmlFor={`lyrics-${key}`}>{label}</label>{key === "locked" && <HelpHint label={label} text="锁定后不能拖动，可右键解锁。" />}</span><input id={`lyrics-${key}`} type="checkbox" role="switch" className="toggle-switch" checked={s?.[key] ?? false} disabled={!s || busy} onChange={e => void update({ [key]: e.target.checked })} /></div>)}
       <div className="settings-row">
         <span className="setting-label-help"><span id="lyrics-language-label">字幕语言</span><HelpHint label="字幕语言" text="选择中文、原文或双语；只有一种字幕时显示现有内容，字幕间隔保留上一句。" /></span>

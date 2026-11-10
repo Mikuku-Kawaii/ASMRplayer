@@ -105,6 +105,28 @@ impl RecognitionService {
     }
 }
 
+/// Reject newly invented quotations used to smuggle an untranslated fragment
+/// into Chinese prose. Original quotations and explicit glossary preferences
+/// remain valid; kana in a name or elsewhere is not a failure by itself.
+pub(super) fn fabricated_fragment_quote(source: &str, translation: &str, settings: &RecognitionSettings) -> bool {
+    for (open, close) in [('『','』'),('「','」'),('“','”'),('‘','’'),('"','"')] {
+        let mut rest = translation;
+        while let Some(begin) = rest.find(open) {
+            rest = &rest[begin+open.len_utf8()..];
+            let Some(end) = rest.find(close) else { break; };
+            let quoted = rest[..end].trim();
+            let kana = quoted.chars().filter(|c| matches!(c, '\u{3041}'..='\u{3096}' | '\u{30a1}'..='\u{30fa}')).count();
+            if kana >= 2 && source.contains(quoted)
+                && !source.contains(&format!("{open}{quoted}{close}"))
+                && !settings.preferences.glossary.iter().any(|t| t.matches(source) && t.target.contains(quoted)) {
+                return true;
+            }
+            rest = &rest[end+close.len_utf8()..];
+        }
+    }
+    false
+}
+
 // This detects a copied Japanese sentence/fragment, not translation correctness.
 // Names/quotes may legitimately contain kana; character counts cannot assess meaning.
 pub(super) fn is_untranslated_copy(
@@ -137,6 +159,53 @@ mod tests {
         matchers::{method, path},
         Mock, MockServer, ResponseTemplate,
     };
+    #[test]
+    fn newly_quoted_fragments_are_not_translations_but_names_and_original_quotes_are_valid() {
+        let mut settings = RecognitionSettings::default();
+        assert!(fabricated_fragment_quote("けたりはしない", "不会做『けたり』这种事", &settings));
+        assert!(!fabricated_fragment_quote("「けたり」と書いてある", "上面写着「けたり」", &settings));
+        assert!(!fabricated_fragment_quote("美咲さんです", "是美咲さん", &settings));
+        settings.preferences.glossary.push(crate::services::subtitle_preferences::Term {
+            source:"アルファ".into(), target:"『アルファ』".into(), ..Default::default()
+        });
+        assert!(!fabricated_fragment_quote("アルファです", "是『アルファ』", &settings));
+    }
+
+    #[tokio::test]
+    async fn fragment_failure_retries_only_bad_id_and_accepts_explicit_uncertainty() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open_and_migrate(&temp.path().join("d"), &temp.path().join("c")).unwrap();
+        let service = RecognitionService::new(db.clone(), db.data_dir.clone(), "test.fragment");
+        let server = MockServer::start().await;
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = calls.clone();
+        Mock::given(method("POST")).and(path("/api/chat")).respond_with(move |request: &wiremock::Request| {
+            let body: serde_json::Value = request.body_json().unwrap();
+            assert!(body["messages"][0]["content"].as_str().unwrap().contains("〔原文不清〕"));
+            let input: serde_json::Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+            assert!(input["context"].as_str().unwrap().contains("audioContext"));
+            let n = count.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+            let output = if n == 0 {
+                serde_json::json!({"translations":[
+                    {"id":7,"parts":[{"source":"けたりはしない","translation":"不会做『けたり』这种事"}]},
+                    {"id":9,"parts":[{"source":"また明日","translation":"明天见"}]}]})
+            } else {
+                assert_eq!(input["sentences"].as_array().unwrap().len(),1);
+                assert_eq!(input["sentences"][0]["id"],7);
+                serde_json::json!({"translations":[{"id":7,"parts":[{"source":"けたりはしない","translation":"不会〔原文不清〕"}]}]})
+            };
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"message":{"content":output.to_string()}}))
+        }).expect(2).mount(&server).await;
+        let settings = RecognitionSettings { ollama_url:server.uri(), ..Default::default() };
+        let result = service.translate_local_batch(&settings, &[
+            TranslationLine { id:7,text:"けたりはしない".into() },
+            TranslationLine { id:9,text:"また明日".into() },
+        ],"audioContext：未确认的音频候选").await.unwrap();
+        assert_eq!(result[&9],"明天见");
+        assert_eq!(result[&7],"不会〔原文不清〕");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst),2);
+    }
+
     #[tokio::test]
     async fn local_translation_keeps_valid_id_and_retries_missing_id_with_candidate_and_preferences(
     ) {

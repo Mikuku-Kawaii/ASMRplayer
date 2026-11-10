@@ -1,0 +1,9 @@
+<!-- Generated from lucide-react 0.468.0; ISC. See licenses/Lucide-LICENSE.txt. Do not hand-edit. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M8,12 A1,1 0 1,0 10,12 A1,1 0 1,0 8,12 Z" android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="1.75" android:strokeLineCap="round" android:strokeLineJoin="round"/>
+    <path android:pathData="M8,5 A1,1 0 1,0 10,5 A1,1 0 1,0 8,5 Z" android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="1.75" android:strokeLineCap="round" android:strokeLineJoin="round"/>
+    <path android:pathData="M8,19 A1,1 0 1,0 10,19 A1,1 0 1,0 8,19 Z" android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="1.75" android:strokeLineCap="round" android:strokeLineJoin="round"/>
+    <path android:pathData="M14,12 A1,1 0 1,0 16,12 A1,1 0 1,0 14,12 Z" android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="1.75" android:strokeLineCap="round" android:strokeLineJoin="round"/>
+    <path android:pathData="M14,5 A1,1 0 1,0 16,5 A1,1 0 1,0 14,5 Z" android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="1.75" android:strokeLineCap="round" android:strokeLineJoin="round"/>
+    <path android:pathData="M14,19 A1,1 0 1,0 16,19 A1,1 0 1,0 14,19 Z" android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="1.75" android:strokeLineCap="round" android:strokeLineJoin="round"/>
+</vector>

@@ -171,6 +171,32 @@ pub struct IslandMonitor {
 #[serde(rename_all = "snake_case")]
 pub enum IslandSubtitlePreference { Chinese, #[default] Original }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum IslandExpandMode { Focus, #[default] Click }
+
+fn read_expand_mode(db: &Database) -> AppResult<IslandExpandMode> {
+    Ok(db.get_setting("island_expand_mode")?
+        .and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default())
+}
+
+#[test]
+fn island_expand_mode_defaults_and_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let cache = dir.path().join("cache");
+    let db = Database::open_and_migrate(&data, &cache).unwrap();
+    assert_eq!(read_expand_mode(&db).unwrap(), IslandExpandMode::Click);
+    for mode in [IslandExpandMode::Focus, IslandExpandMode::Click] {
+        db.set_setting("island_expand_mode", &serde_json::to_string(&mode).unwrap()).unwrap();
+        let reopened = Database::open_and_migrate(&data, &cache).unwrap();
+        assert_eq!(read_expand_mode(&reopened).unwrap(), mode);
+    }
+    assert!(serde_json::from_str::<IslandExpandMode>("\"invalid\"").is_err());
+    db.set_setting("island_expand_mode", "invalid").unwrap();
+    assert_eq!(read_expand_mode(&db).unwrap(), IslandExpandMode::Click);
+}
+
 fn read_subtitle_preference(db: &Database) -> AppResult<IslandSubtitlePreference> {
     Ok(db.get_setting("island_subtitle_preference")?
         .and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default())
@@ -194,6 +220,7 @@ fn island_subtitle_preference_defaults_and_persists() {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IslandLayout {
+    pub expand_mode: IslandExpandMode,
     pub subtitle_preference: IslandSubtitlePreference,
     #[serde(flatten)]
     pub typography: IslandTypography,
@@ -446,6 +473,7 @@ impl IslandService {
             operation: Arc::new(Mutex::new(())),
             state: Arc::new(Mutex::new(State {
                 layout: IslandLayout {
+                    expand_mode: IslandExpandMode::default(),
                     subtitle_preference: IslandSubtitlePreference::default(),
                     typography: IslandTypography::default(),
                     revision: 0,
@@ -528,6 +556,7 @@ impl IslandService {
             active_monitor_id: active.id.clone(),
             monitors,
             layout: IslandLayout {
+                expand_mode: read_expand_mode(&self.db)?,
                 subtitle_preference: read_subtitle_preference(&self.db)?,
                 typography: appearance.typography,
                 native_glass: native_glass_ready(),
@@ -543,6 +572,7 @@ impl IslandService {
         font_size: Option<u8>,
         font_weight: Option<u16>,
         subtitle_preference: Option<IslandSubtitlePreference>,
+        expand_mode: Option<IslandExpandMode>,
     ) -> AppResult<IslandPreferences> {
         let _operation = self.operation.lock();
         let current = self.preferences()?;
@@ -558,6 +588,9 @@ impl IslandService {
         };
         if let Some(preference) = subtitle_preference {
             self.db.set_setting("island_subtitle_preference", &serde_json::to_string(&preference).map_err(error)?)?;
+        }
+        if let Some(mode) = expand_mode {
+            self.db.set_setting("island_expand_mode", &serde_json::to_string(&mode).map_err(error)?)?;
         }
         if let Some(id) = monitor_id {
             self.db.set_setting("island_monitor", &id)?;
@@ -623,6 +656,7 @@ impl IslandService {
             if !refresh_viewport && state.layout.form == form
                 && state.layout.typography == preferences.layout.typography
                 && state.layout.subtitle_preference == preferences.layout.subtitle_preference
+                && state.layout.expand_mode == preferences.layout.expand_mode
                 && state.layout.width == requested_width
                 && state.layout.height == form.dimensions().1
                 && (state.layout.scale - scale).abs() < 0.000001
@@ -645,6 +679,7 @@ impl IslandService {
             state.canvas = canvas;
             state.moved = false;
             state.layout = IslandLayout {
+                expand_mode: preferences.layout.expand_mode,
                 subtitle_preference: preferences.layout.subtitle_preference,
                 typography: preferences.layout.typography,
                 revision: state.layout.revision + 1,

@@ -108,6 +108,10 @@ pub struct MpvController {
     hardware_acceleration: Arc<Mutex<bool>>,
     audio_exclusive: Arc<Mutex<bool>>,
     audio_device: Arc<Mutex<String>>,
+    reverse_stereo: Arc<Mutex<bool>>,
+    gapless_playback: Arc<Mutex<bool>>,
+    transition_gain: Arc<Mutex<f64>>,
+    requested_volume: Arc<Mutex<f64>>,
     #[cfg(test)]
     use_wasapi_for_test: bool,
 }
@@ -122,6 +126,10 @@ impl MpvController {
             hardware_acceleration: Arc::new(Mutex::new(true)),
             audio_exclusive: Arc::new(Mutex::new(false)),
             audio_device: Arc::new(Mutex::new("auto".into())),
+            reverse_stereo: Arc::new(Mutex::new(false)),
+            gapless_playback: Arc::new(Mutex::new(true)),
+            transition_gain: Arc::new(Mutex::new(1.0)),
+            requested_volume: Arc::new(Mutex::new(100.0)),
             #[cfg(test)]
             use_wasapi_for_test: false,
         }
@@ -267,7 +275,7 @@ impl MpvController {
         let proxy = self.proxy_url.lock().clone();
         let hw_accel = *self.hardware_acceleration.lock();
         let exclusive = *self.audio_exclusive.lock();
-        let current_af = self.af_graph.lock().clone();
+        let current_af = crate::services::immersion::output_graph(&self.af_graph.lock(), *self.reverse_stereo.lock());
         let device = self.audio_device.lock().clone();
         #[cfg(not(test))]
         let output_driver = "wasapi";
@@ -305,7 +313,7 @@ impl MpvController {
             let _ = api.set_option_str(ctx, "volume-max", "200");
             let _ = api.set_option_str(ctx, "demuxer-lavf-analyzeduration", "0.5");
             let _ = api.set_option_str(ctx, "demuxer-lavf-probesize", "262144");
-            let _ = api.set_option_str(ctx, "gapless-audio", "weak");
+            api.set_option_str(ctx, "gapless-audio", if *self.gapless_playback.lock() { "weak" } else { "no" })?;
             let _ = api.set_option_str(ctx, "keep-open", "no");
             let _ = api.set_option_str(ctx, "cache", "yes");
             let _ = api.set_option_str(ctx, "demuxer-max-bytes", "64MiB");
@@ -620,16 +628,19 @@ impl MpvController {
         af_graph: &str,
     ) -> AppResult<()> {
         *self.af_graph.lock() = af_graph.to_string();
+        *self.requested_volume.lock() = volume.clamp(0.0, MAX_MPV_VOLUME);
         self.ensure_started().await?;
         let fields: Vec<String> = headers
             .iter()
             .map(|(k, v)| format!("{}: {}", k, v))
             .collect();
+        let output_volume=volume.clamp(0.0, MAX_MPV_VOLUME) * *self.transition_gain.lock();
+        let output_graph=crate::services::immersion::output_graph(af_graph, *self.reverse_stereo.lock());
         self.send_commands_pipelined(vec![
             json!(["set_property", "http-header-fields", fields]),
             json!(["set_property", "pause", paused]),
-            json!(["set_property", "volume", volume.clamp(0.0, MAX_MPV_VOLUME)]),
-            json!(["set_property", "af", af_graph]),
+            json!(["set_property", "volume", output_volume]),
+            json!(["set_property", "af", output_graph]),
             json!(["loadfile", target, "replace"]),
         ])
         .await?;
@@ -646,7 +657,8 @@ impl MpvController {
                 .unwrap_or(false)
         };
         if is_running {
-            self.send_command_raw(json!(["set_property", "af", af_graph]))
+            let output_graph=crate::services::immersion::output_graph(af_graph, *self.reverse_stereo.lock());
+            self.send_command_raw(json!(["set_property", "af", output_graph]))
                 .await?;
         }
         *self.af_graph.lock() = af_graph.to_string();
@@ -698,12 +710,31 @@ impl MpvController {
     }
 
     pub async fn set_volume(&self, volume: f64) -> AppResult<()> {
-        self.command(json!([
-            "set_property",
-            "volume",
-            volume.clamp(0.0, MAX_MPV_VOLUME)
-        ]))
-        .await?;
+        *self.requested_volume.lock() = volume.clamp(0.0, MAX_MPV_VOLUME);
+        let output = volume.clamp(0.0, MAX_MPV_VOLUME) * *self.transition_gain.lock();
+        self.command(json!(["set_property", "volume", output])).await?;
+        Ok(())
+    }
+
+    pub fn set_initial_immersion(&self, reverse:bool, gapless:bool) {
+        *self.reverse_stereo.lock()=reverse;*self.gapless_playback.lock()=gapless;
+    }
+    pub async fn set_immersion(&self, reverse:bool, gapless:bool)->AppResult<()> {
+        if self.is_running().await {
+            let base=self.af_graph.lock().clone();
+            let previous=(*self.reverse_stereo.lock(),*self.gapless_playback.lock());
+            if let Err(error)=self.send_commands_pipelined(vec![json!(["set_property","gapless-audio",if gapless {"weak"} else {"no"}]),json!(["set_property","af",crate::services::immersion::output_graph(&base,reverse)])]).await {
+                let _=self.send_commands_pipelined(vec![json!(["set_property","gapless-audio",if previous.1 {"weak"} else {"no"}]),json!(["set_property","af",crate::services::immersion::output_graph(&base,previous.0)])]).await;
+                return Err(error);
+            }
+        }
+        self.set_initial_immersion(reverse,gapless);Ok(())
+    }
+    pub fn transition_gain(&self)->f64 { *self.transition_gain.lock() }
+    pub async fn set_transition_gain(&self,gain:f64)->AppResult<()> {
+        let gain=gain.clamp(0.0,1.0);*self.transition_gain.lock()=gain;
+        let output=*self.requested_volume.lock()*gain;
+        if self.is_running().await { self.send_command_raw(json!(["set_property","volume",output])).await?; }
         Ok(())
     }
 

@@ -6,7 +6,9 @@ import { ContextMenu } from "../../components/ContextMenu";
 import { useSubtitleDocumentEditor } from "./useSubtitleDocumentEditor";
 import { AudioOutputPanel } from "./AudioOutputPanel";
 import { BookmarkNotes } from "./BookmarkNotes";
-import { QueuePlans } from "./QueuePlans";
+import { ImmersionPanel } from "./ImmersionPanel";
+import { Playlists } from "./PlaylistDrawer";
+import { PlaylistMenuItem } from "./PlaylistPicker";
 import { subtitleWindows } from "../../lib/subtitleWindow";
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import {
@@ -41,7 +43,7 @@ import {
 } from "../../lib/api";
 
 interface RightDrawerProps {
-  activeTab: "none" | "queue" | "bookmarks" | "subtitles" | "dsp" | "audio";
+  activeTab: "none" | "queue" | "playlists" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio";
   onClose: () => void;
   snapshot: PlaybackSnapshot;
   onSnapshotChange: (snap: PlaybackSnapshot) => void;
@@ -80,6 +82,8 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
     return () => window.removeEventListener("pointerdown", dismissOutside);
   }, [activeTab, onClose]);
 
+  const [queueMenu, setQueueMenu] = useState<{ x: number; y: number; version: string } | null>(null);
+  useEffect(() => setQueueMenu(null), [activeTab]);
   const [savedLoops, setSavedLoops] = useState<AbLoopDto[]>([]);
   const [sleepMinutesInput, setSleepMinutesInput] = useState(30);
   const [sleepFadeOutSec, setSleepFadeOutSec] = useState<number>(
@@ -566,8 +570,10 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
         <h3 className="drawer-header-title">
           {activeTab === "queue"
             ? `播放队列 (${snapshot.queue.length})`
+            : activeTab === "immersion" ? "沉浸设置"
+            : activeTab === "playlists" ? "歌单"
             : activeTab === "bookmarks"
-            ? "书签 · 循环 · 睡眠定时"
+            ? "标记 · 循环 · 睡眠定时"
             : activeTab === "dsp"
             ? "专业音效与防炸耳 (DSP / EQ)"
             : activeTab === "audio"
@@ -612,13 +618,16 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
         </div>
       </div>
 
+      {activeTab === "immersion" && <ImmersionPanel />}
+      {activeTab === "playlists" && <Playlists onSnapshotChange={onSnapshotChange} />}
+      {queueMenu && <ContextMenu x={queueMenu.x} y={queueMenu.y} label="队列音轨操作" onClose={() => setQueueMenu(null)}><PlaylistMenuItem target={{ versionIds: [queueMenu.version] }} onClose={() => setQueueMenu(null)} /></ContextMenu>}
+
       {activeTab === "audio" && (
         <AudioOutputPanel snapshot={snapshot} onSnapshotChange={onSnapshotChange} onError={onError} />
       )}
 
       {activeTab === "queue" && (
         <div className="drawer-body">
-          <QueuePlans snapshot={snapshot} onSnapshotChange={onSnapshotChange} />
           {snapshot.queue.length === 0 ? (
             <div className="empty-box">
               当前播放队列为空。可在作品详情页点击「全部加入队列」或选择单条音轨入队。
@@ -631,6 +640,7 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
                   return (
                     <li
                       key={item.id}
+                      onContextMenu={event => { event.preventDefault(); setQueueMenu({ x: event.clientX, y: event.clientY, version: item.versionId }); }}
                       className={`queue-item ${isCurrent ? "current" : ""}`}
                     >
                       <div className="queue-item-main">
@@ -824,7 +834,7 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
 
       {activeTab === "subtitles" && (
         <div className="drawer-body">
-          <SubtitleTaskPanel versionId={snapshot.currentVersionId} onOpenSettings={onOpenRecognitionSettings} />
+          <SubtitleTaskPanel versionId={snapshot.currentVersionId} trackTitle={snapshot.currentTrackTitle} onReviewCue={subtitleEditor.openEdit} onOpenSettings={onOpenRecognitionSettings} />
           {subtitleEditor.feedback}
           {subtitleEditor.dialog}
           {scriptVersion && <ScriptAlignmentDialog versionId={scriptVersion} onClose={() => setScriptVersion(null)} />}
@@ -1732,4 +1742,3 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
     </aside>
   );
 };
-

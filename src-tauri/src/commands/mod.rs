@@ -10,8 +10,12 @@ use crate::services::session::SessionService;
 use crate::services::updater::{UpdateService, UpdateSnapshot};
 use tauri::{AppHandle, Emitter, Manager, State};
 pub mod recognition;
+pub mod device_sync;
+pub mod playlists;
+pub mod immersion;
 
 pub struct AppState {
+    pub device_sync: crate::services::device_sync::SyncService,
     pub window_placement: crate::services::window_placement::WindowPlacementService,
     pub subtitle_tasks: crate::services::subtitle_tasks::SubtitleTaskService,
     pub recognition: crate::services::recognition::RecognitionService,
@@ -30,7 +34,7 @@ pub struct AppState {
 pub fn get_island_preferences(state: State<'_, AppState>) -> AppResult<crate::services::island::IslandPreferences> { state.island.preferences() }
 
 #[tauri::command]
-pub async fn set_island_preferences(state: State<'_, AppState>, compact_scale: Option<f64>, expanded_scale: Option<f64>, monitor_id: Option<String>, font_size: Option<u8>, font_weight: Option<u16>, subtitle_preference: Option<crate::services::island::IslandSubtitlePreference>) -> AppResult<crate::services::island::IslandPreferences> { state.island.set_preferences(compact_scale, expanded_scale, monitor_id, font_size, font_weight, subtitle_preference) }
+pub async fn set_island_preferences(state: State<'_, AppState>, compact_scale: Option<f64>, expanded_scale: Option<f64>, monitor_id: Option<String>, font_size: Option<u8>, font_weight: Option<u16>, subtitle_preference: Option<crate::services::island::IslandSubtitlePreference>, expand_mode: Option<crate::services::island::IslandExpandMode>) -> AppResult<crate::services::island::IslandPreferences> { state.island.set_preferences(compact_scale, expanded_scale, monitor_id, font_size, font_weight, subtitle_preference, expand_mode) }
 
 #[tauri::command]
 pub async fn island_set_form(state: State<'_, AppState>, form: crate::services::island::IslandForm, animate: Option<bool>, compact_width: Option<f64>) -> AppResult<crate::services::island::IslandLayout> {
@@ -598,8 +602,8 @@ pub async fn export_bookmark_notes(state: State<'_, AppState>, target_path: Opti
     tauri::async_runtime::spawn_blocking(move || {
         let bundle = db.export_bookmark_notes()?;
         if let Some(path) = target_path {
-            if !path.to_lowercase().ends_with(".json") { return Err(AppError::new(ErrorCode::InvalidInput,"请选择 .json 书签备份文件")); }
-            let bytes = serde_json::to_vec_pretty(&bundle).map_err(|_| AppError::new(ErrorCode::InternalError,"书签备份编码失败"))?;
+            if !path.to_lowercase().ends_with(".json") { return Err(AppError::new(ErrorCode::InvalidInput,"请选择 .json 标记备份文件")); }
+            let bytes = serde_json::to_vec_pretty(&bundle).map_err(|_| AppError::new(ErrorCode::InternalError,"标记备份编码失败"))?;
             std::fs::write(path,bytes)?;
         }
         Ok(bundle)
@@ -802,6 +806,13 @@ pub fn list_download_tasks(state: State<'_, AppState>) -> AppResult<Vec<Download
 }
 
 #[tauri::command]
+pub async fn open_download_directory(state: State<'_, AppState>) -> AppResult<()> {
+    let downloads = state.downloads.clone();
+    tokio::task::spawn_blocking(move || downloads.open_download_directory()).await
+        .map_err(|e| AppError::new(ErrorCode::InternalError, format!("无法打开下载目录：{e}")))?
+}
+
+#[tauri::command]
 pub fn pause_download_task(
     state: State<'_, AppState>,
     task_id: String,
@@ -878,6 +889,18 @@ pub fn list_association_history(
 #[tauri::command]
 pub fn get_app_settings(state: State<'_, AppState>) -> AppResult<AppSettingsDto> {
     state.session.get_settings()
+}
+
+#[tauri::command]
+pub fn get_theme_preset(state: State<'_, AppState>) -> AppResult<crate::services::theme::ThemePreset> {
+    crate::services::theme::read(&state.db)
+}
+
+#[tauri::command]
+pub fn set_theme_preset(app: AppHandle, state: State<'_, AppState>, preset: crate::services::theme::ThemePreset) -> AppResult<crate::services::theme::ThemePreset> {
+    let saved = crate::services::theme::save(&state.db, preset)?;
+    let _ = app.emit("theme:updated", saved);
+    Ok(saved)
 }
 
 #[derive(serde::Serialize)]

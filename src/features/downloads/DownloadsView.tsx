@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from "react";
+import React, { useEffect, useState, useCallback, useRef, useId } from "react";
 import {
   Pause,
   Play,
@@ -8,6 +8,9 @@ import {
   AlertTriangle,
   ShieldCheck,
   ListX,
+  Settings2,
+  FolderOpen,
+  MoreHorizontal,
 } from "lucide-react";
 import {
   DownloadTaskDto,
@@ -19,11 +22,12 @@ import {
 } from "../../lib/api";
 
 import { Select } from "../../components/Select";
-import { DownloadPolicyPanel } from "./DownloadPolicyPanel";
+import { ContextMenu } from "../../components/ContextMenu";
 
 interface DownloadsViewProps {
   onSelectWork: (workId: string) => void;
   onError: (err: AppError) => void;
+  onOpenSettings: () => void;
 }
 type BulkAction = "resume" | "pause" | "cancel" | "clearCompleted";
 const bulkCommands: Record<BulkAction, string> = {
@@ -34,9 +38,15 @@ const bulkCommands: Record<BulkAction, string> = {
 export const DownloadsView: React.FC<DownloadsViewProps> = ({
   onSelectWork,
   onError,
+  onOpenSettings,
 }) => {
   const [tasks, setTasks] = useState<DownloadTaskDto[]>([]);
   const [loading, setLoading] = useState(false);
+  const [openingDirectory, setOpeningDirectory] = useState(false);
+  const directoryOpening = useRef(false);
+  const [moreMenu, setMoreMenu] = useState<{ x: number; y: number } | null>(null);
+  const moreTrigger = useRef<HTMLButtonElement>(null);
+  const moreMenuId = useId();
   const request = useRef(0);
   const mounted = useRef(false);
 
@@ -127,6 +137,25 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
   const canCancel=tasks.some(task=>!["completed","canceled"].includes(task.status));
   const canClearCompleted=tasks.some(task=>task.status==="completed");
 
+  const openDownloadDirectory = async () => {
+    if (directoryOpening.current) return;
+    directoryOpening.current = true;
+    setOpeningDirectory(true);
+    try {
+      await callCommand("open_download_directory");
+    } catch (error) {
+      if (mounted.current) onError(normalizeAppError(error));
+    } finally {
+      directoryOpening.current = false;
+      if (mounted.current) setOpeningDirectory(false);
+    }
+  };
+
+  const toggleMoreMenu = () => {
+    const rect = moreTrigger.current?.getBoundingClientRect();
+    if (rect) setMoreMenu(current => current ? null : { x: rect.right, y: rect.bottom + 6 });
+  };
+
   const statusLabel = (s: string) => {
     switch (s) {
       case "queued":
@@ -151,43 +180,50 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
   };
 
   return (
-    <div className="page-container">
-      <header className="top-app-bar">
-        <div className="top-app-bar-main">
-          <div className="top-app-bar-title">
-            <h2>离线下载任务管理</h2>
-          </div>
-          <div className="action-group downloads-toolbar-actions" aria-busy={bulkPending!==null}>
+    <div className="page-container downloads-page">
+      <header className="top-app-bar downloads-top-bar" aria-label="下载工具栏">
+          <h2>离线下载</h2>
+          <div className="downloads-toolbar-actions" role="group" aria-label="常用下载操作" aria-busy={bulkPending!==null}>
             <button type="button" className="btn btn-primary btn-sm" disabled={bulkDisabled || !canResume} onClick={()=>void mutateAll("resume")}
               title="继续所有已暂停或失败的任务，遵守下载时段与并发限制">
-              <Play size={14}/><span>全部继续</span>
+              <Play size={14} aria-hidden="true"/><span className="ui-icon-label">全部继续</span>
             </button>
             <button type="button" className="btn btn-secondary btn-sm" disabled={bulkDisabled || !canPause} onClick={()=>void mutateAll("pause")}
               title="暂停所有未完成任务，保留下载进度和 .part 临时文件">
-              <Pause size={14}/><span>全部暂停</span>
-            </button>
-            <button type="button" className="btn btn-ghost btn-sm" disabled={bulkDisabled || !canCancel} onClick={()=>void mutateAll("cancel")}
-              title="取消所有未完成任务并清理 .part 临时文件，保留已完成文件">
-              <XCircle size={14}/><span>全部取消</span>
-            </button>
-            <button type="button" className="btn btn-ghost btn-sm" disabled={bulkDisabled || !canClearCompleted} onClick={()=>void mutateAll("clearCompleted")}
-              title="仅从任务列表清除已完成记录，保留下载文件和音频库来源">
-              <ListX size={14}/><span>{bulkPending==="clearCompleted" ? "正在清除…" : "清除已完成任务"}</span>
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              disabled={bulkDisabled}
-              onClick={() => void loadTasks()}
-            >
-              <RefreshCw size={14} />
-              <span>刷新状态</span>
+              <Pause size={14} aria-hidden="true"/><span className="ui-icon-label">全部暂停</span>
             </button>
           </div>
-        </div>
+          <div className="downloads-toolbar-tools" role="group" aria-label="下载工具">
+            <button type="button" className="btn-icon" disabled={openingDirectory} aria-busy={openingDirectory}
+              onClick={() => void openDownloadDirectory()} aria-label="在资源管理器中打开" title="在资源管理器中打开下载目录">
+              <FolderOpen size={18} aria-hidden="true" />
+            </button>
+            <button type="button" className="btn-icon" disabled={bulkDisabled} onClick={() => void loadTasks()} aria-label="刷新状态" title="刷新下载状态">
+              <RefreshCw size={18} aria-hidden="true" />
+            </button>
+            <button ref={moreTrigger} type="button" className="btn-icon" onClick={toggleMoreMenu} aria-label="更多下载操作" title="更多下载操作"
+              aria-haspopup="menu" aria-expanded={moreMenu!==null} aria-controls={moreMenu ? moreMenuId : undefined}
+              onKeyDown={event => { if (event.key === "ArrowDown" && !moreMenu) { event.preventDefault(); event.stopPropagation(); toggleMoreMenu(); } }}>
+              <MoreHorizontal size={18} aria-hidden="true" />
+            </button>
+          </div>
       </header>
 
-      <DownloadPolicyPanel />
+      {moreMenu && <ContextMenu {...moreMenu} id={moreMenuId} trigger={moreTrigger.current ?? undefined} label="下载更多操作" onClose={() => setMoreMenu(null)}>
+        <button type="button" role="menuitem" className="m3-menu-item" disabled={bulkDisabled || !canClearCompleted}
+          title="仅清除已完成记录，保留下载文件和音频库来源" onClick={() => { setMoreMenu(null); void mutateAll("clearCompleted"); }}>
+          <ListX size={18} aria-hidden="true" /><span className="ui-icon-label">{bulkPending === "clearCompleted" ? "正在清除…" : "清除已完成任务"}</span>
+        </button>
+        <button type="button" role="menuitem" className="m3-menu-item" onClick={() => { setMoreMenu(null); onOpenSettings(); }}>
+          <Settings2 size={18} aria-hidden="true" /><span className="ui-icon-label">下载设置</span>
+        </button>
+        <div className="m3-menu-divider" role="separator" />
+        <button type="button" role="menuitem" className="m3-menu-item danger" disabled={bulkDisabled || !canCancel}
+          title="取消所有未完成任务并清理 .part 临时文件，保留已完成文件" onClick={() => { setMoreMenu(null); void mutateAll("cancel"); }}>
+          <XCircle size={18} aria-hidden="true" /><span className="ui-icon-label">全部取消</span>
+        </button>
+      </ContextMenu>}
+
       {tasks.length === 0 && !loading ? (
         <div className="empty-state-box">
           <h3>暂无下载任务</h3>

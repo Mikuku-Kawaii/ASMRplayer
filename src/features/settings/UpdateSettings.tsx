@@ -1,3 +1,4 @@
+import { SettingsSaveNote } from "./SettingsSaveNote";
 import { HelpHint } from "../../components/HelpHint";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import React, { useRef, useState } from "react";
@@ -30,6 +31,7 @@ export const UpdateSettings: React.FC<{ onError: (error: AppError) => void }> = 
       {update && <span className="badge badge-tech tabular-nums">当前 v{update.currentVersion}</span>}
     </div>
     <div className="settings-group-body">
+      <SettingsSaveNote>检查开关自动保存，下次启动时使用；下载和安装需手动操作。</SettingsSaveNote>
       <div className="settings-row">
         <span className="setting-label-help"><label htmlFor="update-auto-check">启动时检查更新</label><HelpHint label={"启动时检查更新"} text={<>发现新版本时提醒，点击安装后才会退出播放器</>} /></span>
         <input id="update-auto-check" type="checkbox" role="switch" checked={update?.autoCheck ?? false}

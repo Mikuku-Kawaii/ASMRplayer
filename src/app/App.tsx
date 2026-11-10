@@ -2,6 +2,8 @@ import { SubtitleActions } from "../features/player/useSubtitleActions";
 import { useActiveSubtitles } from "../features/lyrics/useActiveSubtitles";
 import { useSubtitleFollow } from "../features/lyrics/useSubtitleFollow";
 import { BrandButton } from "./BrandButton";
+import { ContentModeBadge } from "./ContentModeBadge";
+import { version as appVersion } from "../../package.json";
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import {
   ChevronDown, ExternalLink,
@@ -26,7 +28,6 @@ import {
   Subtitles,
   ListMusic,
   AppWindow,
-  Search,
 } from "lucide-react";
 import {
   PlaybackSnapshot,
@@ -45,6 +46,7 @@ import {
 } from "../lib/api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { PlayerBar } from "../features/player/PlayerBar";
+import { PlaylistPickerHost } from "../features/player/PlaylistPicker";
 import { RightDrawer } from "../features/player/RightDrawer";
 import { LibraryView } from "../features/library/LibraryView";
 import { WorkDetailView } from "../features/library/WorkDetailView";
@@ -58,7 +60,7 @@ import { ReleaseHistoryHost } from "../features/settings/ReleaseHistory";
 import { openUpdateDialog, UpdateDialogHost } from "../features/settings/UpdateDialog";
 import { ShortcutProvider, useShortcuts } from "../features/commands/ShortcutProvider";
 import { CommandPalette } from "../features/commands/CommandPalette";
-import { commands, eventBinding, shortcutTargetBlocked, shortcutTitle } from "../lib/shortcuts";
+import { commands, eventBinding, shortcutTargetBlocked } from "../lib/shortcuts";
 
 type NavPage =
   | "library"
@@ -81,7 +83,7 @@ const AppShell: React.FC = () => {
   const [bookmarkVersion, setBookmarkVersion] = useState<string | undefined>();
   const [snapshot, setSnapshot] = useState<PlaybackSnapshot>(defaultSnapshot);
   const [drawerTab, setDrawerTab] = useState<
-    "none" | "queue" | "bookmarks" | "subtitles" | "dsp" | "audio"
+    "none" | "queue" | "playlists" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio"
   >("none");
   const [globalError, setGlobalError] = useState<AppError | null>(null);
   const [isMaximized, setIsMaximized] = useState<boolean>(false);
@@ -380,7 +382,7 @@ const AppShell: React.FC = () => {
   ]);
 
   const handleToggleDrawer = (
-    tab: "queue" | "bookmarks" | "subtitles" | "dsp" | "audio"
+    tab: "queue" | "playlists" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio"
   ) => {
     setDrawerTab((cur) => (cur === tab ? "none" : tab));
   };
@@ -880,66 +882,64 @@ const AppShell: React.FC = () => {
         aria-label="窗口顶栏"
       >
         <div className="titlebar-left" data-tauri-drag-region>
-          <img
-            src="/asmr-icon.png"
-            alt=""
-            className="titlebar-logo"
-            data-tauri-drag-region
-          />
-          <span className="titlebar-app-name" data-tauri-drag-region>
-            ASMR Player
+          <span className="titlebar-version tabular-nums" data-tauri-drag-region
+            title={`当前版本 v${appVersion}`}>
+            v{appVersion}
           </span>
         </div>
 
         <div className="titlebar-controls">
-          <button type="button" className="titlebar-btn" aria-label="搜索命令" title={shortcutTitle("搜索命令", bindings.command_search)} onClick={() => setCommandSearchOpen(true)}><Search size={14} /></button>
-          <button
-            type="button"
-            className={`titlebar-btn ${isIslandOpen ? "active-island active-pin" : ""}`}
-            onClick={() => void handleToggleIsland()}
-            aria-label="切换桌面灵动岛"
-            aria-pressed={isIslandOpen}
-            title="切换独立桌面灵动岛 (Dynamic Island)"
-          >
-            <AppWindow size={13} />
-          </button>
-          <button
-            type="button"
-            className={`titlebar-btn ${isAlwaysOnTop ? "active-pin" : ""}`}
-            onClick={() => void handleToggleAlwaysOnTop()}
-            aria-label="窗口置顶"
-            aria-pressed={isAlwaysOnTop}
-            title={isAlwaysOnTop ? "取消窗口置顶" : "窗口置顶"}
-          >
-            <Pin size={13} />
-          </button>
-          <button
-            type="button"
-            className="titlebar-btn"
-            onClick={() => void handleMinimizeWindow()}
-            aria-label="最小化窗口"
-            title="最小化"
-          >
-            <Minus size={14} />
-          </button>
-          <button
-            type="button"
-            className="titlebar-btn"
-            onClick={() => void handleToggleMaximizeWindow()}
-            aria-label="最大化或还原窗口"
-            title={isMaximized ? "向下还原" : "最大化"}
-          >
-            {isMaximized ? <Copy size={12} /> : <Square size={12} />}
-          </button>
-          <button
-            type="button"
-            className="titlebar-btn titlebar-btn-close"
-            onClick={() => void handleCloseWindow()}
-            aria-label="关闭窗口"
-            title="关闭窗口"
-          >
-            <X size={15} />
-          </button>
+          <div className="titlebar-control-group titlebar-utilities" role="group" aria-label="辅助窗口功能">
+            <button
+              type="button"
+              className={`titlebar-btn ${isIslandOpen ? "active-island" : ""}`}
+              onClick={() => void handleToggleIsland()}
+              aria-label="切换桌面灵动岛"
+              aria-pressed={isIslandOpen}
+              title="切换独立桌面灵动岛 (Dynamic Island)"
+            >
+              <AppWindow size={16} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className={`titlebar-btn ${isAlwaysOnTop ? "active-pin" : ""}`}
+              onClick={() => void handleToggleAlwaysOnTop()}
+              aria-label="窗口置顶"
+              aria-pressed={isAlwaysOnTop}
+              title={isAlwaysOnTop ? "取消窗口置顶" : "窗口置顶"}
+            >
+              <Pin size={16} aria-hidden="true" />
+            </button>
+          </div>
+          <div className="titlebar-control-group" role="group" aria-label="窗口控制">
+            <button
+              type="button"
+              className="titlebar-btn"
+              onClick={() => void handleMinimizeWindow()}
+              aria-label="最小化窗口"
+              title="最小化"
+            >
+              <Minus size={16} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="titlebar-btn"
+              onClick={() => void handleToggleMaximizeWindow()}
+              aria-label="最大化或还原窗口"
+              title={isMaximized ? "向下还原" : "最大化"}
+            >
+              {isMaximized ? <Copy size={14} className="titlebar-window-outline" aria-hidden="true" /> : <Square size={14} className="titlebar-window-outline" aria-hidden="true" />}
+            </button>
+            <button
+              type="button"
+              className="titlebar-btn titlebar-btn-close"
+              onClick={() => void handleCloseWindow()}
+              aria-label="关闭窗口"
+              title="关闭窗口"
+            >
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -947,8 +947,9 @@ const AppShell: React.FC = () => {
         <nav className="left-sidebar" aria-label="主导航">
           <div className="brand-header">
             <BrandButton onError={setGlobalError} />
-            <div>
+            <div className="brand-identity">
               <div className="brand-title">ASMR Player</div>
+              <ContentModeBadge onError={setGlobalError} />
             </div>
           </div>
 
@@ -1293,6 +1294,12 @@ const AppShell: React.FC = () => {
               <DownloadsView
                 onSelectWork={handleOpenWorkDetail}
                 onError={setGlobalError}
+                onOpenSettings={() => {
+                  updatePageSearch("settings", "");
+                  setSettingsSection("download-policy");
+                  setSelectedWorkId(null);
+                  setActiveNav("settings");
+                }}
               />
             ) : (
               <SettingsView onError={setGlobalError} initialSection={settingsSection} onSectionChange={setSettingsSection}
@@ -1301,6 +1308,7 @@ const AppShell: React.FC = () => {
           </div>
         </main>
 
+        <PlaylistPickerHost />
         <RightDrawer
           activeTab={drawerTab}
           onClose={() => setDrawerTab("none")}

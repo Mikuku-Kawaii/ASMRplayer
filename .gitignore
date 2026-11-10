@@ -94,3 +94,6 @@ Thumbs.db
 __pycache__/
 *.pyc
 /src-tauri/native/**/*-test.c
+*-oauth-desktop.json
+client_secret_*.json
+/assets/readme/

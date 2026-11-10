@@ -1,3 +1,5 @@
+import { PlaylistMenuItem } from "../player/PlaylistPicker";
+import { WorkCardTags } from "../../components/WorkCardTags";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { subscribeDownloadsUpdated, subscribeLibraryAffinity, subscribeSettingsUpdated } from "../../lib/api";
 import React, { useState, useEffect, useCallback, useRef } from "react";
@@ -576,7 +578,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         <div className="top-bar-primary-row">
           <div className="top-bar-title-group">
             <h2 className="top-bar-title">{viewTitle}</h2>
-            <span className="top-bar-count">共 {works.length} 部作品</span>
+            <span className="top-bar-count"><span className="ui-tag-label">共 {works.length} 部作品</span></span>
           </div>
 
           <div className="toolbar-actions">
@@ -926,6 +928,24 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   </div>
                 )}
 
+                <h3 className="work-card-title" title={work.title}>{work.title}</h3>
+
+                <div className="work-card-meta library-card-meta">
+                  {work.voiceActors.length > 0 && (
+                    <span className="cv-list" title={`CV：${work.voiceActors.join("、")}`}>
+                      CV:{" "}
+                      {work.voiceActors.map((va) => (
+                        canFilterCardDetails ? <button key={va} type="button" className="cv-pill cv-pill-btn" title={`筛选声优: ${va}`}
+                          onClick={event => { event.stopPropagation(); addCardVoice(va); }}><span className="ui-tag-label">{va}</span></button>
+                          : <span key={va} className="cv-pill"><span className="ui-tag-label">{va}</span></span>
+                      ))}
+                    </span>
+                  )}
+                  {work.rjCode && <span className="work-card-baseline library-card-rj">{work.rjCode}</span>}
+                </div>
+
+                <WorkCardTags tags={work.tags} onTag={tag => setSelectedTags(addLibraryTag(selectedTags, tag))} />
+
                 <div className="work-card-header">
                   {!work.coverRef && <WorkContentBadges nsfw={work.nsfw} hasSubtitle={work.hasSubtitle} hasRecognizedSubtitle={work.hasRecognizedSubtitle} overlay={false} />}
                   <div className="work-badges">
@@ -935,9 +955,6 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                       onClick={event => { event.stopPropagation(); addCardCondition({ listening: work.listeningStatus ?? (work.isListened ? "inProgress" : "unplayed") }); }}>
                       <span className="ui-tag-label">{work.listeningStatus === "played" ? "听过" : work.listeningStatus === "inProgress" || (!work.listeningStatus && work.isListened) ? "在听" : "未听"}</span></button>
                       : <span className={`badge badge-listening ${work.listeningStatus === "played" ? "is-played" : work.listeningStatus === "inProgress" || (!work.listeningStatus && work.isListened) ? "is-in-progress" : ""}`}><span className="ui-tag-label">{work.listeningStatus === "played" ? "听过" : work.listeningStatus === "inProgress" || (!work.listeningStatus && work.isListened) ? "在听" : "未听"}</span></span>)}
-                    {work.rjCode && (
-                      <span className="badge badge-rj">{work.rjCode}</span>
-                    )}
                     {work.hasLocal && (
                       <span className="badge badge-local">
                         <HardDrive size={11} />
@@ -995,31 +1012,6 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   </div>
                 </div>
 
-                <h3 className="work-card-title">{work.title}</h3>
-
-                <div className="work-card-meta">
-                  {work.circleName && <span>社团: {work.circleName}</span>}
-                  {work.voiceActors.length > 0 && (
-                    <span className="cv-list">
-                      CV:{" "}
-                      {work.voiceActors.map((va) => (
-                        canFilterCardDetails ? <button key={va} type="button" className="cv-pill cv-pill-btn" title={`筛选声优: ${va}`}
-                          onClick={event => { event.stopPropagation(); addCardVoice(va); }}><span className="ui-tag-label">{va}</span></button>
-                          : <span key={va} className="cv-pill"><span className="ui-tag-label">{va}</span></span>
-                      ))}
-                    </span>
-                  )}
-                </div>
-
-                {work.tags.length > 0 && (
-                  <div className="work-tags">
-                    {work.tags.slice(0, 6).map((tag) => (
-                      <button key={tag} type="button" className="tag-pill tag-pill-btn" title={`筛选标签: ${tag}`}
-                        onClick={event => { event.stopPropagation(); setSelectedTags(addLibraryTag(selectedTags, tag)); }}><span className="ui-tag-label">{tag}</span></button>
-                    ))}
-                  </div>
-                )}
-
                 {work.lastTrackTitle && (
                   <div className="work-resume-row">
                     <button
@@ -1060,6 +1052,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         onSelectVisible={() => setSelectedIds(previous => new Set([...previous, ...visibleWorks.map(w => w.id)].slice(0, 500)))}
         visibleCount={visibleWorks.length} onChanged={() => { setSelectedIds(new Set()); void loadWorks(); }}>
         {contextWork && <>
+            <PlaylistMenuItem target={{ workId: contextWork.id }} onClose={() => setContextMenu(null)} />
             <button
               type="button"
               className="m3-menu-item"

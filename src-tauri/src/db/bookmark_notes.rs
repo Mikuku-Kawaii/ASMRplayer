@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use uuid::Uuid;
 
 fn json<T: serde::Serialize>(value: &T) -> AppResult<String> {
-    serde_json::to_string(value).map_err(|_| invalid("书签序列化失败"))
+    serde_json::to_string(value).map_err(|_| invalid("标记序列化失败"))
 }
 
 fn invalid(message: &str) -> AppError {
@@ -70,7 +70,7 @@ pub(super) fn read_records(conn: &Connection) -> AppResult<Vec<BackupBookmarkRec
         .collect::<Result<Vec<_>, _>>()?;
     let mut orphan_stmt = conn.prepare("SELECT record_json FROM unlinked_bookmarks ORDER BY id")?;
     for row in orphan_stmt.query_map([], |r| r.get::<_, String>(0))? {
-        records.push(serde_json::from_str(&row?).map_err(|_| invalid("未关联书签记录损坏"))?);
+        records.push(serde_json::from_str(&row?).map_err(|_| invalid("未关联标记记录损坏"))?);
     }
     records.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
     Ok(records)
@@ -78,7 +78,7 @@ pub(super) fn read_records(conn: &Connection) -> AppResult<Vec<BackupBookmarkRec
 
 pub(crate) fn validate_records(records: &[BackupBookmarkRecordDto]) -> AppResult<()> {
     if records.len() > 10_000 {
-        return Err(invalid("一次最多恢复 10000 个书签"));
+        return Err(invalid("一次最多恢复 10000 个标记"));
     }
     let mut ids = HashSet::new();
     for bm in records {
@@ -98,7 +98,7 @@ pub(crate) fn validate_records(records: &[BackupBookmarkRecordDto]) -> AppResult
             .iter()
             .any(|s| s.len() > 4096)
         {
-            return Err(invalid("备份中存在重复书签、无效版本、位置或过长标题"));
+            return Err(invalid("备份中存在重复标记、无效版本、位置或过长标题"));
         }
         normalized_tags(&bm.note, &bm.tags)?;
     }
@@ -220,12 +220,12 @@ impl Database {
                 |r| r.get(0),
             )?;
             if !linked {
-                return Err(invalid("书签未关联到原音轨版本，笔记仍可查看"));
+                return Err(invalid("标记未关联到原音轨版本，笔记仍可查看"));
             }
             read_records(conn)?
                 .into_iter()
                 .find(|b| b.id == id)
-                .ok_or_else(|| invalid("书签不存在或已移除"))
+                .ok_or_else(|| invalid("标记不存在或已移除"))
         })
     }
 
@@ -247,7 +247,7 @@ impl Database {
     ) -> AppResult<BookmarkDto> {
         let tags = normalized_tags(note, tags)?;
         if !(0..=31_536_000_000).contains(&position_ms) {
-            return Err(invalid("书签位置超出有效范围"));
+            return Err(invalid("标记位置超出有效范围"));
         }
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
@@ -258,7 +258,7 @@ impl Database {
         self.list_bookmarks(None, Some(version_id))?
             .into_iter()
             .find(|b| b.id == id)
-            .ok_or_else(|| invalid("书签保存后无法读取"))
+            .ok_or_else(|| invalid("标记保存后无法读取"))
     }
 
     pub fn update_bookmark_note(
@@ -271,7 +271,7 @@ impl Database {
             let mut bm = read_records(conn)?
                 .into_iter()
                 .find(|b| b.id == id)
-                .ok_or_else(|| invalid("书签不存在或已移除"))?;
+                .ok_or_else(|| invalid("标记不存在或已移除"))?;
             bm.tags = normalized_tags(note, tags.unwrap_or(&bm.tags))?;
             bm.note = note.to_string();
             bm.updated_at = Utc::now().to_rfc3339();
@@ -314,7 +314,7 @@ impl Database {
         apply: bool,
     ) -> AppResult<BookmarkRestoreReport> {
         if bundle.schema_version != 1 {
-            return Err(invalid("不支持此书签备份版本"));
+            return Err(invalid("不支持此标记备份版本"));
         }
         self.with_conn(|conn| {
             let tx = conn.transaction()?;

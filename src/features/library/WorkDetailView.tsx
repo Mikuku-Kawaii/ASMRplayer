@@ -1,3 +1,4 @@
+import { PlaylistMenuItem } from "../player/PlaylistPicker";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { ContextMenu } from "../../components/ContextMenu";
 import { SubtitleActionButtons, useSubtitleActions } from "../player/useSubtitleActions";
@@ -14,6 +15,7 @@ import {
   Download,
   Bookmark,
   Heart,
+  Flag,
   RefreshCw,
   Edit3,
   FolderTree,
@@ -639,7 +641,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
   );
 
   return (
-    <div className="page-container">
+    <div className="page-container work-detail-page">
       <div className="detail-top-bar">
         <button type="button" className="btn btn-ghost btn-sm" onClick={onBack}>
           <ArrowLeft size={16} />
@@ -769,6 +771,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
               </div>
             )}
 
+          </div>
             <div className="detail-hero-buttons">
               {detail.lastVersionId ? (
                 <button
@@ -852,7 +855,6 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                 </button>
               )}
             </div>
-          </div>
         </div>
       </section>
 
@@ -1170,6 +1172,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                   <button
                     key={g.groupPath}
                     type="button"
+                    title={`${g.label} (${g.trackCount} 轨 · ${g.formats.join("/")})`}
                     className={`btn-chip ${
                       selectedGroupPath === g.groupPath ? "active" : ""
                     }`}
@@ -1204,17 +1207,19 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
       {subtitleActions.error && <ErrorNotice message={subtitleActions.error} />}
       {subtitleActions.notice && <p role="status" className="settings-field-hint">{subtitleActions.notice}</p>}
       {trackMenu && <ContextMenu x={trackMenu.x} y={trackMenu.y} label="音轨操作菜单" onClose={() => setTrackMenu(null)}>
+        <PlaylistMenuItem target={{ versionIds: [trackMenu.id] }} onClose={() => setTrackMenu(null)} />
         <button type="button" role="menuitem" disabled={!subtitleActions.can([trackMenu.id], false)} onClick={() => { void subtitleActions.request([trackMenu.id], false); setTrackMenu(null); }}>识别</button>
         <button type="button" role="menuitem" disabled={!subtitleActions.can([trackMenu.id], true)} onClick={() => { void subtitleActions.request([trackMenu.id], true); setTrackMenu(null); }}>翻译</button>
         <button type="button" role="menuitem" disabled={subtitleActions.running} onClick={() => { setSyncVersions([trackMenu.id]); setTrackMenu(null); }}>同步识别字幕</button>
       </ContextMenu>}
       <section className="tracks-section">
+        <div className="detail-tracks-scroll" role="region" aria-label="作品音轨列表" tabIndex={0}>
         <table className="tracks-table detail-tracks-table">
-          <colgroup><col span={5} /></colgroup>
+          <colgroup><col /><col className="detail-directory-col" /><col className="detail-source-col" /><col className="detail-duration-col" /><col className="detail-actions-col" /></colgroup>
           <thead>
             <tr>
               <th scope="col">音轨</th>
-              <th scope="col">目录</th>
+              <th scope="col" className="detail-directory-cell">目录</th>
               <th scope="col">来源</th>
               <th scope="col">时长</th>
               <th scope="col">操作</th>
@@ -1233,13 +1238,14 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                     <td>
                       <div className="track-title-cell">
                         <span className="track-main-name">{track.title}</span>
+                        <span className="detail-inline-directory">目录：{track.logicalDirPath || "根目录"}</span>
                         {ver.associationState === "pending_confirm" && (
                           <span className="badge badge-warn">待确认变更</span>
                         )}
 
                       </div>
                     </td>
-                    <td>{track.logicalDirPath || "根目录"}</td>
+                    <td className="detail-directory-cell">{track.logicalDirPath || "根目录"}</td>
                     <td>
                       <div className="source-pills-row">
                         {ver.sources.map((src) => (
@@ -1277,7 +1283,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                         ))}
                       </div>
                     </td>
-                    <td>
+                    <td className="detail-duration-cell">
                       <span>
                         {ver.positionMs > 0
                           ? `${formatDurationMs(ver.positionMs)} / `
@@ -1297,6 +1303,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                             void handlePlayGroup(track.logicalDirPath, ver.id)
                           }
                           title="从该音轨开始播放所属目录"
+                          aria-label="播放"
                         >
                           <Play size={13} />
                           <span>播放</span>
@@ -1306,6 +1313,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                           className="btn btn-ghost btn-sm"
                           onClick={() => void handleAppendQueue(ver.id, null)}
                           title="加入播放队列"
+                          aria-label="入队"
                         >
                           <Plus size={13} />
                           <span>入队</span>
@@ -1316,10 +1324,10 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                           onClick={() => void handleFavoriteTrack(ver.id)}
                           disabled={favoritePending !== null}
                           aria-pressed={!!ver.isFavorite}
-                          title={ver.isFavorite ? "取消喜爱单曲" : "喜爱单曲，也将作品加入喜爱"}
-                          aria-label={`${ver.isFavorite ? "取消喜爱" : "喜爱"}单曲：${track.title}`}
+                          title={ver.isFavorite ? "取消书签" : "添加书签，也将作品加入喜爱"}
+                          aria-label={`${ver.isFavorite ? "取消书签" : "添加书签"}：${track.title}`}
                         >
-                          <Heart size={14} fill={ver.isFavorite ? "currentColor" : "none"} />
+                          <Flag size={14} fill={ver.isFavorite ? "currentColor" : "none"} />
                         </button>
                       </div>
                     </td>
@@ -1329,6 +1337,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
             )}
           </tbody>
         </table>
+        </div>
         {filteredTracks.length > visibleTrackLimit && (
           <div className="pagination-row">
             <button

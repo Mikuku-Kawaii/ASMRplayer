@@ -59,7 +59,7 @@ export function CommandPalette({ onClose, onExecute, disabledReason }: {
     }}>
       <header className="command-palette-header"><h2 id={`${id}-title`}><Search size={18} /><span className="ui-icon-label">搜索命令</span></h2><button className="btn-icon" aria-label="关闭命令搜索" title="关闭命令搜索 (Esc)" onClick={onClose}><X size={17} /></button></header>
       <input ref={input} role="combobox" className="input-text" aria-label="搜索操作" aria-autocomplete="list" aria-expanded="true" aria-controls={`${id}-results`} aria-activedescendant={selected ? `${id}-${selected.id}` : undefined}
-        value={query} disabled={busy} placeholder="搜索播放、队列、书签、设置…" onChange={event => { setQuery(event.target.value); setActive(0); setError(""); }} onKeyDown={event => {
+        value={query} disabled={busy} placeholder="搜索播放、队列、标记、设置…" onChange={event => { setQuery(event.target.value); setActive(0); setError(""); }} onKeyDown={event => {
           if (event.nativeEvent.isComposing || event.keyCode === 229 || event.repeat) return;
           if (["ArrowDown", "ArrowUp"].includes(event.key)) { event.preventDefault(); setActive(value => (value + (event.key === "ArrowDown" ? 1 : -1) + results.length) % Math.max(1, results.length)); }
           if (event.key === "Enter" && selected) { event.preventDefault(); void execute(selected.id); }

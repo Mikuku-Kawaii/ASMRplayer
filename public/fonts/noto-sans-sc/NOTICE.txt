@@ -1,0 +1,21 @@
+Noto Sans SC — bundled font for ASMR Player
+
+Copyright © 2014-2021 Adobe (http://www.adobe.com/),
+with Reserved Font Name 'Source'.
+
+License: SIL Open Font License 1.1. See OFL.txt in this directory.
+The license and this notice are distributed alongside the font.
+
+Upstream: https://github.com/notofonts/noto-cjk
+Revision: f8d157532fbfaeda587e826d4cd5b21a49186f7c
+Source: Sans/Variable/TTF/Subset/NotoSansSC-VF.ttf
+URL: https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/Variable/TTF/Subset/NotoSansSC-VF.ttf
+Font version: 2.004
+SHA-256: d68bafcb48a2707749396aa12bbbd833cb70401f3a9a689fd2902c7e0d295964
+Size: 17,773,132 bytes
+
+The upstream variable font is included unmodified, with weight axis 100–900.
+This is the upstream Simplified Chinese character set, not a subset generated
+from this application's UI strings. The private CSS alias "ASMR Noto Sans SC"
+does not alter the font file or its internal family names. No system-font
+installation or external font CDN is required.

@@ -1,4 +1,6 @@
 fn main() {
+    println!("cargo:rerun-if-changed=icons/icon.ico");
+    println!("cargo:rerun-if-changed=icons/icon.png");
     println!("cargo:rerun-if-changed=native/sherpa");
     println!("cargo:rerun-if-changed=native/whisper");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {

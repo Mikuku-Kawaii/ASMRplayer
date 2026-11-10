@@ -9,6 +9,8 @@ pub(crate) struct ReviewInput {
     pub original: String,
     pub locked: bool,
     pub chinese_reference: Option<String>,
+    #[serde(rename = "audioContext", skip_serializing_if = "Option::is_none")]
+    pub audio_context: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -35,9 +37,11 @@ pub(crate) fn review_input(doc: &SubtitleDocument) -> Vec<ReviewInput> {
         .filter(|cue| doc.can_translate(cue.index))
         .map(|cue| ReviewInput {
             id: cue.index,
+            audio_context: super::super::dialogue_review::translation_audio_context(doc, cue.index),
             original: doc.dialogue_text(cue),
             locked: doc.original_corrections.contains_key(&cue.index)
-                || doc.rule_corrections.contains_key(&cue.index),
+                || doc.rule_corrections.contains_key(&cue.index)
+                || doc.audio_review_pending(cue.index),
             chinese_reference: doc
                 .translation_corrections
                 .get(&cue.index)
@@ -84,6 +88,10 @@ fn parse_review(
             continue;
         };
         line.translation = translation.clone();
+        if line.translation.contains("〔原文不清〕") {
+            line.uncertain = true;
+            if line.note.trim().is_empty() { line.note = "译文含无法确认的原文片段，请听音核对。".into(); }
+        }
         let changed = line.original != input.original;
         if line.original.is_empty()
             || line.original.len() > 100_000
@@ -128,7 +136,8 @@ pub(crate) fn apply_review(doc: &mut SubtitleDocument, result: BTreeMap<usize, R
                 line.trace.note = previous.note.clone();
             }
         }
-        if !doc.original_corrections.contains_key(&id) && !doc.rule_corrections.contains_key(&id) {
+        if !doc.original_corrections.contains_key(&id) && !doc.rule_corrections.contains_key(&id)
+            && !doc.audio_review_pending(id) {
             doc.model_corrections.insert(id, line.original);
         }
         doc.model_reviews.insert(id, line.trace);
@@ -351,12 +360,14 @@ mod tests {
                 original: "塩を入れる".into(),
                 locked: false,
                 chinese_reference: None,
+                audio_context: None,
             },
             ReviewInput {
                 id: 9,
                 original: "塩を入れる".into(),
                 locked: false,
                 chinese_reference: None,
+                audio_context: None,
             },
         ];
         transcript.extend((10..100).map(|id| ReviewInput {
@@ -364,6 +375,7 @@ mod tests {
             original: "無関係".repeat(200),
             locked: false,
             chinese_reference: None,
+                audio_context: None,
         }));
         let result = svc
             .review_full_text(&settings, &transcript, &[7, 9])
@@ -448,12 +460,14 @@ mod tests {
                 original: "こんばんは".into(),
                 locked: false,
                 chinese_reference: None,
+                audio_context: None,
             },
             ReviewInput {
                 id: 9,
                 original: "おやすみ".into(),
                 locked: false,
                 chinese_reference: None,
+                audio_context: None,
             },
         ];
         let result = svc
@@ -467,6 +481,28 @@ mod tests {
         assert_eq!(window.len(), 1);
         assert!(context_window(&too_long, &[9], 8000).is_err());
     }
+    #[test]
+    fn audio_review_locks_original_but_accepts_faithful_translation() {
+        let mut doc = SubtitleDocument::new("v".into(), "sensevoice:test".into(), vec![
+            crate::domain::SubtitleCueDto { index: 8, start_ms: 10, end_ms: 800, text: "この距ョリ".into() }
+        ], true);
+        let mut record = crate::services::dialogue_review::tests::record();
+        record.pending_audio_review = true;
+        doc.asr_records.insert(8, record);
+        let input = review_input(&doc);
+        assert_eq!(input.len(), 1);
+        assert!(input[0].locked);
+        let rewritten = r#"{"subtitles":[{"id":8,"original":"この距離","phoneticReason":"近音","contextReason":"距离","parts":[{"source":"この距離","translation":"这个距离"}]}]}"#;
+        assert!(parse_review(rewritten, &input).unwrap().is_empty());
+        let faithful = r#"{"subtitles":[{"id":8,"original":"この距ョリ","parts":[{"source":"この距ョリ","translation":"这个距离"}]}]}"#;
+        apply_review(&mut doc, parse_review(faithful, &input).unwrap());
+        assert_eq!(doc.translation_text(8), Some("这个距离"));
+        assert_eq!(doc.cue_status(8), "audioReview");
+        assert_eq!(doc.review_pending_count(), 1);
+        assert!(doc.model_corrections.is_empty());
+        assert!(!doc.asr_records[&8].human_confirmed);
+    }
+
     #[test]
     fn t1513_full_review_preserves_raw_timing_and_human_edits_and_rejects_missing_ids() {
         let mut doc = SubtitleDocument::new(

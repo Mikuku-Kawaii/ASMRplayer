@@ -21,6 +21,7 @@ pub mod release_history;
 
 pub mod desktop_lyrics;
 pub mod interface_scale;
+pub mod theme;
 pub mod window_placement;
 pub mod recognition;
 pub mod ollama_install;
@@ -37,3 +38,6 @@ pub mod speech_sounds;
 pub mod faster_whisper;
 pub mod subtitle_sync;
 pub mod subtitle_preferences;
+pub mod device_sync;
+
+pub mod immersion;

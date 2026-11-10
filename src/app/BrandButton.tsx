@@ -22,6 +22,6 @@ export function BrandButton({ onError }: { onError: (error: AppError) => void })
   const label = enabled ? "关闭 NSFW" : "开启 NSFW";
   return <button type="button" className="brand-icon-wrap" aria-label={label} title={label}
     aria-pressed={enabled ?? false} disabled={enabled === null || saving} onClick={() => void toggle()}>
-    <img src="/asmr-icon.png" alt="" className="brand-icon-img" draggable={false} />
+    <img src="/brand-mark.svg" alt="" className="brand-icon-img" draggable={false} />
   </button>;
 }

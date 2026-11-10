@@ -31,7 +31,7 @@ export function useSubtitleFollow(activeIndex: number, versionId: string | null 
     if (!view || !line) return;
     // Space at both ends allows even the first and last cue to reach the center.
     view.style.setProperty("--subtitle-follow-padding", `${view.clientHeight / 2}px`);
-    // Re-measure while the active cue's font size changes, so the final position stays centered.
+    // Use the cue geometry for centering; activation does not change typography.
     const target = () => line.offsetTop - (view.clientHeight - line.offsetHeight) / 2;
     const instant = initialPosition.current || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     initialPosition.current = false;

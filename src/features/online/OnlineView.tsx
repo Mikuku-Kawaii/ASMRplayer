@@ -1,7 +1,10 @@
+import { PlaylistMenuItem } from "../player/PlaylistPicker";
+import { WorkCardTags } from "../../components/WorkCardTags";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { Select } from "../../components/Select";
 import { WorkContentBadges } from "../../components/WorkContentBadges";
 import { ContextMenu } from "../../components/ContextMenu";
+import { Toast } from "../../components/Toast";
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import {
   Search,
@@ -10,7 +13,6 @@ import {
   ChevronsLeft,
   ChevronsRight,
   RefreshCw,
-  ExternalLink,
   Flame,
   Trophy,
   Star,
@@ -19,6 +21,8 @@ import {
   MessageSquare,
   Download,
   FolderTree,
+  Bookmark,
+  Heart,
   Eye,
   EyeOff,
 } from "lucide-react";
@@ -120,6 +124,9 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
 
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const affinityPending = useRef(false);
+  const [addingTo, setAddingTo] = useState<"collected" | "favorite" | null>(null);
+  const [affinityNotice, setAffinityNotice] = useState<string | null>(null);
   const [dlPreview, setDlPreview] = useState<DownloadPreviewDto | null>(null);
   const [dlSelectedIds, setDlSelectedIds] = useState<Record<string, boolean>>(
     {}
@@ -264,6 +271,30 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
     }
   };
 
+  const handleAddWork = async (work: ProviderWork, destination: "collected" | "favorite") => {
+    if (affinityPending.current) return;
+    affinityPending.current = true;
+    setAddingTo(destination);
+    setAffinityNotice(null);
+    try {
+      // Resolve the host identity and read saved state before using the existing toggle API.
+      const detail = await callCommand<WorkDetailDto>("open_online_work", { workIdOrRj: work.sourceWorkId });
+      const alreadyAdded = destination === "collected" ? detail.isCollected : detail.isFavorite;
+      if (!alreadyAdded) {
+        const added = await callCommand<boolean>(destination === "collected" ? "toggle_collected" : "toggle_favorite", { workId: detail.id });
+        if (!added) throw new Error("作品状态已变化，请重新尝试加入");
+      }
+      const target = destination === "collected" ? "音频库" : "喜欢";
+      setAffinityNotice(`${alreadyAdded ? "已在" : "已加入"}${target}：${work.title}`);
+      setContextMenu(current => current?.work.sourceWorkId === work.sourceWorkId ? null : current);
+    } catch (error) {
+      onError(normalizeAppError(error));
+    } finally {
+      affinityPending.current = false;
+      setAddingTo(null);
+    }
+  };
+
   const handleOpenDownloadModal = async (w: ProviderWork) => {
     if (downloadingId) return;
     setContextMenu(null);
@@ -328,13 +359,13 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
   const fixedPopularOrder = order === "popular" && !committedKeyword.trim() && filters.length === 0;
 
   return (
-    <div className="page-container">
+    <div className="page-container online-page">
       {/* M3 Top App Bar */}
       <header className="top-app-bar" aria-label="在线浏览顶栏">
         <div className="top-bar-primary-row">
           <div className="top-bar-title-group">
             <h2 className="top-bar-title">在线浏览</h2>
-            <span className="top-bar-count">共 {totalCount} 部作品</span>
+            <span className="top-bar-count"><span className="ui-tag-label">共 {totalCount} 部作品</span></span>
           </div>
 
           <div className="toolbar-actions">
@@ -507,22 +538,8 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
                   </div>
                 )}
 
-                <div className="work-card-header">
+                {!w.coverUrl && (w.hasSubtitle || w.nsfw) && <div className="work-card-header">
                   <div className="work-badges">
-                    {w.rjCode && (
-                      <span className="badge badge-rj">{w.rjCode}</span>
-                    )}
-                    {typeof w.rateAverage2dp === "number" &&
-                      w.rateAverage2dp > 0 && (
-                        <span className="badge badge-warn">
-                          ★ {w.rateAverage2dp.toFixed(2)}
-                        </span>
-                      )}
-                    {typeof w.dlCount === "number" && w.dlCount > 0 && (
-                      <span className="badge badge-local">
-                        销量 {w.dlCount.toLocaleString()}
-                      </span>
-                    )}
                     {!w.coverUrl && w.hasSubtitle && (
                       <span className="badge badge-downloaded">含字幕</span>
                     )}
@@ -530,19 +547,15 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
                       <span className="badge badge-nsfw">R18</span>
                     )}
                   </div>
-                  <ExternalLink size={14} className="text-muted" />
-                </div>
+                </div>}
 
-                <h3 className="work-card-title">{w.title}</h3>
+                <h3 className="work-card-title" title={w.title}>{w.title}</h3>
 
                 <div className="work-card-meta">
-                  {w.circleName && <button type="button" className="tag-pill tag-pill-btn"
-                    onClick={e => { e.stopPropagation(); addFilter("circle", w.circleName); }}
-                    title={`筛选社团：${w.circleName}`}><span className="ui-tag-label">社团: {w.circleName}</span></button>}
                   {w.voiceActors.length > 0 && (
-                    <span className="cv-list">
+                    <span className="cv-list" title={`CV：${w.voiceActors.join("、")}`}>
                       CV:{" "}
-                      {w.voiceActors.slice(0, 4).map((va) => (
+                      {w.voiceActors.map((va) => (
                         <button
                           key={va}
                           type="button"
@@ -558,22 +571,11 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
                   )}
                 </div>
 
-                {w.tags.length > 0 && (
-                  <div className="work-tags">
-                    {w.tags.slice(0, 5).map((tag) => (
-                      <button
-                        key={tag}
-                        type="button"
-                        className="tag-pill tag-pill-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          addFilter("tag", tag);
-                        }}
-                        title={`筛选标签: ${tag}`}
-                      ><span className="ui-tag-label">{tag}</span></button>
-                    ))}
-                  </div>
-                )}
+                <div className="work-card-baseline">
+                  {w.rjCode && <span>{w.rjCode}</span>}
+                  {typeof w.rateAverage2dp === "number" && w.rateAverage2dp > 0 && <span className="work-rating" aria-label={`评分 ${w.rateAverage2dp.toFixed(2)}`}><Star aria-hidden="true" /><span>{w.rateAverage2dp.toFixed(2)}</span></span>}
+                </div>
+                <WorkCardTags tags={w.tags} onTag={tag => addFilter("tag", tag)} />
               </article>
             ))}
           </div>
@@ -617,6 +619,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
       )}
 
       {/* 在线作品卡片右键菜单 */}
+      {affinityNotice && <Toast message={affinityNotice} onClose={() => setAffinityNotice(null)} />}
       {contextMenu && (
         <ContextMenu x={contextMenu.x} y={contextMenu.y} label="在线作品操作菜单" onClose={() => setContextMenu(null)}>
             <div className="m3-context-menu-header">
@@ -638,6 +641,19 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
             >
               <FolderTree size={15} />
               <span>打开作品详情</span>
+            </button>
+
+            <PlaylistMenuItem target={{ sourceWorkId: contextMenu.work.sourceWorkId }} onClose={() => setContextMenu(null)} />
+
+            <button type="button" className="m3-menu-item" role="menuitem" disabled={addingTo !== null}
+              onClick={() => void handleAddWork(contextMenu.work, "collected")}>
+              <Bookmark size={15} aria-hidden="true" />
+              <span>{addingTo === "collected" ? "正在加入音频库…" : "加入音频库"}</span>
+            </button>
+            <button type="button" className="m3-menu-item" role="menuitem" disabled={addingTo !== null}
+              onClick={() => void handleAddWork(contextMenu.work, "favorite")}>
+              <Heart size={15} aria-hidden="true" />
+              <span>{addingTo === "favorite" ? "正在加入喜欢…" : "加入喜欢"}</span>
             </button>
 
             <button

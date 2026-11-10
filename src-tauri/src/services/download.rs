@@ -373,6 +373,23 @@ impl DownloadService {
         Ok(())
     }
 
+    pub fn open_download_directory(&self) -> AppResult<()> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let root = self.get_download_root();
+            fs::create_dir_all(&root)?;
+            std::process::Command::new("explorer.exe")
+                .arg(root)
+                .creation_flags(0x0800_0000)
+                .spawn()
+                .map_err(|e| AppError::new(ErrorCode::InternalError, format!("无法打开下载目录：{e}")))?;
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        Err(AppError::new(ErrorCode::InvalidInput, "在资源管理器中打开仅支持 Windows"))
+    }
+
     pub fn emit_tasks_updated(&self) {
         if let Ok(tasks) = self.list_tasks() {
             if let Some(ref handle) = *self.app_handle.lock() {

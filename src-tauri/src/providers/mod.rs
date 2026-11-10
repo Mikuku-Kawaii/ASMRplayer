@@ -132,6 +132,15 @@ pub fn normalize_work_id_input(raw: &str) -> AppResult<String> {
     Ok(stripped.to_string())
 }
 
+// The website keeps the DLsite code's zero padding in workInfo requests.
+// Keep canonical database identities numeric; only format the HTTP path.
+fn work_info_request_id(raw: &str) -> AppResult<String> {
+    let id = normalize_work_id_input(raw)?;
+    let width = if id.len() <= 6 { 6 } else { 8 };
+    Ok(format!("{id:0>width$}"))
+}
+const OFFICIAL_API_BASES: [&str; 4] = ["https://api.asmr-200.com", "https://api.asmr.one", "https://api.asmr-300.com", "https://api.asmr-100.com"];
+
 pub fn parse_work_info_json(body: &str) -> AppResult<ProviderWork> {
     let v: Value = serde_json::from_str(body).map_err(|e| {
         AppError::new(
@@ -634,13 +643,54 @@ impl AsmrOneProvider {
         Ok(client)
     }
 
+    async fn work_info_body(&self, source: &str) -> AppResult<String> {
+        let base = self.api_base();
+        let wire = work_info_request_id(source)?;
+        let first = self.metadata_at(&base, &wire, true).await;
+        match first {
+            Err(error) if error.code == ErrorCode::NetworkUnavailable && OFFICIAL_API_BASES.contains(&base.as_str()) => {
+                // Public metadata may differ in availability across official nodes.
+                // Account credentials remain scoped to the user's chosen node.
+                for mirror in OFFICIAL_API_BASES.iter().filter(|m|**m != base).take(2) {
+                    if let Ok(body) = self.metadata_at(mirror, &wire, false).await {
+                        let work = parse_work_info_json(&body)?;
+                        if work.source_work_id != normalize_work_id_input(source)? {
+                            return Err(AppError::new(ErrorCode::ProviderSchemaChanged, "来源返回的作品身份不一致"));
+                        }
+                        return Ok(body);
+                    }
+                }
+                Err(error)
+            }
+            result => result,
+        }
+    }
+
+    async fn metadata_at(&self, base: &str, wire: &str, use_account: bool) -> AppResult<String> {
+        tokio::time::timeout(Duration::from_secs(12),
+            self.get_text_with_retry_scoped(&format!("{base}/api/workInfo/{wire}"), use_account))
+            .await.map_err(|_|AppError::new(ErrorCode::NetworkUnavailable, "来源作品资料请求超时"))?
+    }
+
     pub async fn get_text_with_retry(&self, url: &str) -> AppResult<String> {
+        self.get_text_with_retry_scoped(url, true).await
+    }
+
+    async fn get_text_with_retry_scoped(&self, url: &str, use_account: bool) -> AppResult<String> {
         let client = self.build_client()?;
-        let token = self.auth_token_mem.read().clone();
+        let token = if use_account { self.auth_token_mem.read().clone() } else { None };
         let mut last_err = None;
 
         for attempt in 0..3 {
             let mut req = client.get(url);
+            if url.starts_with(&format!("{}/api/", self.api_base())) ||
+                OFFICIAL_API_BASES.iter().any(|base|url.starts_with(&format!("{base}/api/"))) {
+                req = req
+                    .header(header::ACCEPT, "application/json, text/plain, */*")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://asmr.one")
+                    .header(header::REFERER, "https://asmr.one/");
+            }
             if let Some(ref t) = token {
                 req = req.header(header::AUTHORIZATION, format!("Bearer {}", t));
             }
@@ -721,10 +771,9 @@ impl AsmrOneProvider {
     ) -> AppResult<(ProviderWork, Vec<ProviderLeafNode>, String)> {
         let source_work_id = normalize_work_id_input(raw_work_id)?;
         let base = self.api_base();
-        let info_url = format!("{}/api/workInfo/{}", base, source_work_id);
         let tracks_url = format!("{}/api/tracks/{}?v=2", base, source_work_id);
 
-        let info_body = self.get_text_with_retry(&info_url).await?;
+        let info_body = self.work_info_body(&source_work_id).await?;
         let work = parse_work_info_json(&info_body)?;
 
         let tracks_body = self.get_text_with_retry(&tracks_url).await?;
@@ -1830,9 +1879,11 @@ impl AsmrOneProvider {
         };
 
         let source_work_id = normalize_work_id_input(&resolved_raw_id)?;
-        let info_url = format!("{}/api/workInfo/{}", self.api_base(), source_work_id);
-        let info_body = self.get_text_with_retry(&info_url).await?;
+        let info_body = self.work_info_body(&source_work_id).await?;
         let mut pwork = parse_work_info_json(&info_body)?;
+        if pwork.source_work_id != source_work_id {
+            return Err(AppError::new(ErrorCode::InvalidInput,"来源返回的作品身份不一致"));
+        }
 
         if let Some(cached_cover) = self
             .download_and_cache_cover(&pwork.source_work_id, pwork.cover_url.as_deref())
@@ -1856,13 +1907,14 @@ impl AsmrOneProvider {
             let tx = conn.transaction()?;
             tx.execute(
                 "UPDATE works
-                 SET rj_code = COALESCE(NULLIF(rj_code, ''), ?1),
+                 SET rj_code = COALESCE(?1, rj_code),
                      circle_name = CASE WHEN ?2 != '' THEN ?2 ELSE circle_name END,
                      voice_actors_json = CASE WHEN ?3 != '[]' THEN ?3 ELSE voice_actors_json END,
                      tags_json = CASE WHEN ?4 != '[]' THEN ?4 ELSE tags_json END,
-                     cover_ref = CASE WHEN ?6 = 1 THEN COALESCE(?5, cover_ref) ELSE COALESCE(cover_ref, ?5) END,
+                     cover_ref = CASE WHEN ?6 = 1 THEN COALESCE(?5, cover_ref) ELSE COALESCE(NULLIF(cover_ref, ''), ?5) END,
                      updated_at = ?7, nsfw_detected = ?9, has_subtitle_metadata = ?10,
-                     title = CASE WHEN TRIM(?11) != '' THEN ?11 ELSE title END
+                     title = CASE WHEN TRIM(?11) != '' THEN ?11 ELSE title END,
+                     description = CASE WHEN ?12 != '' THEN ?12 ELSE description END
                  WHERE id = ?8",
                 params![
                     pwork.rj_code,
@@ -1875,7 +1927,8 @@ impl AsmrOneProvider {
                     work_id,
                     pwork.nsfw,
                     pwork.has_subtitle,
-                    pwork.title
+                    pwork.title,
+                    serde_json::from_str::<Value>(&pwork.raw_json).ok().and_then(|v|v["description"].as_str().map(String::from)).unwrap_or_default()
                 ],
             )?;
 
@@ -1985,6 +2038,27 @@ mod provider_tests {
         assert!(normalize_work_id_input("").is_err());
         assert!(normalize_work_id_input("RJ0000").is_err());
         assert!(normalize_work_id_input("RJ12AB").is_err());
+        assert_eq!(work_info_request_id("1110085").unwrap(), "01110085");
+        assert_eq!(work_info_request_id("299717").unwrap(), "299717");
+        assert_eq!(work_info_request_id("100000041").unwrap(), "100000041");
+    }
+
+    #[tokio::test]
+    async fn public_metadata_does_not_forward_selected_account_token() {
+        let server = MockServer::start().await;
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        let provider = AsmrOneProvider::new(db);
+        provider.set_api_base(&server.uri()).unwrap();
+        *provider.auth_token_mem.write() = Some("fixture-primary-only".into());
+        Mock::given(method("GET")).and(path("/api/workInfo/001234"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(2).mount(&server).await;
+        provider.metadata_at(&server.uri(), "001234", true).await.unwrap();
+        provider.metadata_at(&server.uri(), "001234", false).await.unwrap();
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests[0].headers.get("authorization").unwrap(), "Bearer fixture-primary-only");
+        assert!(!requests[1].headers.contains_key("authorization"));
     }
 
     #[test]
@@ -2022,7 +2096,7 @@ mod provider_tests {
 
         // 401 -> AuthRequired
         Mock::given(method("GET"))
-            .and(path("/api/workInfo/1001"))
+            .and(path("/api/workInfo/001001"))
             .respond_with(ResponseTemplate::new(401))
             .mount(&server)
             .await;
@@ -2031,7 +2105,7 @@ mod provider_tests {
 
         // 404 -> SourceNotFound
         Mock::given(method("GET"))
-            .and(path("/api/workInfo/1004"))
+            .and(path("/api/workInfo/001004"))
             .respond_with(ResponseTemplate::new(404))
             .mount(&server)
             .await;
@@ -2040,7 +2114,7 @@ mod provider_tests {
 
         // 429 -> RateLimited
         Mock::given(method("GET"))
-            .and(path("/api/workInfo/1029"))
+            .and(path("/api/workInfo/001029"))
             .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
             .mount(&server)
             .await;
@@ -2049,7 +2123,7 @@ mod provider_tests {
 
         // Invalid JSON schema -> ProviderSchemaChanged
         Mock::given(method("GET"))
-            .and(path("/api/workInfo/1050"))
+            .and(path("/api/workInfo/001050"))
             .respond_with(ResponseTemplate::new(200).set_body_string("{\"unexpected\":true}"))
             .mount(&server)
             .await;
@@ -2069,7 +2143,7 @@ mod provider_tests {
             .replace("https://api.example.invalid", &server.uri())
             .replace("\"nsfw\": false", "\"nsfw\": true");
         Mock::given(method("GET"))
-            .and(path("/api/workInfo/1705068"))
+            .and(path("/api/workInfo/01705068"))
             .respond_with(ResponseTemplate::new(200).set_body_string(wi_str))
             .mount(&server)
             .await;

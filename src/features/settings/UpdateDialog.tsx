@@ -139,7 +139,7 @@ export function UpdateDialog({ update, run, onClose }: {
           <span className="tabular-nums">{formatBytes(update.downloadedBytes)}{update.totalBytes ? ` / ${formatBytes(update.totalBytes)}` : " · 总大小未知"}</span>
         </div>}
         {actualError && <ErrorNotice message={[actualError.message, actualError.hint].filter(Boolean).join(" ")} />}
-        {update.phase === "ready" && <p className="settings-field-hint">安装会暂停播放并重启应用；音频库、收藏、书签和离线文件会保留。</p>}
+        {update.phase === "ready" && <p className="settings-field-hint">安装会暂停播放并重启应用；音频库、收藏、标记和离线文件会保留。</p>}
       </div>
       <footer className="update-actions dialog-actions">
         {!locked && <>

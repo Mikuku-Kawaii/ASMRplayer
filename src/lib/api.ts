@@ -580,7 +580,7 @@ export interface IslandPlacementDto {
 }
 
 export type IslandForm = "compact" | "expanded" | "toast" | "menu";
-export interface IslandLayout { revision: number; form: IslandForm; scale: number; width: number; height: number; radius?: number; animate?: boolean; nativeGlass?: boolean; fontSize?: number; fontWeight?: number; subtitlePreference?: "chinese" | "original"; viewport?: { width: number; height: number; deviceScale: number } | null }
+export interface IslandLayout { revision: number; form: IslandForm; scale: number; width: number; height: number; radius?: number; animate?: boolean; nativeGlass?: boolean; fontSize?: number; fontWeight?: number; subtitlePreference?: "chinese" | "original"; expandMode?: "focus" | "click"; viewport?: { width: number; height: number; deviceScale: number } | null }
 export interface IslandPreferences {
   compactScale: number;
   expandedScale: number;

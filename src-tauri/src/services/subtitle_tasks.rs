@@ -11,7 +11,7 @@ use crate::{
             AutoRecognitionMode, RecognitionService, RecognitionSettings, TranslationLine,
             LOCAL_BATCH_CHARS, LOCAL_BATCH_SIZE,
         },
-        speech_engine::{analysis_context_ms, decode_chunk, probe_duration, SenseVoice},
+        speech_engine::{decode_chunk, probe_duration, SenseVoice},
         speech_segments::{prefetch_chunks, CHUNK_MS},
     },
 };
@@ -381,12 +381,11 @@ impl SubtitleTaskService {
         for version in &unique {
             let doc = self.task_document(version, &settings, automatic)?;
             if (!translate && restart.is_some())
-                || needs_recognition_with_context(
+                || needs_recognition(
                     &doc,
                     translate,
                     automatic,
                     automatic && self.automatic_recognition_allowed(&doc, &settings)?,
-                    analysis_context_ms(settings.preferences.quiet_speech),
                 )
             {
                 self.recognition
@@ -676,12 +675,11 @@ impl SubtitleTaskService {
         super::subtitle_preferences::apply_rules(&mut doc, &settings.preferences);
         self.db.save_subtitle_document(&doc)?;
         self.publish(&doc, generation, &mut expected);
-        if needs_recognition_with_context(
+        if needs_recognition(
             &doc,
             translate,
             automatic,
             automatic && self.automatic_recognition_allowed(&doc, &settings)?,
-            analysis_context_ms(settings.preferences.quiet_speech),
         ) {
             let source = source.ok_or_else(|| error("音源尚未就绪，请开始播放后重试"))?;
             let (uri, headers) = if let Some(path) = source.absolute_path {
@@ -884,6 +882,15 @@ impl SubtitleTaskService {
                             && doc.trusted_reference(*id).is_none()
                     })
                     .collect::<Vec<_>>();
+                for (id, text) in &translations {
+                    const NOTE: &str = "译文含无法确认的原文片段，请听音核对。";
+                    if text.contains("〔原文不清〕") {
+                        let review = doc.model_reviews.entry(*id).or_default();
+                        if review.note.is_empty() { review.note = NOTE.into(); }
+                    } else if let Some(review) = doc.model_reviews.get_mut(id) {
+                        if review.note == NOTE { review.note.clear(); }
+                    }
+                }
                 doc.translations.extend(translations);
                 for id in targets {
                     if doc.translation_text(id).is_some() {
@@ -1065,11 +1072,10 @@ impl SubtitleTaskService {
             );
         }
         let mut effective_language = preferences.language.clone();
-        let mut dialogue_reviewer = super::dialogue_review::Reviewer::new(&self.recognition, &effective_language);
-        dialogue_reviewer.set_context_ms(analysis_context_ms(preferences.quiet_speech));
+        let mut dialogue_reviewer = super::dialogue_review::Reviewer::new(preferences.rerecognition_padding_ms());
         let mut cached_review_chunks = std::collections::BTreeMap::<usize, Vec<usize>>::new();
         if !automatic {
-            for id in super::dialogue_review::cached_candidates_for_context(&doc, Some(analysis_context_ms(preferences.quiet_speech))) {
+            for id in super::dialogue_review::cached_candidates_with_context(&doc, Some(preferences.rerecognition_padding_ms())) {
                 if let Some(cue) = doc.original.iter().find(|c| c.index == id) {
                     cached_review_chunks.entry((cue.start_ms.max(0) / CHUNK_MS) as usize).or_default().push(id);
                 }
@@ -1126,8 +1132,9 @@ impl SubtitleTaskService {
             self.progress("识别原文", doc.completed_chunks.len(), total);
             let start = chunk as i64 * CHUNK_MS;
             let end = (start + CHUNK_MS).min(duration);
-            let context_ms = analysis_context_ms(preferences.quiet_speech).max(2500);
-            let decode_start = (start - context_ms).max(0);
+            let context_ms = preferences.rerecognition_padding_ms();
+            let decode_padding_ms = context_ms.max(2500);
+            let decode_start = (start - decode_padding_ms).max(0);
             let cached_ids = cached_review_chunks.remove(&chunk);
             let decode_end = cached_ids.as_ref().map(|ids| doc.original.iter()
                 .filter(|cue| ids.contains(&cue.index)).map(|cue| cue.end_ms).max().unwrap_or(end)).unwrap_or(end).max(end);
@@ -1135,7 +1142,7 @@ impl SubtitleTaskService {
                 uri,
                 headers,
                 decode_start,
-                (decode_end + context_ms).min(duration) - decode_start,
+                (decode_end + decode_padding_ms).min(duration) - decode_start,
                 &directory.join("chunk.pcm"),
                 cancel,
             )?;
@@ -1276,20 +1283,12 @@ impl SubtitleTaskService {
             doc.original.extend(cues);
             doc.original.sort_by_key(|c| c.start_ms);
             deduplicate_audio_overlap(&mut doc);
-            // Review final cue ownership, so overlap deduplication cannot discard
-            // the new review or apply one window's decision to a different cue.
-            for id in super::dialogue_review::cached_candidates_for_context(&doc, Some(analysis_context_ms(preferences.quiet_speech))).into_iter().filter(|id| id / 1000 == chunk) {
-                self.progress("识别原文 · 复核非台词", doc.completed_chunks.len(), total);
-                dialogue_reviewer.set_language(&effective_language);
-                let cue = super::dialogue_review::owned_cue(doc.original.iter().find(|cue| cue.index == id).expect("review cue"), &doc.asr_records[&id]);
-                let review = dialogue_reviewer.review(&cue, &samples, decode_start,
-                    &preferences.recognition_engine, cancel, |audio| {
-                        if let Some(e) = whisper.as_mut() { e.transcribe_comparison(audio, cancel, true) }
-                        else if let Some(e) = fast.as_mut() { e.transcribe_comparison(audio, cancel, true) }
-                        else if let Some(e) = gpu.as_mut() { e.transcribe(audio, cancel) }
-                        else { sensevoice.as_mut().expect("validated engine").transcribe(audio) }
-                    })?;
-                super::dialogue_review::apply(doc.asr_records.get_mut(&id).expect("review record"), review);
+            // asr_quality already performed bounded same-model rerecognition.
+            // Do not decode each fresh cue again or load comparison models.
+            for cue in doc.original.iter().filter(|cue| cue.index / 1000 == chunk) {
+                if let Some(record) = doc.asr_records.get_mut(&cue.index) {
+                    super::dialogue_review::finish_local_attempts(cue, record, preferences.rerecognition_padding_ms());
+                }
             }
             doc.completed_chunks.insert(chunk);
             doc.recognition_complete = doc.completed_chunks.len() == total;
@@ -1355,7 +1354,7 @@ impl SubtitleTaskService {
             let mut start = reference.start_ms;
             while start < reference.end_ms {
                 let end = (start + 12_000).min(reference.end_ms);
-                let context_ms = analysis_context_ms(preferences.quiet_speech);
+                let context_ms = preferences.rerecognition_padding_ms();
                 let decode_start = (start - context_ms).max(0);
                 let samples = decode_chunk(
                     uri,
@@ -1595,6 +1594,15 @@ fn translation_context(doc: &SubtitleDocument, targets: &[usize]) -> String {
             };
         lines.push(format!("{relation} [{}] {}", cue.index, text));
     }
+    for id in targets {
+        if let Some(context) = super::dialogue_review::translation_audio_context(doc, *id) {
+            let entry = format!("audioContext [{id}] 未确认的音频候选：{context}");
+            if lines.len() < 12 && entry.chars().count() <= remaining {
+                remaining -= entry.chars().count();
+                lines.push(entry);
+            }
+        }
+    }
     lines.join("\n")
 }
 fn local_translation_batch(
@@ -1645,17 +1653,13 @@ fn needs_recognition(
     automatic: bool,
     auto_allowed: bool,
 ) -> bool {
-    (!translate && !automatic && !super::dialogue_review::cached_candidates(doc).is_empty())
+    (!translate && !automatic && !super::dialogue_review::cached_candidates_with_context(doc, None).is_empty())
         || !doc.recognition_complete
         && if automatic {
             auto_allowed
         } else {
             !translate || doc.original.is_empty()
         }
-}
-fn needs_recognition_with_context(doc: &SubtitleDocument, translate: bool, automatic: bool, auto_allowed: bool, context_ms: i64) -> bool {
-    needs_recognition(doc, translate, automatic, auto_allowed)
-        || !translate && !automatic && !super::dialogue_review::cached_candidates_for_context(doc, Some(context_ms)).is_empty()
 }
 fn validate_versions(versions: &[String]) -> AppResult<()> {
     if versions.is_empty() || versions.len() > 1000 {
@@ -1805,15 +1809,20 @@ mod tests {
         assert_eq!(doc.asr_records[&0].attempts.len(), before * 2);
         assert_eq!(doc.original[1].text, "ごめん");
         doc.validate().unwrap();
-        assert!(local_translation_batch(&doc, 0, None).is_empty()); // unresolved audio never becomes an empty translation retry
+        assert_eq!(local_translation_batch(&doc, 0, None).iter().map(|line| line.id).collect::<Vec<_>>(), vec![0, 2]);
+        assert_eq!(doc.cue_status(2), "audioReview");
         doc.asr_records.get_mut(&0).unwrap().human_confirmed = true;
         assert_eq!(
             local_translation_batch(&doc, 0, None)
                 .iter()
                 .map(|l| l.id)
                 .collect::<Vec<_>>(),
-            vec![0]
+            vec![0, 2]
         );
+        doc.translations.insert(0, "对不起".into());
+        doc.translations.insert(2, "对不起".into());
+        assert!(local_translation_batch(&doc, 0, None).is_empty());
+        assert_eq!(doc.cue_status(2), "audioReview"); // A saved translation does not confirm audio.
     }
     #[test]
     fn audio_overlap_dedup_never_overwrites_human_or_trusted_chinese() {
@@ -2003,6 +2012,72 @@ mod tests {
         for line in batch { doc.translations.insert(line.id, "已翻译".into()); }
         assert!(local_translation_batch(&doc, 0, None).is_empty());
         assert_eq!(doc.translated_count(), doc.dialogue_count());
+    }
+
+    #[tokio::test]
+    async fn audio_review_does_not_block_translation_or_confirm_uncertain_speech() {
+        for full_review in [false, true] {
+            let (_root, service) = batch_service();
+            let server = MockServer::start().await;
+            let mut doc = batch_document(6);
+            doc.source_key = "sensevoice:review-translation-test".into();
+            for cue in &doc.original {
+                let mut record = super::super::dialogue_review::tests::record();
+                record.pending_audio_review = true;
+                doc.asr_records.insert(cue.index, record);
+            }
+            doc.translations.insert(7, "已有译文".into());
+            doc.model_reviews.insert(7, Default::default());
+            doc.translation_corrections.insert(22, "人工译文".into());
+            doc.original_corrections.insert(22, "人工原文".into());
+            doc.asr_records.get_mut(&16).unwrap().dialogue_review = Some(crate::domain::asr::DialogueReview {
+                revision: 7, context_ms: 2500, decision: crate::domain::asr::DialogueDecision::NonDialogue,
+                note: "合成非台词证据".into(), observations: vec![],
+            });
+            doc.asr_records.get_mut(&19).unwrap().confirmed_no_speech = true;
+            let original = doc.original.clone();
+            let records = serde_json::to_value(&doc.asr_records).unwrap();
+            let pending = doc.review_pending_count();
+            let key = doc.source_key.clone();
+            Mock::given(method("POST")).and(path("/api/chat"))
+                .respond_with(move |request: &wiremock::Request| {
+                    let body: serde_json::Value = request.body_json().unwrap();
+                    let input: serde_json::Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+                    if full_review {
+                        assert_eq!(input["targets"], serde_json::json!([10, 13]));
+                        let transcript = input["transcript"].as_array().unwrap();
+                        assert!(transcript.iter().all(|line| line["locked"] == true));
+                        assert!(transcript.iter().all(|line| line["id"] != 16 && line["id"] != 19));
+                        let lines: Vec<_> = [10, 13].iter().map(|id| {
+                            let source = &transcript.iter().find(|line| line["id"] == *id).unwrap()["original"];
+                            serde_json::json!({"id":id,"original":source,"parts":[{"source":source,"translation":"晚上好"}]})
+                        }).collect();
+                        ResponseTemplate::new(200).set_body_json(serde_json::json!({"message":{"content":serde_json::json!({"subtitles":lines}).to_string()}}))
+                    } else {
+                        let ids: Vec<_> = input["sentences"].as_array().unwrap().iter().map(|line| line["id"].as_u64().unwrap()).collect();
+                        assert_eq!(ids, vec![10, 13]);
+                        batch_response(request)
+                    }
+                }).expect(1).mount(&server).await;
+            let settings = RecognitionSettings { ollama_url: server.uri(), full_text_review: full_review, ..Default::default() };
+            service.execute(doc, 0, vec![], None, 0, true, settings.clone(), false,
+                Arc::new(AtomicBool::new(false))).await.unwrap();
+            let saved = service.db.subtitle_document("v", &key).unwrap().unwrap();
+            assert_eq!(saved.translated_count(), 4);
+            assert_eq!(saved.translation_text(7), Some("已有译文"));
+            assert_eq!(saved.translation_text(22), Some("人工译文"));
+            assert!(!saved.can_translate(16) && !saved.can_translate(19));
+            assert!(!saved.translations.contains_key(&16) && !saved.translations.contains_key(&19));
+            assert_eq!(saved.original, original);
+            assert_eq!(serde_json::to_value(&saved.asr_records).unwrap(), records);
+            assert_eq!(saved.cue_status(10), "audioReview");
+            assert_eq!(saved.review_pending_count(), pending);
+            assert!(saved.model_corrections.is_empty());
+            // Incremental translation must not resend successfully translated review cues.
+            service.execute(saved, 0, vec![], None, 0, true, settings, false,
+                Arc::new(AtomicBool::new(false))).await.unwrap();
+            server.verify().await;
+        }
     }
 
     fn batch_service() -> (tempfile::TempDir, SubtitleTaskService) {
@@ -2255,6 +2330,76 @@ mod tests {
             different
         );
         assert!(std::fs::read_to_string(file).unwrap().contains("晚上好"));
+    }
+
+    #[test]
+    fn t1513_reference_progress_keeps_all_chinese_through_start_resume_and_empty_results() {
+        let (root, service) = batch_service();
+        let audio = root.path().join("synthetic.pcm");
+        std::fs::write(&audio, [0_u8; 128]).unwrap();
+        service.db.with_conn(|conn| {
+            conn.execute("INSERT INTO media_sources(id,version_id,source_kind,absolute_path,format,availability,created_at,updated_at) VALUES('ref-progress','v','local_imported',?1,'pcm','available','now','now')", [audio.to_string_lossy().as_ref()])?;
+            Ok(())
+        }).unwrap();
+        let file = root.path().join("chinese.srt");
+        let contents = "1\n00:00:01,000 --> 00:00:02,000\n晚上好\n\n2\n00:00:03,000 --> 00:00:04,000\n慢慢来\n\n3\n00:00:05,000 --> 00:00:06,000\n晚安\n";
+        std::fs::write(&file, contents).unwrap();
+        service.import_local_subtitle("v", &file).unwrap();
+        let displayed = service.document("v").unwrap();
+        let settings = RecognitionSettings { chinese_reference: true, ..Default::default() };
+        let mut doc = service.manual_recognition_document("v", &displayed, &settings, true).unwrap();
+        let chinese = doc.reference_subtitles.clone();
+        assert_eq!(doc.rendered(), chinese);
+        assert!(doc.original.is_empty() && doc.completed_chunks.is_empty());
+        assert!(needs_recognition(&doc, false, false, false));
+        assert!(!doc.can_translate(0)); // Pending references are not fabricated ASR results.
+        service.db.save_subtitle_document(&doc).unwrap();
+        assert_eq!(service.db.subtitle_overlay("v", displayed.original.clone()), chinese);
+
+        apply_reference_result(&mut doc, 0, "こんばんは");
+        doc.clear_automatic_translations();
+        let mut partial = chinese.clone();
+        partial[0].text = "こんばんは\n晚上好".into();
+        assert_eq!(doc.rendered(), partial);
+        service.db.save_subtitle_document(&doc).unwrap();
+        // Cancel/reopen restores both processed and unprocessed captions.
+        let reopened = service.db.document_for_display("v", &partial).unwrap().unwrap();
+        let mut resumed = service.manual_recognition_document("v", &reopened, &settings, false).unwrap();
+        assert_eq!(resumed.completed_chunks.iter().copied().collect::<Vec<_>>(), vec![0]);
+        assert_eq!(service.db.subtitle_overlay("v", displayed.original.clone()), partial);
+        apply_reference_result(&mut resumed, 1, "");
+        resumed.asr_records.insert(1, crate::domain::asr::AsrRecord {
+            model: "synthetic-test".into(), language: "ja".into(),
+            attempts: vec![crate::domain::asr::AsrAttempt {
+                start_ms: 3000, end_ms: 4000, prompt: String::new(), elapsed_ms: 0,
+                audio: Default::default(), result: Default::default(), signals: vec![],
+                repetition_ratio: None,
+            }],
+            selected_attempt: 0, pending_audio_review: false, confirmed_no_speech: true,
+            human_confirmed: false, note: String::new(),
+            dialogue_review_history: vec![], dialogue_review: None,
+        });
+        // An empty ASR result still keeps the known Chinese, without a blank first line.
+        resumed.translation_corrections.remove(&1);
+        assert_eq!(resumed.rendered(), partial);
+        assert_eq!(resumed.translation_text(1), Some("慢慢来"));
+        assert!(!resumed.can_translate(1));
+        assert_eq!(resumed.cue_status(1), "noSpeech");
+        assert!(!resumed.recognition_complete);
+        resumed.validate().unwrap();
+        service.db.save_subtitle_document(&resumed).unwrap();
+        let saved = service.db.subtitle_document("v", &resumed.source_key).unwrap().unwrap();
+        assert_eq!(saved.rendered(), partial);
+        assert_eq!(saved.original.len(), 2);
+        assert_eq!(saved.completed_chunks.len(), 2);
+
+        apply_reference_result(&mut resumed, 2, "おやすみ");
+        resumed.recognition_complete = true;
+        partial[2].text = "おやすみ\n晚安".into();
+        assert_eq!(resumed.rendered(), partial);
+        assert_eq!(resumed.reference_subtitles, chinese);
+        assert!(!needs_recognition(&resumed, false, false, false));
+        assert_eq!(std::fs::read_to_string(file).unwrap(), contents);
     }
 
     #[tokio::test]

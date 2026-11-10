@@ -1,3 +1,5 @@
+#[path = "playback/immersive.rs"]
+mod immersive;
 use crate::db::Database;
 use crate::domain::*;
 use crate::player::{AmllBroadcastHub, MpvController, MpvEvent, NativeSmtcController};
@@ -57,6 +59,9 @@ pub struct PlaybackStateInner {
     pub online_recovery_running: bool,
     pub auto_healed_for_gen: bool,
     pub volume: f64,
+    immersion: super::immersion::ImmersionSettings,
+    transition_serial: u64,
+    fade_in_pending: bool,
     pub loop_mode: String,
     pub active_ab_loop: Option<AbLoopDto>,
     pub sleep_timer: SleepTimerDto,
@@ -100,6 +105,7 @@ pub struct PlaybackService {
     native_smtc: Arc<Mutex<Option<NativeSmtcController>>>,
     audio_output_operation: Arc<tokio::sync::Mutex<()>>,
     load_operation: Arc<tokio::sync::Mutex<()>>,
+    recovery_operation: Arc<tokio::sync::Mutex<()>>,
     prefetch_operation: Arc<tokio::sync::Mutex<()>>,
     shutdown_signal: watch::Sender<bool>,
 }
@@ -159,7 +165,12 @@ impl PlaybackService {
             .get_dsp_global_state()
             .unwrap_or_else(|_| (DspConfigDto::default(), Some("asmr_pure_guard".into())));
 
+        let immersion = db.get_setting(super::immersion::SETTINGS_KEY).ok().flatten()
+            .and_then(|raw|serde_json::from_str::<super::immersion::ImmersionSettings>(&raw).ok())
+            .filter(|settings|settings.validate().is_ok()).unwrap_or_default();
+        mpv.set_initial_immersion(immersion.reverse_stereo,immersion.gapless_playback);
         let mut initial = PlaybackStateInner {
+            immersion, transition_serial:0, fade_in_pending:false,
             maintenance: MaintenanceClock::new(db.get_setting(super::engine_maintenance::SETTINGS_KEY).ok().flatten()
                 .and_then(|raw| serde_json::from_str::<EngineMaintenanceSettings>(&raw).ok())
                 .filter(|settings| settings.validate().is_ok()).unwrap_or_default()),
@@ -267,6 +278,7 @@ impl PlaybackService {
             native_smtc: Arc::new(Mutex::new(None)),
             audio_output_operation: Arc::new(tokio::sync::Mutex::new(())),
             load_operation: Arc::new(tokio::sync::Mutex::new(())),
+            recovery_operation: Arc::new(tokio::sync::Mutex::new(())),
             shutdown_signal: watch::channel(false).0,
             prefetch_operation: Arc::new(tokio::sync::Mutex::new(())),
         };
@@ -399,7 +411,8 @@ impl PlaybackService {
             }
         }
         telemetry.active_dsp_summary = summarize_dsp_chain(&guard.dsp_config);
-        telemetry.active_filter_graph = build_lavfi_graph(&guard.dsp_config);
+        telemetry.active_filter_graph = super::immersion::output_graph(&build_lavfi_graph(&guard.dsp_config),guard.immersion.reverse_stereo);
+        if guard.immersion.reverse_stereo { telemetry.active_dsp_summary.push_str(" · 声道翻转"); }
 
         Ok(PlaybackSnapshot {
             event_seq: seq,
@@ -914,6 +927,18 @@ impl PlaybackService {
         artificial_resolve_delay: Option<Duration>,
         start_position_ms: Option<i64>,
     ) -> AppResult<PlaybackSnapshot> {
+        self.play_with_transition(version_id,preferred_source_id,force_online_refresh,artificial_resolve_delay,start_position_ms,false).await
+    }
+
+    async fn play_with_transition(
+        &self,
+        version_id: &str,
+        preferred_source_id: Option<String>,
+        force_online_refresh: bool,
+        artificial_resolve_delay: Option<Duration>,
+        start_position_ms: Option<i64>,
+        natural_continuation: bool,
+    ) -> AppResult<PlaybackSnapshot> {
         // Save previous track progress before switching (T211)
         self.persist_current_state(false);
 
@@ -938,7 +963,7 @@ impl PlaybackService {
             };
 
         // Increment sessionGeneration and clear active A-B loop on track switch (T213, T603, R05, R15)
-        let (my_gen, resume_pos_ms, volume, af_graph) = {
+        let (my_gen, resume_pos_ms, volume, af_graph, transition, fade_out, fade_in, fade_ms) = {
             let mut guard = self.inner.lock();
             // Bind under the same lock as queue-plan replacement. Preserve the selected
             // occurrence when a version appears more than once in a saved queue.
@@ -948,6 +973,11 @@ impl PlaybackService {
             let queue_item_id = if let Some(item) = existing { Some(item.id.clone()) } else {
                 self.db.append_queue_items(&[(version_id.to_string(), preferred_source_id.clone())])?.into_iter().next()
             };
+            let fade_out=!natural_continuation&&guard.immersion.fade_enabled&&!guard.current_completed&&guard.file_loaded_for_gen&&!guard.user_paused_intent
+                &&matches!(guard.state.as_str(),"playing"|"buffering");
+            let fade_in=guard.immersion.fade_enabled&&!(natural_continuation&&guard.immersion.gapless_playback);
+            guard.transition_serial+=1;
+            guard.fade_in_pending=fade_in;
             guard.session_generation += 1;
             guard.last_prefetch_check = None;
             guard.maintenance.active();
@@ -994,8 +1024,9 @@ impl PlaybackService {
                 active_filter_graph: graph.clone(),
             };
             guard.last_error = None;
-            (gen_val, start_pos, guard.volume, graph)
+            (gen_val, start_pos, guard.volume, graph, guard.transition_serial, fade_out, fade_in, guard.immersion.fade_duration_ms)
         };
+        if fade_out && !self.ramp_transport(my_gen,transition,0.0,fade_ms).await? { return self.get_snapshot(); }
         // Automatically match local subtitles on disk before emitting SMTC snapshot so WinIsland & AMLL
         // immediately receive the exported `.lrc` / `.ttml` subtitle stream on track start.
         let lib_svc = crate::services::library::LibraryService::new(self.db.clone());
@@ -1222,10 +1253,13 @@ impl PlaybackService {
         }
         self.emit_snapshot();
 
+        let fade_in=fade_in&&{let state=self.inner.lock();state.fade_in_pending&&state.immersion.fade_enabled};
+        self.mpv.set_transition_gain(if fade_in {0.0} else {1.0}).await?;
         // T910: Pipeline load_file + volume + af filter graph in a single IPC batch
+        let paused_on_load=self.inner.lock().user_paused_intent;
         if let Err(err) = self
             .mpv
-            .load_file_pipelined(&target_uri, &headers, false, volume, &af_graph)
+            .load_file_pipelined(&target_uri, &headers, paused_on_load, volume, &af_graph)
             .await
         {
             let mut guard = self.inner.lock();
@@ -1565,6 +1599,17 @@ impl PlaybackService {
         self.get_snapshot()
     }
 
+    /// Saved playlists reuse the same queue, playback generation and source selection.
+    pub async fn play_playlist(&self, ids: Vec<String>, append: bool, start: Option<String>) -> AppResult<PlaybackSnapshot> {
+        if ids.is_empty() || ids.len()>500 {return Err(AppError::new(ErrorCode::InvalidInput,"歌单中没有可播放的音轨"));}
+        let pairs=ids.into_iter().map(|id|(id,None)).collect::<Vec<_>>();
+        if append {self.db.append_queue_items(&pairs)?;self.emit_snapshot();return self.get_snapshot();}
+        let index=start.and_then(|id|pairs.iter().position(|(v,_)|v==&id)).unwrap_or(0);
+        let qid=self.db.replace_queue_items(&pairs,index)?;
+        {self.inner.lock().current_queue_item_id=qid;}
+        self.play_with_position(&pairs[index].0,None,false,None,None).await
+    }
+
     /// T1117 / R37: Enqueues all favorite works in order (preferring With-SE + WAV format) and starts playback immediately.
     pub async fn play_favorites_queue(
         &self,
@@ -1640,9 +1685,11 @@ impl PlaybackService {
 
         let target_pause =
             state == "playing" || state == "buffering" || (state == "loading" && !user_paused);
-        {
+        let (serial,fade,fade_ms) = {
             let mut guard = self.inner.lock();
             if guard.session_generation != generation { return drop_and_snap(self, guard); }
+            guard.transition_serial+=1;
+            guard.fade_in_pending=false;
             guard.user_paused_intent = target_pause;
             guard.buffering_since = None;
             guard.state = if target_pause {
@@ -1652,6 +1699,14 @@ impl PlaybackService {
             } else {
                 "playing".into()
             };
+            (guard.transition_serial,guard.immersion.fade_enabled&&guard.file_loaded_for_gen,guard.immersion.fade_duration_ms)
+        };
+        if target_pause && fade && !self.ramp_transport(generation,serial,0.0,fade_ms).await? { return self.get_snapshot(); }
+        let _load=self.load_operation.lock().await;
+        {let state=self.inner.lock();if state.session_generation!=generation||state.transition_serial!=serial{return drop_and_snap(self,state);}}
+        if !fade && !target_pause { self.mpv.set_transition_gain(1.0).await?; }
+        if fade && !target_pause && self.mpv.command(serde_json::json!(["get_property","pause"])).await?.as_bool()==Some(true) {
+            self.mpv.set_transition_gain(0.0).await?;
         }
         if let Err(error) = self.mpv.set_pause(target_pause).await {
             {
@@ -1667,6 +1722,8 @@ impl PlaybackService {
             self.emit_snapshot();
             return Err(error);
         }
+        drop(_load);
+        if !target_pause && fade { let _=self.ramp_transport(generation,serial,1.0,fade_ms).await?; }
         self.persist_current_state(false);
         self.emit_snapshot();
         self.get_snapshot()
@@ -1720,6 +1777,9 @@ impl PlaybackService {
     }
 
     pub async fn step_queue(&self, delta: isize) -> AppResult<PlaybackSnapshot> {
+        self.step_queue_transition(delta,false).await
+    }
+    async fn step_queue_transition(&self,delta:isize,natural:bool)->AppResult<PlaybackSnapshot> {
         let queue = self.db.get_queue_items()?;
         if queue.is_empty() {
             return self.get_snapshot();
@@ -1772,8 +1832,7 @@ impl PlaybackService {
                 let mut guard = self.inner.lock();
                 guard.current_queue_item_id = Some(item.id.clone());
             }
-            self.play(&item.version_id, item.preferred_source_id.clone())
-                .await
+            self.play_with_transition(&item.version_id,item.preferred_source_id.clone(),false,None,None,natural).await
         } else {
             let _ = self.mpv.stop().await;
             {
@@ -2838,10 +2897,14 @@ impl PlaybackService {
     }
 
     async fn recover_online_stream(&self, generation: u64, stalled: bool) {
+        // A new load can emit end-file before its command future returns. Queue
+        // that failure behind the active recovery instead of dropping it while
+        // online_recovery_running is true. Recheck the session after waiting.
+        let _recovery = self.recovery_operation.lock().await;
         if *self.shutdown_signal.borrow() { return; }
         let (source, exhausted) = {
             let mut state = self.inner.lock();
-            if state.session_generation != generation || state.online_recovery_running
+            if state.session_generation != generation
                 || matches!(state.state.as_str(), "error" | "idle" | "stopped" | "ended") { return; }
             let Some(source) = state.active_source.clone().filter(|s| s.source_kind == "online_provider") else { return; };
             let exhausted = state.retried_online_for_gen;
@@ -3007,6 +3070,9 @@ impl PlaybackService {
                                 }
                             }
                         }
+                        let transition={let mut state=this.inner.lock();
+                            if state.fade_in_pending&&!state.user_paused_intent {state.fade_in_pending=false;Some((state.session_generation,state.transition_serial,state.immersion.fade_duration_ms))}else{None}};
+                        if let Some((generation,serial,ms))=transition {let player=this.clone();spawn_bg_task(async move {let _=player.ramp_transport(generation,serial,1.0,ms).await;});}
                         this.persist_current_state(false);
                         this.sync_native_smtc_timeline();
                         this.emit_snapshot();
@@ -3217,6 +3283,8 @@ impl PlaybackService {
                     MpvEvent::EndFile { reason, error, audio_output_error, .. } => {
                         // Ignore 'stop'/'redirect'/'quit' generated during track switches!
                         if reason == "eof" {
+                            // A replaced file may reach EOF while the new generation is fading/resolving.
+                            if !this.inner.lock().file_loaded_for_gen { continue; }
                             let finished_generation = {
                                 let mut state = this.inner.lock();
                                 let generation = state.session_generation;
@@ -3255,6 +3323,12 @@ impl PlaybackService {
                                 Err(_) => continue,
                             };
                             if this.inner.lock().session_generation != continuation_generation { continue; }
+                            if !stop_at_end_of_track && this.inner.lock().user_paused_intent {
+                                this.inner.lock().state="paused".into();
+                                let _=this.mpv.set_pause(true).await;
+                                this.emit_snapshot();
+                                continue;
+                            }
                             if stop_at_end_of_track {
                                 // R14 & T1101: "本轨结束停止" must NOT advance to the next track, and restores base volume
                                 let _ = this.mpv.set_volume(base_vol).await;
@@ -3269,10 +3343,10 @@ impl PlaybackService {
                                 this.emit_snapshot();
                             } else if loop_mode == "single" {
                                 if let Some(vid) = vid_opt {
-                                    let _ = this.play(&vid, None).await;
+                                    let _ = this.play_with_transition(&vid,None,false,None,None,true).await;
                                 }
                             } else {
-                                let _ = this.step_queue(1).await;
+                                let _ = this.step_queue_transition(1,true).await;
                             }
                         } else if reason == "error" {
                             let online_generation = {
@@ -3680,6 +3754,47 @@ mod playback_tests {
             state.volume = 0.0;
         }
         (root, pb)
+    }
+
+    #[tokio::test]
+    async fn online_failure_during_recovery_is_queued_and_stale_sessions_are_ignored() {
+        for stale in [false, true] {
+            let (_root, pb) = online_stall_fixture();
+            let gate = pb.recovery_operation.lock().await;
+            let generation = {
+                let mut state = pb.inner.lock();
+                state.retried_online_for_gen = true;
+                state.online_recovery_running = true;
+                state.session_generation
+            };
+            let recovery = pb.clone();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                started.send(()).unwrap();
+                recovery.recover_online_stream(generation, false).await;
+            });
+            ready.await.unwrap(); // the second failure has reached the busy recovery
+            assert!(!task.is_finished());
+            {
+                let mut state = pb.inner.lock();
+                state.online_recovery_running = false;
+                if stale { state.session_generation += 1; }
+            }
+            drop(gate);
+            tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
+            {
+                let state = pb.inner.lock();
+                if stale {
+                    assert_eq!(state.state, "buffering");
+                    assert!(state.last_error.is_none());
+                } else {
+                    assert_eq!(state.state, "error");
+                    assert!(state.last_error.as_ref().unwrap().message.contains("加载失败"));
+                    assert!(!state.online_recovery_running);
+                }
+            }
+            pb.shutdown().await;
+        }
     }
 
     #[tokio::test]
@@ -4442,14 +4557,33 @@ mod playback_tests {
         let next=player.play_bookmark(&bm.id).await.unwrap();
         assert_eq!(next.current_version_id.as_deref(),Some("original"));
         assert!(next.position_ms>=6000 && next.position_ms<8000,"bookmark overrides completed-track reset");
+        player.shutdown().await;
+        // Exercise ordering with the load gate, not 50/350 ms sleeps while
+        // real audio keeps advancing on a heavily loaded test machine.
+        let player=PlaybackService::new(db.clone(),AsmrOneProvider::new(db.clone()));
+        let initial_generation=player.inner.lock().session_generation;
+        let gate=player.load_operation.lock().await;
         let slow=player.clone();
-        let task=tokio::spawn(async move {slow.play_with_position("original",None,false,Some(Duration::from_millis(350)),Some(15000)).await});
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        player.play("other-cut",None).await.unwrap();
-        task.await.unwrap().unwrap();
-        let final_state=player.get_snapshot().unwrap();
-        assert_eq!(final_state.current_version_id.as_deref(),Some("other-cut"));
-        assert!(final_state.position_ms<5000,"late bookmark must not seek the newer version");
+        let old=tokio::spawn(async move {slow.play_with_position("original",None,false,None,Some(15000)).await});
+        tokio::time::timeout(Duration::from_secs(2),async {
+            while player.inner.lock().session_generation == initial_generation { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        let newer=player.clone();
+        let new=tokio::spawn(async move {newer.play("other-cut",None).await});
+        tokio::time::timeout(Duration::from_secs(2),async {
+            while player.inner.lock().session_generation < initial_generation+2 { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        // Both generations exist before either may load. The old bookmark's
+        // explicit seek must already have been superseded by the new version.
+        assert_eq!(player.inner.lock().position_ms,0);
+        assert_ne!(player.inner.lock().pending_seek_ms,Some(15000));
+        drop(gate);
+        let old_result=old.await.unwrap().unwrap();
+        let new_result=new.await.unwrap().unwrap();
+        assert_eq!(old_result.current_version_id.as_deref(),Some("other-cut"));
+        assert_eq!(new_result.current_version_id.as_deref(),Some("other-cut"));
+        assert_eq!(old_result.session_generation,new_result.session_generation);
+        assert_ne!(player.inner.lock().pending_seek_ms,Some(15000));
         player.shutdown().await;
     }
 
@@ -4994,6 +5128,16 @@ mod playback_tests {
 
     #[test]
     fn test_m9_fts5_and_single_cte_list_works_2000_works_30000_tracks_r22() {
+        check_large_library(false);
+    }
+
+    #[test]
+    #[ignore = "160 ms wall-clock budget; run alone with --ignored --test-threads=1"]
+    fn large_library_isolated_latency_budget() {
+        check_large_library(true);
+    }
+
+    fn check_large_library(enforce_latency: bool) {
         let dir = tempdir().unwrap();
         let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
 
@@ -5094,7 +5238,7 @@ mod playback_tests {
         eprintln!("T1515 list_works (2,000 works / 30,000 tracks): {list_elapsed:?}");
         assert_eq!(all_works.len(), 2000);
         assert!(
-            list_elapsed < Duration::from_millis(160),
+            !enforce_latency || list_elapsed < Duration::from_millis(160),
             "list_works for 2,000 works / 30,000 tracks must be ultra-fast (< 160ms in parallel debug build), took {:?}",
             list_elapsed
         );
@@ -5124,10 +5268,25 @@ mod playback_tests {
         assert_eq!(by_rj.len(), 1);
         assert_eq!(by_rj[0].id, "w_1500");
         assert!(
-            rj_elapsed < Duration::from_millis(160),
+            !enforce_latency || rj_elapsed < Duration::from_millis(160),
             "FTS5 RJ search took {:?}",
             rj_elapsed
         );
+
+        assert!(by_rj[0].has_local);
+        // Assert SQL work, not thread scheduling: a one-work search must visit
+        // that work's sources rather than aggregating the entire 30,000-track library.
+        db.with_conn(|conn| {
+            let measure = |scope: &str| -> rusqlite::Result<i32> {
+                let mut query = conn.prepare(crate::db::repo::WORK_SOURCE_FLAGS_SQL)?;
+                { let mut rows = query.query([scope])?; while rows.next()?.is_some() {} }
+                Ok(query.get_status(rusqlite::StatementStatus::VmStep))
+            };
+            let one = measure(r#"["w_1500"]"#)?;
+            let all = measure(&serde_json::to_string(&all_works.iter().map(|w| &w.id).collect::<Vec<_>>()).unwrap())?;
+            assert!(one * 100 < all, "search must be scoped: one={one}, all={all}");
+            Ok(())
+        }).unwrap();
 
         let by_track = db.list_works("all", Some("秘密の竹耳かき")).unwrap();
         assert_eq!(by_track.len(), 1);
@@ -5149,6 +5308,10 @@ mod playback_tests {
         let history_elapsed = started.elapsed();
         eprintln!("T1515 list_works with 30,000 progress records: {history_elapsed:?}");
         assert_eq!(with_history.len(), 2000);
+        let searched_history = db.list_works("all", Some("RJ01001500")).unwrap();
+        assert_eq!(searched_history.len(), 1);
+        assert_eq!(searched_history[0].listening_status, crate::domain::ListeningStatus::Played);
+        assert!(searched_history[0].is_listened && searched_history[0].has_local);
         assert_eq!(with_history.iter().filter(|w| w.listening_status == crate::domain::ListeningStatus::Played).count(), 666);
         assert_eq!(with_history.iter().filter(|w| w.listening_status == crate::domain::ListeningStatus::InProgress).count(), 1334);
         // Additional workload: report it separately from the original empty-history

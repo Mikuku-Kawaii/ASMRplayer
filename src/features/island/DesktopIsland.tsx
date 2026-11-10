@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ScrollingText } from "./ScrollingText";
+import { useCoverAccent } from "./useCoverAccent";
+import { useIslandExpansion } from "./useIslandExpansion";
+import { IslandSeekBar } from "./IslandSeekBar";
+import { useTypography } from "../../app/TypographyProvider";
 import { preferredSubtitleLines } from "../lyrics/subtitleDisplay";
 import { PlayerLibraryActions } from "../player/PlayerLibraryActions";
 import { Play, Pause, SkipBack, SkipForward, Volume2, Volume1, Disc3, ExternalLink, EyeOff, Eye, X, ChevronUp, ChevronLeft, MoreHorizontal, RotateCcw } from "lucide-react";
@@ -16,10 +20,11 @@ const COMPACT_MIN_WIDTH = 200;
 const COMPACT_MAX_WIDTH = 640;
 const initialLayout: IslandLayout = { revision: 0, form: "compact", scale: 1, width: COMPACT_MIN_WIDTH, height: 42, radius: 21, animate: false };
 export function DesktopIsland() {
+  const { value: typography, fontRevision } = useTypography();
   const [snapshot, setSnapshot] = useState(defaultSnapshot);
   const [nativeGlass, setNativeGlass] = useState(false);
   const [layout, setLayout] = useState(initialLayout);
-  const [viewportRevision, setViewportRevision] = useState(-1);
+  const [viewport, setViewport] = useState({ revision: -1, pixelRatio: 1 });
   const [settings, setSettings] = useState<Partial<AppSettingsDto>>({});
   const [cues, setCues] = useState<SubtitleCueDto[]>([]);
   const [cover, setCover] = useState<{ workId: string; url: string | null } | null>(null);
@@ -56,6 +61,7 @@ export function DesktopIsland() {
       catch (e) { setError(normalizeAppError(e).message); }
     });
   }, [applyLayout]);
+  const { onDragEnd, ...expansionEvents } = useIslandExpansion(layout.expandMode ?? "click", form, changeForm, dragging);
   useEffect(() => {
     if (!layout.animate) return;
     // Trim the input region after the morph without resizing the WebView viewport.
@@ -187,25 +193,35 @@ export function DesktopIsland() {
     // React can commit before WebView2 receives the new host bounds/DPI. Keep
     // cover and text together, and reveal only when the actual viewport agrees.
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let resolution: MediaQueryList | undefined;
     const acknowledge = () => {
       clearTimeout(timer);
       const target = layout.viewport;
-      const dpi = window.devicePixelRatio || 1;
-      const tolerance = Math.max(2, dpi);
-      const ready = !target || (Math.abs(dpi - target.deviceScale) < .01
-        && Math.abs(window.innerWidth * dpi - target.width) <= tolerance
-        && Math.abs(window.innerHeight * dpi - target.height) <= tolerance);
-      setViewportRevision(ready ? layout.revision : -1);
+      const pixelRatio = window.devicePixelRatio || 1;
+      const tolerance = Math.max(2, pixelRatio);
+      // WebView2 includes Windows text scaling in its pixel ratio; the host's
+      // deviceScale is monitor DPI only. Compare physical bounds, not ratios.
+      const ready = !target || (Math.abs(window.innerWidth * pixelRatio - target.width) <= tolerance
+        && Math.abs(window.innerHeight * pixelRatio - target.height) <= tolerance);
+      setViewport({ revision: ready ? layout.revision : -1, pixelRatio });
       // Hidden WebViews may throttle RAF; a post-commit task remains usable.
       if (ready) timer = setTimeout(() => {
         void callCommand("island_layout_ready", { revision: layout.revision }).catch(e => setError(normalizeAppError(e).message));
       }, 0);
     };
+    const watchResolution = () => {
+      resolution?.removeEventListener?.("change", resolutionChanged);
+      resolution = window.matchMedia?.(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      resolution?.addEventListener?.("change", resolutionChanged);
+    };
+    const resolutionChanged = () => { acknowledge(); watchResolution(); };
     acknowledge();
+    watchResolution();
     window.addEventListener("resize", acknowledge);
     window.visualViewport?.addEventListener("resize", acknowledge);
     return () => {
       clearTimeout(timer);
+      resolution?.removeEventListener?.("change", resolutionChanged);
       window.removeEventListener("resize", acknowledge);
       window.visualViewport?.removeEventListener("resize", acknowledge);
     };
@@ -219,7 +235,7 @@ export function DesktopIsland() {
     if (compactWidth.current === width) return;
     compactWidth.current = width;
     if (form === "compact" && requestedForm.current === "compact") changeForm("compact", width);
-  }, [subtitleText, hasSubtitles, form, changeForm, layout.fontSize, layout.fontWeight]);
+  }, [subtitleText, hasSubtitles, form, changeForm, layout.fontSize, layout.fontWeight, typography.font, fontRevision]);
   useLayoutEffect(() => {
     // Wait for the matching host width so text entry and capsule spring start in
     // the same React commit. Privacy masking must never wait for the host.
@@ -256,7 +272,7 @@ export function DesktopIsland() {
     pointerStart.current = null; dragging.current = true;
     try { await getCurrentWindow().startDragging(); await run("island_save_current_position"); }
     catch (e) { setError(normalizeAppError(e).message); }
-    finally { dragging.current = false; }
+    finally { dragging.current = false; onDragEnd(); }
   }
   const commitSeek = () => {
     if (seekPreview !== null) void run("seek_ms", { positionMs: seekPreview });
@@ -269,13 +285,18 @@ export function DesktopIsland() {
     }
   }
   const coverUrl = cover && cover.workId === snapshot.currentWorkId ? cover.url : null;
+  const accent = useCoverAccent(privacy ? null : coverUrl);
   const coverImage = !privacy && coverUrl ? <img src={coverUrl} alt="作品封面" draggable={false} /> : <Disc3 size={20} />;
-  return <div className={`desktop-island-container form-${form} ${layout.viewport && viewportRevision !== layout.revision ? "is-viewport-pending" : ""} ${nativeGlass ? "has-native-glass" : ""} ${avoided ? "is-fullscreen-avoided" : ""}`}
-    style={{ "--island-text-size": `${layout.fontSize ?? 20}px`, "--island-text-weight": layout.fontWeight ?? 700 } as React.CSSProperties}
+  // Convert the host's logical geometry to this WebView's CSS pixels. Keep
+  // native clipping, glass, cover and controls on the same physical footprint.
+  const renderScale = layout.scale * (layout.viewport ? layout.viewport.deviceScale / viewport.pixelRatio : 1);
+  return <div className={`desktop-island-container form-${form} ${layout.viewport && viewport.revision !== layout.revision ? "is-viewport-pending" : ""} ${nativeGlass ? "has-native-glass" : ""} ${avoided ? "is-fullscreen-avoided" : ""}`}
+    style={{ "--island-cover-accent": accent, "--island-text-size": `${layout.fontSize ?? 20}px`, "--island-text-weight": layout.fontWeight ?? 700 } as React.CSSProperties}
     onContextMenu={e => { e.preventDefault(); changeForm("menu"); }}
     onKeyDown={e => { if (e.key === "Escape") { changeForm("compact"); } }}>
     <span ref={textMeasure} className="island-text-measure" aria-hidden="true" />
-    <div className={`island-capsule island-capsule-${form}`} style={{ width: layout.width, height: layout.height, borderRadius: layout.radius, transform: `scale(${layout.scale})`, transformOrigin: "top center", transitionDuration: layout.animate === false ? "0ms" : undefined }}
+    <div className={`island-capsule island-capsule-${form}`} style={{ width: layout.width, height: layout.height, borderRadius: layout.radius, transform: `scale(${renderScale})`, transformOrigin: "top center", transitionDuration: layout.animate === false ? "0ms" : undefined }}
+      {...expansionEvents}
       onPointerDown={dragStart} onPointerMove={e => void dragMove(e)} onPointerUp={() => { pointerStart.current = null; }} onPointerCancel={() => { pointerStart.current = null; }}
       onDoubleClick={e => { if (!(e.target as HTMLElement).closest("button, input")) void run("island_focus_main_window"); }}
       role={form === "expanded" || form === "menu" ? "dialog" : "region"}
@@ -307,21 +328,15 @@ export function DesktopIsland() {
         </div>
         <div className="island-timeline tabular-nums">
           <span>{formatDurationMs(position)}</span>
-          <div className="island-seek" style={{ "--island-progress": `${Math.min(100, Math.max(0, position / (snapshot.durationMs || 1) * 100))}%` } as React.CSSProperties}>
-          <div className="island-progress-track" aria-hidden="true"><span /></div>
-          <input type="range" aria-label="播放进度" aria-valuetext={`${formatDurationMs(position)} / ${formatDurationMs(snapshot.durationMs)}`} min={0} max={snapshot.durationMs || 1} step={1000} value={Math.min(position, snapshot.durationMs || 1)} disabled={!snapshot.durationMs}
-            onChange={e => setSeekPreview(Number(e.target.value))}
-            onPointerDown={e => e.currentTarget.setPointerCapture?.(e.pointerId)} onPointerUp={commitSeek}
-            onPointerCancel={() => setSeekPreview(null)} onKeyUp={commitSeek} onBlur={commitSeek} />
-          </div>
+          <IslandSeekBar positionMs={position} durationMs={snapshot.durationMs} onPreview={setSeekPreview} onCommit={commitSeek} />
           <span>{formatDurationMs(snapshot.durationMs)}</span>
         </div>
         <div className="island-controls-row">
           <button type="button" className="island-btn-icon" aria-label="更多操作" title="更多操作" onClick={() => changeForm("menu")}><MoreHorizontal size={24} /></button>
           <div className="island-transport">
-            <button type="button" className="island-btn-icon" aria-label="上一首" title="上一首" disabled={!snapshot.currentVersionId} onClick={() => void run("step_queue", { delta: -1 })}><SkipBack size={30} fill="currentColor" strokeWidth={2.5} /></button>
-            <button type="button" className="island-btn-play-main" aria-label={playing ? "暂停" : "播放"} title={playing ? "暂停" : "播放"} disabled={!snapshot.currentVersionId} onClick={() => void run("toggle_pause")}>{playing ? <Pause size={32} fill="currentColor" strokeWidth={1.5} /> : <Play size={32} fill="currentColor" strokeWidth={1.5} />}</button>
-            <button type="button" className="island-btn-icon" aria-label="下一首" title="下一首" disabled={!snapshot.currentVersionId} onClick={() => void run("step_queue", { delta: 1 })}><SkipForward size={30} fill="currentColor" strokeWidth={2.5} /></button>
+            <button type="button" className="island-btn-icon" aria-label="上一首" title="上一首" disabled={!snapshot.currentVersionId} onClick={() => void run("step_queue", { delta: -1 })}><SkipBack size={24} /></button>
+            <button type="button" className="island-btn-icon island-btn-play-main" aria-label={playing ? "暂停" : "播放"} title={playing ? "暂停" : "播放"} disabled={!snapshot.currentVersionId} onClick={() => void run("toggle_pause")}>{playing ? <Pause size={24} /> : <Play size={24} />}</button>
+            <button type="button" className="island-btn-icon" aria-label="下一首" title="下一首" disabled={!snapshot.currentVersionId} onClick={() => void run("step_queue", { delta: 1 })}><SkipForward size={24} /></button>
           </div>
           <button type="button" className="island-btn-icon" aria-label="打开主软件" title="打开主软件查看完整标题与字幕" onClick={() => void run("island_focus_main_window")}><ExternalLink size={22} /></button>
         </div>

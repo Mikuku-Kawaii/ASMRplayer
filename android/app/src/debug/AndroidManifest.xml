@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Only debug builds can discover the isolated instrumentation fixture provider. -->
+    <application android:networkSecurityConfig="@xml/debug_network_security" />
+    <queries><provider android:authorities="${fixtureAuthority}" /></queries>
+</manifest>

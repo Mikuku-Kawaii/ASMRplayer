@@ -1,0 +1,4 @@
+interface:
+  display_name: "自适应液态玻璃"
+  short_description: "为播放器与桌面组件实现玻璃材质，并按宿主能力降级"
+  default_prompt: "使用 $adaptive-liquid-glass，为指定组件添加与现有主题一致的玻璃材质，验证真实背景效果并说明宿主限制。"

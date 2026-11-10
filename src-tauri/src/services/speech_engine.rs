@@ -15,17 +15,11 @@ fn error(message: &str) -> AppError {
     AppError::new(ErrorCode::MediaDecodeFailed, message)
 }
 
-// These are PCM cache limits, not the per-inference limits of an ASR backend.
-// Keep the decoder and both recognition paths on the same context budget.
-const MAX_CONTEXT_MS: i64 = 8_000;
-const MAX_ANALYSIS_MS: i64 = CHUNK_MS + 2 * MAX_CONTEXT_MS;
-pub(super) fn analysis_context_ms(quiet_speech: bool) -> i64 {
-    if quiet_speech {
-        MAX_CONTEXT_MS
-    } else {
-        2_000
-    }
-}
+// The PCM cache includes both configurable margins. Individual ASR requests
+// remain bounded to 20 seconds by asr_quality and dialogue_review.
+pub(super) const ANALYSIS_PADDING_MS: i64 = 2_000;
+pub(super) const MAX_ANALYSIS_PADDING_MS: i64 = 8_000;
+const MAX_ANALYSIS_MS: i64 = CHUNK_MS + 2 * MAX_ANALYSIS_PADDING_MS;
 
 fn validate_decode_range(start_ms: i64, length_ms: i64) -> AppResult<()> {
     if start_ms < 0
@@ -473,9 +467,8 @@ mod tests {
         assert!(!out.exists());
     }
     #[test]
-    fn t1513_analysis_range_accepts_both_context_budgets_but_stays_bounded() {
-        for quiet in [false, true] {
-            let context = analysis_context_ms(quiet);
+    fn t1513_analysis_range_accepts_standard_and_extended_padding_but_stays_bounded() {
+        for context in [ANALYSIS_PADDING_MS, 2500, MAX_ANALYSIS_PADDING_MS] {
             // Ordinary chunks and the 12-second Chinese-reference path.
             for core in [CHUNK_MS, 12_000] {
                 assert!(validate_decode_range(0, core + context).is_ok());
@@ -551,8 +544,7 @@ mod tests {
         assert!(samples.iter().all(|v| v.is_finite() && v.abs() <= 1.0));
         let rms = (samples.iter().map(|v| v * v).sum::<f32>() / samples.len() as f32).sqrt();
         assert!((0.2..0.3).contains(&rms), "RMS {rms}");
-        for quiet in [false, true] {
-            let padding = analysis_context_ms(quiet);
+        for padding in [ANALYSIS_PADDING_MS, 2500, MAX_ANALYSIS_PADDING_MS] {
             // First chunk, middle chunk, and EOF tail, with the caller's real budget.
             for start in [0, CHUNK_MS, 3 * CHUNK_MS] {
                 let end = (start + CHUNK_MS).min(duration);
@@ -570,7 +562,7 @@ mod tests {
                 let expected = (length * 16) as usize;
                 assert!(
                     (expected - 100..=expected).contains(&context.len()),
-                    "quiet={quiet}, start={start}, length={length}, samples={}",
+                    "padding={padding}, start={start}, length={length}, samples={}",
                     context.len()
                 );
                 assert!(context.iter().all(|v| v.is_finite() && v.abs() <= 1.0));

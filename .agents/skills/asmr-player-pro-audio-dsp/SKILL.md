@@ -5,6 +5,14 @@ description: "Professional audiophile player engine (foobar2000 / Neutron Music 
 
 # ASMR Player · Pro Audio Engine & ASMR DSP / EQ Chain Skill
 
+## 设计融合：可读控制与真实音频证据
+
+EQ／DSP 界面以当前实际参数、单位、旁路状态和测量值为依据；不能把宣传演示中的呼吸柱形图、计数动画或假波形接成真实电平。未知采样率、峰值和设备能力明确显示未知，不为精致外观补造数字或音质主张。
+
+通过参数分组、刻度、输入／滑块配对与明确复位范围建立层级，禁用和处理中保持几何稳定。高频遥测与装饰动画分开调度，减少动效不会暂停音频或改变 DSP；不为展示循环加载测试媒体、提高音量或改变峰值保护。展示动画仅用于明确的隔离演示，实际保真和限幅仍按本技能的音频验证执行。
+
+方法参考：[Elaya AI Design Skills](https://github.com/elayadesign/ai-design-skills/tree/38bbe5765600b9178b5395a823c9f6c8d2b8e730)；以上为面向本技能的适配，现有项目契约与用户明确要求优先。
+
 ## When To Load This Skill
 
 Load this skill whenever working on audio processing, player precision, DSP/EQ pipelines, or audiophile control surfaces, including:

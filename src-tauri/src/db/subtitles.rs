@@ -134,7 +134,7 @@ mod tests {
             saved.asr_records[&7].attempts[0].repetition_ratio,
             Some(1.0)
         );
-        assert!(!saved.can_translate(7));
+        assert!(saved.can_translate(7)); // Translation is not confirmation of the original audio.
         assert_eq!(
             saved.completed_chunks,
             std::collections::BTreeSet::from([0])
@@ -183,9 +183,11 @@ impl SubtitleDocument {
         }
     }
     pub fn rendered(&self) -> Vec<SubtitleCueDto> {
-        self.original
+        let mut cues: Vec<_> = self.original
             .iter()
-            .filter(|cue| !self.dialogue_text(cue).trim().is_empty())
+            .filter(|cue| !self.non_dialogue_cues.contains(&cue.index))
+            .filter(|cue| !self.dialogue_text(cue).trim().is_empty()
+                || self.trusted_reference(cue.index).is_some())
             .filter(|cue| {
                 !self.original_text(cue).is_empty() || self.translation_text(cue.index).is_some()
             })
@@ -203,13 +205,26 @@ impl SubtitleDocument {
                 if let Some(translated) = translated
                 {
                     if translated != cue.text {
-                        cue.text.push('\n');
+                        if !cue.text.is_empty() {
+                            cue.text.push('\n');
+                        }
                         cue.text.push_str(translated);
                     }
                 }
                 cue
             })
-            .collect()
+            .collect();
+        if !self.reference_subtitles.is_empty() {
+            // Reference captions are display data, not ASR results. Keep the full
+            // Chinese timeline while Japanese recognition fills individual IDs.
+            // Do not seed original/completed_chunks with unrecognized captions.
+            let recognized: BTreeSet<_> = self.original.iter().map(|cue| cue.index).collect();
+            cues.extend(self.reference_subtitles.iter().enumerate()
+                .filter(|(index, _)| !recognized.contains(index))
+                .map(|(index, reference)| SubtitleCueDto { index, ..reference.clone() }));
+            cues.sort_by_key(|cue| (cue.start_ms, cue.index));
+        }
+        cues
     }
     pub fn original_text<'a>(&'a self, cue: &'a SubtitleCueDto) -> &'a str {
         self.original_corrections
@@ -255,7 +270,10 @@ impl SubtitleDocument {
     }
     fn translation_for_cue(&self, cue: &SubtitleCueDto) -> Option<&str> {
         let index = cue.index;
-        if self.dialogue_text(cue).trim().is_empty() { return None; }
+        if self.non_dialogue_cues.contains(&index)
+            || self.dialogue_text(cue).trim().is_empty() && self.trusted_reference(index).is_none() {
+            return None;
+        }
         self.translation_corrections
             .get(&index)
             .map(String::as_str)
@@ -279,20 +297,23 @@ impl SubtitleDocument {
                 self.model_reviews
                     .get(&cue.index)
                     .is_some_and(|r| !r.note.is_empty())
-                    || self
-                        .asr_records
-                        .get(&cue.index)
-                        .is_some_and(|r| r.pending_audio_review && !r.human_confirmed)
+                    || self.audio_review_pending(cue.index)
             })
             .count()
     }
+    pub fn audio_review_pending(&self, id: usize) -> bool {
+        self.asr_records.get(&id)
+            .is_some_and(|r| r.pending_audio_review && !r.human_confirmed)
+    }
     pub fn can_translate(&self, id: usize) -> bool {
+        // Uncertain speech remains translatable as written, with its review state
+        // intact. Only excluded sounds / confirmed no-speech are ineligible.
         self.original
             .iter()
             .find(|c| c.index == id)
             .is_some_and(|c| !self.dialogue_text(c).trim().is_empty())
             && !self.asr_records.get(&id).is_some_and(|r| {
-                !r.human_confirmed && (r.pending_audio_review || r.confirmed_no_speech)
+                !r.human_confirmed && r.confirmed_no_speech
             })
     }
     pub fn cue_status(&self, id: usize) -> &'static str {
@@ -363,7 +384,7 @@ impl SubtitleDocument {
                         a.start_ms < 0 || a.end_ms <= a.start_ms || a.result.text.len() > 100_000
                     })
                     || r.dialogue_review.as_ref().is_some_and(|review|
-                        review.note.len() > 6000 || review.observations.len() > 5
+                        review.note.len() > 6000 || review.observations.len() > 7
                         || review.observations.iter().any(|o| o.start_ms < 0 || o.end_ms <= o.start_ms
                             || o.end_ms-o.start_ms > 20_000 || o.result.text.len() > 100_000))
             })
@@ -564,7 +585,7 @@ impl Database {
             {
                 // Reloading the same Chinese subtitle must restore its bilingual ASR
                 // result. Never apply it to another subtitle or a changed audio source.
-                if !doc.original.is_empty()
+                if !doc.reference_subtitles.is_empty()
                     && doc.reference_subtitles.len() == cues.len()
                     && doc.reference_subtitles.iter().zip(&cues).all(|(a, b)| {
                         a.start_ms == b.start_ms && a.end_ms == b.end_ms && a.text == b.text

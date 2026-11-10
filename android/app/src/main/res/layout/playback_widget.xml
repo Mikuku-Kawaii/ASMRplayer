@@ -1,0 +1,25 @@
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent" android:foreground="@drawable/widget_surface_touch">
+    <ImageView android:id="@+id/widget_glass" android:layout_width="match_parent" android:layout_height="match_parent" android:scaleType="fitXY" android:importantForAccessibility="no" android:src="@drawable/widget_background"/>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent" android:gravity="center_vertical" android:orientation="vertical" android:paddingLeft="16dp" android:paddingRight="16dp">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="68dp" android:gravity="center_vertical">
+            <ImageView android:id="@+id/widget_artwork" android:layout_width="52dp" android:layout_height="52dp" android:src="@drawable/widget_artwork" android:importantForAccessibility="no"/>
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:layout_marginLeft="10dp" android:orientation="vertical">
+                <TextView android:id="@+id/widget_title" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="ASMR Player" android:textSize="14sp" android:fontFamily="sans-serif-medium" android:maxLines="2" android:ellipsize="end" android:includeFontPadding="false"/>
+                <TextView android:id="@+id/widget_status" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="3dp" android:text="打开播放器继续收听" android:textSize="11sp" android:maxLines="1" android:ellipsize="end" android:includeFontPadding="false"/>
+            </LinearLayout>
+            <ImageButton android:stateListAnimator="@animator/widget_press" android:id="@+id/widget_configure" android:layout_width="48dp" android:layout_height="48dp" android:src="@drawable/widget_configure" android:contentDescription="组件外观" android:padding="0dp" android:scaleType="center" android:background="@drawable/widget_control"/>
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="24dp" android:gravity="center_vertical">
+            <TextView android:id="@+id/widget_elapsed" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="0:00" android:textSize="10sp" android:fontFeatureSettings="tnum" android:includeFontPadding="false"/>
+            <ImageView android:id="@+id/widget_progress" android:layout_width="0dp" android:layout_weight="1" android:layout_height="3dp" android:layout_marginLeft="10dp" android:layout_marginRight="10dp" android:scaleType="fitXY"/>
+            <TextView android:id="@+id/widget_remaining" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="--:--" android:textSize="10sp" android:fontFeatureSettings="tnum" android:includeFontPadding="false"/>
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="52dp" android:orientation="horizontal" android:gravity="center">
+            <ImageButton android:stateListAnimator="@animator/widget_press" android:id="@+id/widget_favorite" android:layout_width="0dp" android:layout_weight="1" android:layout_height="52dp" android:src="@drawable/widget_heart" android:contentDescription="添加书签" android:padding="0dp" android:scaleType="center" android:background="@drawable/widget_control"/>
+            <ImageButton android:stateListAnimator="@animator/widget_press" android:id="@+id/widget_previous" android:layout_width="0dp" android:layout_weight="1" android:layout_height="52dp" android:src="@drawable/widget_previous" android:contentDescription="上一轨" android:padding="0dp" android:scaleType="center" android:background="@drawable/widget_control"/>
+            <ImageButton android:stateListAnimator="@animator/widget_press" android:id="@+id/widget_play" android:layout_width="0dp" android:layout_weight="1" android:layout_height="52dp" android:src="@drawable/widget_play" android:contentDescription="播放" android:padding="0dp" android:scaleType="center" android:background="@drawable/widget_play_control"/>
+            <ImageButton android:stateListAnimator="@animator/widget_press" android:id="@+id/widget_next" android:layout_width="0dp" android:layout_weight="1" android:layout_height="52dp" android:src="@drawable/widget_next" android:contentDescription="下一轨" android:padding="0dp" android:scaleType="center" android:background="@drawable/widget_control"/>
+            <ImageButton android:stateListAnimator="@animator/widget_press" android:id="@+id/widget_library" android:layout_width="0dp" android:layout_weight="1" android:layout_height="52dp" android:src="@drawable/widget_library_add" android:contentDescription="加入音频库" android:padding="0dp" android:scaleType="center" android:background="@drawable/widget_control"/>
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

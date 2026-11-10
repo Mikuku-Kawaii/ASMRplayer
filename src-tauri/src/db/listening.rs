@@ -2,7 +2,7 @@ use crate::domain::{AppResult, ListeningStatus};
 use rusqlite::Connection;
 use std::collections::HashMap;
 
-pub(super) fn library_states(conn: &Connection) -> AppResult<(HashMap<String, bool>, HashMap<String, ListeningStatus>)> {
+pub(super) fn library_states(conn: &Connection, scope: &str) -> AppResult<(HashMap<String, bool>, HashMap<String, ListeningStatus>)> {
     let mut listened = HashMap::new();
     let mut result = HashMap::new();
     // A complete directory is one listening edition; do not require duplicate
@@ -13,28 +13,29 @@ pub(super) fn library_states(conn: &Connection) -> AppResult<(HashMap<String, bo
         SELECT t.work_id,t.logical_dir_path,t.id,
                MAX(p.position_ms>0 OR p.completed=1) AS listened,
                MAX(p.ever_completed) AS heard
-        FROM playback_positions p CROSS JOIN track_versions v ON v.id=p.version_id
-        CROSS JOIN tracks t ON t.id=v.track_id GROUP BY t.id
+        FROM json_each(?1) selected CROSS JOIN tracks t ON t.work_id=selected.value
+        CROSS JOIN track_versions v ON v.track_id=t.id
+        CROSS JOIN playback_positions p ON p.version_id=v.id GROUP BY t.id
     ) SELECT c.work_id,MAX(c.listened),MAX(c.listened OR c.heard),
              SUM(c.heard)=(SELECT COUNT(*) FROM tracks t
                           WHERE t.work_id=c.work_id AND t.logical_dir_path=c.logical_dir_path)
       FROM track_history c
       GROUP BY c.work_id,c.logical_dir_path
     ")?;
-    for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?, r.get::<_, bool>(2)?, r.get::<_, bool>(3)?)))? {
+    for row in stmt.query_map([scope], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?, r.get::<_, bool>(2)?, r.get::<_, bool>(3)?)))? {
         let (id, has_listened, started, complete) = row?;
         if has_listened { listened.insert(id.clone(), true); }
         if complete { result.insert(id, ListeningStatus::Played); }
         else if started { result.entry(id).or_insert(ListeningStatus::InProgress); }
     }
-    let mut stmt = conn.prepare("SELECT work_id FROM work_playback_state")?;
-    for row in stmt.query_map([], |r| r.get::<_, String>(0))? {
+    let mut stmt = conn.prepare("SELECT work_id FROM work_playback_state WHERE work_id IN (SELECT value FROM json_each(?1))")?;
+    for row in stmt.query_map([scope], |r| r.get::<_, String>(0))? {
         let id = row?;
         listened.insert(id.clone(), true);
         result.entry(id).or_insert(ListeningStatus::InProgress);
     }
-    let mut stmt = conn.prepare("SELECT work_id,listened FROM work_listening_marks")?;
-    for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))? {
+    let mut stmt = conn.prepare("SELECT work_id,listened FROM work_listening_marks WHERE work_id IN (SELECT value FROM json_each(?1))")?;
+    for row in stmt.query_map([scope], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))? {
         let (id, value) = row?;
         listened.insert(id.clone(), value);
         result.insert(id, if value { ListeningStatus::Played } else { ListeningStatus::Unplayed });
