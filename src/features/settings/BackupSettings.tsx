@@ -1,3 +1,4 @@
+import { useDialogGeometry } from "../../components/useDialogGeometry";
 import { SettingsSaveNote } from "./SettingsSaveNote";
 import { SettingsDisclosure } from "./SettingsDisclosure";
 import { HelpHint } from "../../components/HelpHint";
@@ -110,6 +111,7 @@ export function BackupSettings({ onRestored }: { onRestored: () => Promise<void>
 
 function RestoreDialog({preview,scopes,busy,error,onScopes,onClose,onConfirm}:{preview:RestorePreview;scopes:RestoreScope[];busy:boolean;error:string;onScopes:(v:RestoreScope[])=>void;onClose:()=>void;onConfirm:()=>void}) {
   const dialog=useRef<HTMLDialogElement>(null),cancel=useRef<HTMLButtonElement>(null);const focused=useRef(false);
+  useDialogGeometry(dialog, "standard");
   useEffect(()=>{
     const el=dialog.current;const previous=document.activeElement as HTMLElement|null;const main=document.querySelector<HTMLElement>(".main-content");const overflow=main?.style.overflow??"";
     el?.showModal();if(main)main.style.overflow="hidden";
@@ -121,12 +123,14 @@ function RestoreDialog({preview,scopes,busy,error,onScopes,onClose,onConfirm}:{p
     if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus();}
   }}>
     <header className="storage-heading"><div className="setting-label-help"><h2 id="backup-preview-title">恢复备份预览</h2><HelpHint label="恢复规则" text={<>恢复采用合并：喜欢只添加，较新进度和已有标记保留；所选元数据、循环及音效可覆盖现值。进度与循环仅匹配相同音轨版本 ID；缺失版本的标记保留为未关联笔记。字幕仅恢复到相同版本 ID，已有同源文档保留，音源或字幕内容变化时不自动套用旧修正。不会重建音频库索引或改动媒体文件。</>} /></div><button type="button" className="btn-icon" aria-label="关闭恢复预览" title="关闭恢复预览" disabled={busy} onClick={onClose}><X size={18}/></button></header>
+<div className="dialog-body">
     <p id="backup-preview-description" className="settings-field-hint">格式版本 {preview.schemaVersion} · 备份时间 {date(preview.exportedAt)} · {preview.compatible ? "兼容当前版本" : "无法恢复"}</p>
     {preview.issue && <ErrorNotice message={preview.issue} />}
     {preview.safetyBackup && <p className="backup-safety">已保存当前用户资产副本：{date(preview.safetyBackup.createdAt)}。确认前会再次备份最新数据；任一次备份失败均不恢复。</p>}
     {!!preview.counts.length && <div className="backup-scopes" role="group" aria-label="选择恢复范围">{preview.counts.map(c=><button type="button" key={c.scope} className={`backup-scope ${scopes.includes(c.scope)?"is-selected":""}`} aria-pressed={scopes.includes(c.scope)} disabled={busy || !preview.compatible || !c.count} onClick={()=>onScopes(scopes.includes(c.scope)?scopes.filter(s=>s!==c.scope):[...scopes,c.scope])}><span>{labels[c.scope]}</span><span>{c.count} 项</span></button>)}</div>}
     {preview.matched && <p className="settings-field-hint">全部范围试检可匹配：喜欢 {preview.matched.favoritesRestored} 项、进度 {preview.matched.positionsRestored} 项、循环 {preview.matched.abLoopsRestored} 项；标记可新增 {preview.matched.bookmarksRestored} 项。字幕可恢复 {preview.matched.subtitlesRestored ?? 0} 份、跳过 {preview.matched.subtitlesSkipped ?? 0} 份。未匹配或已有记录可能跳过，最终按所选范围重新检查。</p>}
     {error && <ErrorNotice message={error} />}
-    <footer className="storage-actions dialog-actions"><button ref={cancel} type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button><button type="button" className="btn btn-primary" disabled={busy || !preview.compatible || !preview.token || !scopes.length} onClick={onConfirm}>{busy?"正在备份并恢复…":"备份并恢复所选范围"}</button></footer>
+    </div>
+<footer className="storage-actions dialog-actions"><button ref={cancel} type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button><button type="button" className="btn btn-primary" disabled={busy || !preview.compatible || !preview.token || !scopes.length} onClick={onConfirm}>{busy?"正在备份并恢复…":"备份并恢复所选范围"}</button></footer>
   </dialog>,document.body);
 }

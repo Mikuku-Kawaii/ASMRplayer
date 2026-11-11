@@ -18,9 +18,10 @@ import com.asmrplayer.android.data.AndroidBackend
 import com.asmrplayer.android.sync.*
 import kotlinx.coroutines.*
 
+@androidx.media3.common.util.UnstableApi
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun SyncPage() {
+internal fun SyncPage(model: com.asmrplayer.android.PlayerViewModel) {
     val context = LocalContext.current
     val repo = remember { AndroidBackend.get(context).sync }
     val scope = rememberCoroutineScope()
@@ -76,9 +77,10 @@ internal fun SyncPage() {
     var showConflicts by rememberSaveable(id) { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize().navigationBarsPadding(), contentPadding = PageSpace.padding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { MaintenanceCard("同步账号") {
-            if (busy || (status == null && message.isEmpty())) LoadingRing()
+            if (busy || !status?.phase.isNullOrEmpty() || (status == null && message.isEmpty())) LoadingRing()
+            status?.phase?.takeIf{it.isNotBlank()}?.let { MaintenanceHint(it) }
             ChoiceMenu("存储方式",id,Storage.entries.map { it to it.title }) { next ->
-            if(!busy && next!=id) { gistToken=""; davPassword=""; githubCode=null; useToken=false; operate {repo.select(next)} }
+            if(!busy && status?.phase.isNullOrEmpty() && next!=id) { gistToken=""; davPassword=""; githubCode=null; useToken=false; operate {repo.select(next)} }
             }
             if(status?.connected!=true) MaintenanceHint("在两台设备上选择同一存储方式，并登录同一账号。")
             if (status?.configured == false) Text("此版本暂未启用${id.title}登录。")
@@ -153,13 +155,15 @@ internal fun SyncPage() {
                     if(s.lastSync>0) MaintenanceHint("${s.records} 条记录 · ${s.pending} 条待匹配")
                 }
                 androidx.compose.foundation.layout.FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                    MotionButton({ operate { repo.sync(id) } }, enabled = !busy) { Text(if (busy) "正在同步…" else "立即同步") }
-                    MotionTextButton({ operate { repo.logout(id) } }, enabled = !busy) { Text("退出此设备") }
+                    MotionButton({ operate { repo.sync(id) } }, enabled = !busy && status?.phase.isNullOrEmpty()) { Text(if (busy) "正在同步…" else "立即同步") }
+                    MotionTextButton({ operate { repo.logout(id) } }, enabled = !busy && status?.phase.isNullOrEmpty()) { Text("退出此设备") }
                 }
             }
         } }
 
         status?.let { s ->
+            if(s.resume!=null) item { SyncResumeCard(s,model) }
+            item { SyncResultDetails(s) }
             if(s.metadataPending>0) item {
                 MaintenanceStatus("${s.metadataPending} 部作品的来源信息待补全。${s.metadataError} 下次同步时将重试。",error=true)
             }
@@ -191,7 +195,7 @@ internal fun SyncPage() {
                         else -> "未收藏"
                     }
                     MotionOutlinedButton({ operate { repo.resolve(c.key,r.getString("device"),r.getLong("seq")) } }, enabled=!busy) {
-                        Text("采用 ${r.getString("device").take(8)} · $summary")
+                        Text("采用 ${value?.optString("deviceName")?.takeIf{it.isNotBlank()} ?: "设备 ${r.getString("device").take(8)}"} · $summary")
                     }
                 }
             } }

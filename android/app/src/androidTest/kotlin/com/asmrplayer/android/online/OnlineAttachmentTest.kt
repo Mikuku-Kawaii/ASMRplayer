@@ -113,11 +113,12 @@ class OnlineAttachmentTest {
         assertFalse(subtitles.sources(versionId).first().single().available)
         try { subtitles.load(versionId); fail("removed file is usable") } catch (_: IllegalStateException) { }
         downloads.resume(id); downloads.runQueue()
-        assertTrue(subtitles.sources(versionId).first().single().available)
+        // Discovery can also register the remote subtitle; the explicit binding keeps its identity.
+        assertTrue(subtitles.sources(versionId).first().single { it.id == source.id }.available)
         assertEquals(111L, subtitles.load(versionId).preference.offsetMs)
         assertEquals(222L, subtitles.load(versionId).preference.translationOffsetMs)
         assertEquals(500L, db.library().position(versionId)!!.positionMs)
-        assertEquals(1, subtitles.sources(versionId).first().size)
+        assertEquals(1, subtitles.sources(versionId).first().count { it.manual })
     }
     @Test fun downloadedSubtitleCannotBindAcrossWorksOrBeforeCompletion() = runBlocking {
         try { subtitles.attachDownloaded(imported.versionIds.single(), subtitle.id); fail("undownloaded bound") } catch (_: IllegalArgumentException) { }

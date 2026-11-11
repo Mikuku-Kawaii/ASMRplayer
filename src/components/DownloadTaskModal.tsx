@@ -1,5 +1,5 @@
-import React, { useMemo, useState, useEffect } from "react";
-import { createPortal } from "react-dom";
+import React, { useMemo, useState } from "react";
+import { ContentDialog } from "./ContentDialog";
 import {
   ChevronDown,
   ChevronRight,
@@ -171,41 +171,6 @@ export const DownloadTaskModal: React.FC<DownloadTaskModalProps> = ({
   const [collapsedKeys, setCollapsedKeys] = useState<Record<string, boolean>>(
     {}
   );
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
-  // Lock .main-content scroll while download modal is open and restore on close
-  useEffect(() => {
-    const mainEl = document.querySelector<HTMLElement>(".main-content");
-    const prevOverflow = mainEl?.style.overflow ?? "";
-    const prevOverscroll = mainEl?.style.overscrollBehavior ?? "";
-    const savedScrollTop = mainEl?.scrollTop ?? 0;
-
-    if (mainEl) {
-      mainEl.classList.add("is-scroll-locked");
-      mainEl.style.overflow = "hidden";
-      mainEl.style.overscrollBehavior = "contain";
-    }
-    document.body.classList.add("is-modal-scroll-locked");
-
-    return () => {
-      if (mainEl) {
-        mainEl.classList.remove("is-scroll-locked");
-        mainEl.style.overflow = prevOverflow;
-        mainEl.style.overscrollBehavior = prevOverscroll;
-        mainEl.scrollTop = savedScrollTop;
-      }
-      document.body.classList.remove("is-modal-scroll-locked");
-    };
-  }, []);
 
   const treeRoots = useMemo(
     () => buildDownloadTree(preview.items, preview.workTitle || "根目录"),
@@ -419,19 +384,8 @@ export const DownloadTaskModal: React.FC<DownloadTaskModalProps> = ({
     );
   };
 
-  const modalNode = (
-    <div
-      className="dl-task-popover-backdrop"
-      onClick={onClose}
-      onWheel={(e) => e.stopPropagation()}
-      role="dialog"
-      aria-modal="true"
-      aria-label="创建下载任务"
-    >
-      <section
-        className="dl-task-modal"
-        onClick={(e) => e.stopPropagation()}
-      >
+  return (
+    <ContentDialog size="wide" className="download-dialog" label="创建下载任务" onClose={onClose}>
         <header className="dl-task-header">
           <h3 className="dl-task-title">创建下载任务</h3>
           <button
@@ -444,6 +398,7 @@ export const DownloadTaskModal: React.FC<DownloadTaskModalProps> = ({
             <X size={15} />
           </button>
         </header>
+<div className="dialog-body">
 
         {/* 顶部格式胶囊筛选 + 已选统计卡片 */}
         <div className="dl-task-summary-card">
@@ -490,7 +445,8 @@ export const DownloadTaskModal: React.FC<DownloadTaskModalProps> = ({
         </div>
 
         {/* 底部操作栏 */}
-        <footer className="dl-task-footer dialog-actions">
+        </div>
+<footer className="dl-task-footer dialog-actions">
           <button
             type="button"
             className="btn btn-ghost btn-sm"
@@ -504,14 +460,9 @@ export const DownloadTaskModal: React.FC<DownloadTaskModalProps> = ({
             disabled={selectedStats.count === 0}
             onClick={onConfirm}
           >
-            <span>下载</span>
+            <span>开始下载 ({selectedStats.count})</span>
           </button>
         </footer>
-      </section>
-    </div>
+    </ContentDialog>
   );
-
-  return typeof document !== "undefined"
-    ? createPortal(modalNode, document.body)
-    : modalNode;
 };

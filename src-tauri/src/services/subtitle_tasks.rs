@@ -31,6 +31,8 @@ type AutomaticAttempt = (u64, String, RecognitionSettings, usize, usize);
 pub struct SubtitleTaskSnapshot {
     pub automatic: bool,
     pub version_id: Option<String>,
+    pub track_title: Option<String>,
+    pub work_title: Option<String>,
     pub state: String,
     pub phase: String,
     pub completed: usize,
@@ -76,7 +78,13 @@ impl SubtitleTaskService {
         }
     }
     pub fn snapshot(&self) -> SubtitleTaskSnapshot {
-        self.task.lock().snapshot.clone()
+        let mut snapshot=self.task.lock().snapshot.clone();
+        if let Some(id)=snapshot.version_id.as_ref() {
+            if let Ok((track,work))=self.db.with_conn(|c|Ok(c.query_row("SELECT t.title,w.title FROM track_versions v JOIN tracks t ON t.id=v.track_id JOIN works w ON w.id=t.work_id WHERE v.id=?1",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?)) {
+                snapshot.track_title=Some(track);snapshot.work_title=Some(work);
+            }
+        }
+        snapshot
     }
     pub fn cancel(&self) {
         *self.suppressed_generation.lock() = Some(self.playback.subtitle_context().0);

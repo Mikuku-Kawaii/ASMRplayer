@@ -28,12 +28,12 @@ internal fun WorkCardStatus(badges: List<String>) {
 @Composable
 internal fun WorkCardActionLine(title: String, inLibrary: Boolean?, save: (() -> Unit)?, saving: Boolean,
     favorite: Boolean?, like: (() -> Unit)?, leading: @Composable () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(start = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 9.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.weight(1f).padding(end = 9.dp)) { leading() }
         if (save != null) CardToggle(Glyph.Collection, inLibrary == true,
             if (inLibrary == true) "移出音频库 $title" else "加入音频库 $title", save, saving, 15)
         if (like != null) CardToggle(Glyph.Heart, favorite == true,
-            if (favorite == true) "取消喜欢 $title" else "喜欢 $title", like, false, if (save != null) -1 else 15)
+            if (favorite == true) "取消喜欢 $title" else "喜欢 $title", like, saving, if (save != null) -1 else 15)
     }
 }
 

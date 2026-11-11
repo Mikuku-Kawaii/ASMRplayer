@@ -16,7 +16,7 @@ const mapping = {
   More: 'ellipsis', Folder: 'folder', Collection: 'bookmark', CollectionWide: 'bookmark',
   TrackBookmark: 'flag', Marker: 'map-pin', Sleep: 'moon', Sequence: 'list-end', Shuffle: 'shuffle',
   Repeat: 'repeat', RepeatOne: 'repeat-1', Check: 'check', Close: 'x', Drag: 'grip-vertical',
-  Details: 'file-text', ChevronDown: 'chevron-down', GroupAdd: 'square-plus',
+  Details: 'file-text', FileAudio: 'file-audio', FileImage: 'file-image', ChevronDown: 'chevron-down', GroupAdd: 'square-plus',
   Flame: 'flame', Sales: 'trending-up', NewArrival: 'sparkles', Release: 'calendar-days', Discussion: 'messages-square',
   History: 'history', ChevronRight: 'chevron-right', Star: 'star', Copy: 'copy', Grid: 'layout-grid', List: 'list',
 };

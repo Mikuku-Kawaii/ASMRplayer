@@ -1,3 +1,4 @@
+import { useDialogGeometry } from "../../components/useDialogGeometry";
 import { HelpHint } from "../../components/HelpHint";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
@@ -111,6 +112,7 @@ function StoragePreviewDialog({ preview, category, busy, error, onClose, onConfi
   preview: CleanupPreview; category: StorageCategory; busy: boolean; error: string; onClose: () => void; onConfirm: () => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  useDialogGeometry(ref, "wide");
   const cancel = useRef<HTMLButtonElement>(null);
   const initialFocus = useRef(false);
   const title = useId(), description = useId();
@@ -133,13 +135,15 @@ function StoragePreviewDialog({ preview, category, busy, error, onClose, onConfi
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     }}>
     <header className="storage-heading"><h2 id={title}>{category === "offline" ? "删除离线副本预览" : "清理预览"}</h2><button type="button" className="btn-icon" title="关闭清理预览" aria-label="关闭清理预览" disabled={busy} onClick={onClose}><X size={18} /></button></header>
+<div className="dialog-body">
     <p id={description} className="settings-field-hint">{categories.find(c => c.id === category)?.label} · 预计删除 {eligible.length} 个文件，释放约 <strong>{formatBytes(preview.reclaimableBytes)}</strong>。跳过 {preview.entries.length - eligible.length} 个受保护文件。预览 5 分钟内有效，确认时再次检查。</p>
     <p className="settings-field-hint">{category === "offline" ? "删除后需要重新下载才能离线播放。作品索引、进度、标记和本地导入原件保留。" : category === "incomplete" ? "未完成的下载内容会丢弃；任务保留，之后可重新下载。" : "仅删除下列可清理的缓存文件，离线音频和本地导入原件保留。"}</p>
     <div className="storage-file-list" tabIndex={0} aria-label="清理文件范围">{preview.entries.slice(0,limit).map(e => <div className="storage-preview-file" key={e.id}><span className="storage-path">{e.path}<small>{e.reason ? `保留 · ${e.reason}` : "将删除"}</small></span><span className="storage-file-size">{formatBytes(e.bytes)}</span></div>)}
       {!preview.entries.length && <p className="settings-field-hint">没有可清理的文件。</p>}
       {preview.entries.length > limit && <button type="button" className="btn btn-ghost btn-sm" onClick={() => setLimit(n => n + 50)}>显示更多文件（剩余 {preview.entries.length - limit} 个）</button>}</div>
     {error && <ErrorNotice message={error} />}
-    <footer className="storage-actions dialog-actions"><button ref={cancel} type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button>
-      <button type="button" className={`btn ${category === "offline" ? "btn-danger" : "btn-primary"}`} disabled={busy || !eligible.length} onClick={onConfirm}>{busy ? "正在清理…" : category === "offline" ? "删除所选离线副本" : "确认清理"}</button></footer>
+    </div>
+<footer className="storage-actions dialog-actions"><button ref={cancel} type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button>
+      <button type="button" className={`btn ${category === "offline" ? "btn-danger btn-danger-solid" : "btn-primary"}`} disabled={busy || !eligible.length} onClick={onConfirm}>{busy ? "正在清理…" : category === "offline" ? "删除所选离线副本" : "清理所选文件"}</button></footer>
   </dialog>, document.body);
 }

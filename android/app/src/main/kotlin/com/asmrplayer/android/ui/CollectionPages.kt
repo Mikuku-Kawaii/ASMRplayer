@@ -58,7 +58,8 @@ internal fun CollectionFeedback(data: CollectionScreenState, retry: () -> Unit, 
 @UnstableApi
 @Composable
 internal fun CollectionPage(favorites: Boolean, state: PlayerScreenState, model: PlayerViewModel, query: String,
-    changeQuery: (String) -> Unit, bottom: Dp, importAudio: () -> Unit, open: (String) -> Unit, active: Boolean) {
+    changeQuery: (String) -> Unit, bottom: Dp, importAudio: () -> Unit, browseOnline: () -> Unit,
+    open: (String) -> Unit, active: Boolean) {
     val data by (if (favorites) model.collections.favoriteCatalog else model.collections.state).collectAsStateWithLifecycle()
     var category by rememberSaveable { mutableStateOf("works") }
     var encoded by rememberSaveable { mutableStateOf(LibraryQuery().encode()) }
@@ -100,6 +101,9 @@ internal fun CollectionPage(favorites: Boolean, state: PlayerScreenState, model:
     val recordFilters = when (category) { "tracks" -> trackFilters; "bookmarks" -> markerFilters; else -> null }
     val catalog = if (data.query == requested) data else CollectionScreenState(query = requested)
     val works = remember(catalog.works, state.showNsfw, state.includeUnrated) { catalog.works.filter { visibleRating(it.work.rating, state) } }
+    val libraryIsEmpty = remember(state.lookup) { state.library.none { it.inLibrary } }
+    val showWelcome = !favorites && catalog.ready && catalog.error == null &&
+        works.isEmpty() && state.libraryReady && libraryIsEmpty && query.isBlank() && condition.conditionCount == 0
     Column {
         val searchOpen = favorites && (searching || effectiveQuery.isNotEmpty())
         val hint = when (category) {
@@ -107,8 +111,7 @@ internal fun CollectionPage(favorites: Boolean, state: PlayerScreenState, model:
             "bookmarks" -> "搜索备注、作品或音轨"
             else -> "搜索作品、声优或标签"
         }
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 48.dp),
-            verticalAlignment = Alignment.CenterVertically) {
+        HomeHeader {
             if (searchOpen) {
                 val focus = remember { FocusRequester() }
                 androidx.activity.compose.BackHandler(enabled = active) { updateSearch(""); searching = false }
@@ -116,9 +119,9 @@ internal fun CollectionPage(favorites: Boolean, state: PlayerScreenState, model:
                 LaunchedEffect(category, searching) { if (searching && active) focus.requestFocus() }
                 GlyphButton(Glyph.Back, "结束搜索", { updateSearch(""); searching = false })
             } else {
-                val title = if (favorites) "喜欢" else works.size.takeIf { catalog.ready }?.let { "音频库 · $it" } ?: "音频库"
+                val title = if (favorites) "喜欢" else works.size.takeIf { catalog.ready && !showWelcome }?.let { "音频库 · $it" } ?: "音频库"
                 Text(title, Modifier.weight(1f)
-                    .semantics { heading() }, style = MaterialTheme.typography.titleLarge, maxLines = 1)
+                    .semantics { heading() }, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (favorites) GlyphButton(Glyph.Search, "搜索当前分栏", { searching = true })
                 else {
                     GlyphButton(Glyph.History, "收听记录", { open("history") })
@@ -142,7 +145,9 @@ internal fun CollectionPage(favorites: Boolean, state: PlayerScreenState, model:
             }
         } else {
             val showSummary = condition.conditionCount > 0
-            val hasHeader = !favorites || showSummary || catalog.error != null
+            val loadingUnfilteredLibrary = !favorites && !catalog.ready && catalog.error == null &&
+                query.isBlank() && !showSummary && libraryIsEmpty
+            val hasHeader = (!favorites && !showWelcome && !loadingUnfilteredLibrary) || showSummary || catalog.error != null
             LaunchedEffect(catalog.ready, catalog.query, anchor) {
                 val saved = anchor ?: return@LaunchedEffect
                 if (catalog.ready) {
@@ -164,10 +169,16 @@ internal fun CollectionPage(favorites: Boolean, state: PlayerScreenState, model:
                         CollectionFeedback(catalog, if (favorites) model.collections::retryFavoriteWorks else model.collections::retry, showLoading = false)
                     }
                 }
-                if (catalog.ready && works.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
+                if (loadingUnfilteredLibrary) item(span = { GridItemSpan(maxLineSpan) }) {
+                    Box(Modifier.fillMaxWidth().padding(vertical = 28.dp), contentAlignment = Alignment.Center) {
+                        CollectionFeedback(catalog, model.collections::retry)
+                    }
+                } else if (showWelcome) item(span = { GridItemSpan(maxLineSpan) }) {
+                    LibraryWelcome(importAudio, browseOnline)
+                } else if (catalog.ready && catalog.error == null && works.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
                     Column {
-                    EmptyContent("没有匹配的作品", "可更换搜索与筛选条件，或检查内容显示设置。", Glyph.Library)
-                    if (!favorites) MotionButton(importAudio) { Text("导入作品") }
+                        EmptyContent("没有匹配的作品", "可更换搜索与筛选条件，或检查内容显示设置。", Glyph.Library)
+                        if (!favorites) MotionButton(importAudio) { Text("导入作品") }
                     }
                 }
                 items(works, key = { it.work.id }, contentType = { "work" }) { summary ->
@@ -393,7 +404,7 @@ internal fun QueuePage(state: PlayerScreenState, model: PlayerViewModel, bottom:
                                     style = MaterialTheme.typography.labelMedium,
                                     color = if (index == state.index) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                                 Column(Modifier.weight(1f).clickable(enabled=state.connected && !editing){model.select(index)}.padding(vertical=10.dp)) {
-                                    Text(if(hidden)"内容已隐藏" else trackDisplayTitle(work?.versions?.firstOrNull{it.id==entry.id}?.title?.takeIf{it.isNotBlank()}?:entry.title),fontWeight=if(index==state.index)FontWeight.SemiBold else FontWeight.Normal,style=MaterialTheme.typography.titleSmall,maxLines=2,overflow=TextOverflow.Ellipsis)
+                                    Text(if(hidden)"内容已隐藏" else trackDisplayTitle(work?.versions?.firstOrNull{it.id==entry.id}?.title?.takeIf{it.isNotBlank()}?:entry.title),fontWeight=if(index==state.index)FontWeight.SemiBold else FontWeight.Medium,style=MaterialTheme.typography.titleSmall,maxLines=2,overflow=TextOverflow.Ellipsis)
                                     val showWork = index == 0 || state.lookup.forVersion(state.queue[index-1].id)?.id != work?.id
                                     if (index == state.index || dragIndex == index || (!hidden && showWork && work != null)) Text(if(dragIndex==index)"松开移至第 ${targetIndex+1} 首" else if(index==state.index)if(state.playRequested)"正在播放" else "当前音轨 · 已暂停" else if(hidden)"" else work?.title.orEmpty(),
                                         maxLines=1,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)

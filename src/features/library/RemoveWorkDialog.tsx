@@ -1,3 +1,4 @@
+import { useDialogGeometry } from "../../components/useDialogGeometry";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -15,6 +16,7 @@ export function RemoveWorkDialog({ work, onConfirm, onClose }: {
   const titleId = useId(), descriptionId = useId();
   const dialog = useRef<HTMLDivElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
+  useDialogGeometry(dialog, "compact");
   const [deleteFiles, setDeleteFiles] = useState(false);
   const [skipNext, setSkipNext] = useState(false);
   const [pending, setPending] = useState(false);
@@ -76,6 +78,7 @@ export function RemoveWorkDialog({ work, onConfirm, onClose }: {
       <header className="library-remove-header"><h2 id={titleId}>从音频库移除作品</h2>
         <button type="button" className="btn-icon" aria-label="关闭移除确认" title="关闭移除确认 (Esc)" disabled={pending} onClick={onClose}><X size={18} /></button>
       </header>
+<div className="dialog-body">
       <p className="library-remove-title">{work.title}</p>
       <p id={descriptionId} className="library-remove-description">将移除作品索引、播放队列项与关联记录。<strong>本地导入的原始音频文件会保留。</strong></p>
       <div className="library-remove-options">
@@ -89,9 +92,10 @@ export function RemoveWorkDialog({ work, onConfirm, onClose }: {
         </label>
       </div>
       {error && <ErrorNotice message={error} />}
-      <footer className="library-remove-footer dialog-actions">
+      </div>
+<footer className="library-remove-footer dialog-actions">
         <button ref={cancel} type="button" className="btn btn-ghost" disabled={pending} onClick={onClose}>取消</button>
-        <button type="button" className="btn btn-danger" disabled={pending} onClick={() => void confirm()}><Trash2 size={14} /><span className="ui-icon-label">
+        <button type="button" className={`btn ${deleteFiles ? "btn-danger btn-danger-solid" : "btn-primary"}`} disabled={pending} onClick={() => void confirm()}><Trash2 size={14} /><span className="ui-icon-label">
           {pending ? "正在移除…" : deleteFiles ? "移除并删除下载文件" : "移除作品索引"}
         </span></button>
       </footer>

@@ -554,7 +554,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
                 <div className="work-card-meta">
                   {w.voiceActors.length > 0 && (
                     <span className="cv-list" title={`CV：${w.voiceActors.join("、")}`}>
-                      CV:{" "}
+                      <span className="cv-label">CV:</span>
                       {w.voiceActors.map((va) => (
                         <button
                           key={va}

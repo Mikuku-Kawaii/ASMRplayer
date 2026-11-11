@@ -1,6 +1,6 @@
 [package]
 name = "asmr-player"
-version = "26.11.10"
+version = "26.11.11"
 description = "Windows ASMR Desktop Player for local audio libraries and asmr.one works"
 authors = ["ASMR Player Contributors"]
 license = "MIT"

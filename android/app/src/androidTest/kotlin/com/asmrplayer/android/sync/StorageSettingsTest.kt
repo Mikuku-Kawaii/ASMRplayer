@@ -11,6 +11,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
 
+@androidx.media3.common.util.UnstableApi
 class StorageSettingsTest {
     @get:Rule val ui = createAndroidComposeRule<MainActivity>()
 
@@ -22,7 +23,10 @@ class StorageSettingsTest {
         org.junit.Assert.assertEquals(Storage.GITHUB,repo.status().provider)
         repo.select(Storage.WEBDAV)
         try {
-            ui.runOnUiThread { ui.activity.setContent { SyncPage() } }
+            ui.runOnUiThread {
+                val model=androidx.lifecycle.ViewModelProvider(ui.activity)[com.asmrplayer.android.PlayerViewModel::class.java]
+                ui.activity.setContent { SyncPage(model) }
+            }
             fun choose(from: String, to: String) {
                 ui.onNodeWithText("存储方式：$from").performClick()
                 ui.onNodeWithText(to).performClick()

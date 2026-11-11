@@ -3,7 +3,7 @@ import { PlayerVolumeControl } from "./PlayerVolumeControl";
 import { PlayerLibraryActions } from "./PlayerLibraryActions";
 import { DesktopLyricsToggle } from "./DesktopLyricsToggle";
 import { useTimelineMarks } from "./timelineMarks";
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { useShortcuts } from "../commands/ShortcutProvider";
 import { shortcutTitle } from "../../lib/shortcuts";
 import {
@@ -47,6 +47,7 @@ interface PlayerBarProps {
   onSnapshotChange: (snap: PlaybackSnapshot) => void;
   activeDrawerTab: "none" | "queue" | "playlists" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio";
   onToggleDrawer: (tab: "queue" | "playlists" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio") => void;
+  playerToolsTrigger?: React.RefObject<HTMLButtonElement>;
   onOpenWorkDetail?: (workId: string) => void;
   isImmersiveOpen?: boolean;
   onToggleImmersive?: () => void;
@@ -61,6 +62,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
   onSnapshotChange,
   activeDrawerTab,
   onToggleDrawer,
+  playerToolsTrigger,
   onOpenWorkDetail,
   isImmersiveOpen = false,
   onToggleImmersive,
@@ -79,6 +81,12 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
   const [loudnessBusy, setLoudnessBusy] = useState(false);
   const loudnessPending = useRef(false);
   const moreMenuRef = useRef<HTMLDivElement | null>(null);
+  const toolsMenuRef = useRef<HTMLDivElement>(null);
+  const toolsButtonRef = useRef<HTMLButtonElement>(null);
+  const toolsTrigger = playerToolsTrigger ?? toolsButtonRef;
+  useLayoutEffect(() => {
+    if (toolsMenuRef.current) toolsMenuRef.current.inert = !moreMenuOpen;
+  }, [moreMenuOpen]);
   const marksLayer = useRef<HTMLDivElement | null>(null);
   const savedMarks = useTimelineMarks(snapshot.currentVersionId);
 
@@ -148,17 +156,19 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
       }
     };
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !e.defaultPrevented) {
+        e.preventDefault();
         setMoreMenuOpen(false);
+        toolsTrigger.current?.focus({ preventScroll: true });
       }
     };
     window.addEventListener("mousedown", handlePointerDown);
-    window.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("keydown", handleKeyDown);
     return () => {
       window.removeEventListener("mousedown", handlePointerDown);
-      window.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [moreMenuOpen]);
+  }, [moreMenuOpen, toolsTrigger]);
 
   const displayPosMs =
     draggingPosMs !== null ? draggingPosMs : snapshot.positionMs;
@@ -235,7 +245,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
         target = nearest;
         if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
           layer.querySelector(`[data-ms="${nearest}"]`)?.animate(
-            [{ scale: "1" }, { scale: "1.7", offset: 0.35 }, { scale: "1" }], { duration: 180 }
+            [{ scale: "1" }, { scale: "1.2", offset: 0.35 }, { scale: "1" }], { duration: 140 }
           );
         }
       }
@@ -659,6 +669,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
               : ""
           }`}
           data-drawer-trigger="more"
+          ref={toolsTrigger}
           onClick={handleRightMenuTriggerClick}
           aria-label="更多播放工具与抽屉"
           aria-expanded={moreMenuOpen || activeDrawerTab !== "none"}
@@ -680,8 +691,10 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
 
         {/* 右侧弹出的二级菜单面板 */}
         <div
-          className={`player-right-popover player-glass-panel ${moreMenuOpen ? "is-open" : ""}`}
+          ref={toolsMenuRef}
+          className={`player-right-popover player-glass-panel${moreMenuOpen ? " is-open" : ""}`}
           role="menu"
+          aria-hidden={!moreMenuOpen}
           aria-label="播放辅助工具二级菜单"
         >
           <div role="group" aria-label="歌单与字幕">
@@ -762,7 +775,18 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
                 <Headphones size={14} />
                 <span>WASAPI 独占</span>
               </button>
-              <button type="button" role="menuitem" className={`popover-drawer-btn ${activeDrawerTab === "immersion" ? "active" : ""}`} data-drawer-trigger="immersion" onClick={() => { onToggleDrawer("immersion"); setMoreMenuOpen(false); }} aria-label="沉浸设置"><Sparkles size={14} /><span>沉浸设置</span></button>
+              <button
+                type="button"
+                role="menuitem"
+                className="popover-drawer-btn"
+                data-drawer-trigger="immersion"
+                onClick={() => {
+                  onToggleDrawer("immersion");
+                  setMoreMenuOpen(false);
+                }}
+              >
+                <Sparkles size={14} aria-hidden="true" /><span>沉浸设置</span>
+              </button>
             </div>
           </div>
 

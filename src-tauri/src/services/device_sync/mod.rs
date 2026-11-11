@@ -1,5 +1,6 @@
 pub mod automatic;
 mod catalog;
+mod insights;
 mod playlist_sync;
 pub(crate) mod codec;
 mod github_auth;
@@ -28,6 +29,9 @@ pub(super) fn fail(s: impl Into<String>) -> AppError {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
+    pub details: Value,
+    pub resume: Option<Value>,
+    pub phase: String,
     pub provider: ProviderId,
     pub configured: bool,
     pub connected: bool,
@@ -42,6 +46,7 @@ pub struct Status {
 }
 #[derive(Clone)]
 pub struct SyncService {
+    phase: Arc<Mutex<String>>,
     app: Arc<Mutex<Option<tauri::AppHandle>>>,
     db: Database,
     gate: Arc<Mutex<()>>,
@@ -74,6 +79,7 @@ impl SyncService {
             }
         }
         Self {
+            phase: Default::default(),
             db,
             source,
             app: Default::default(),
@@ -182,6 +188,7 @@ impl SyncService {
             .ok_or_else(|| fail("同步或授权正在进行"))?;
         let id = self.check_selected(expected)?;
         id.provider().logout(&self.entry(id)?)?;
+        self.db.set_setting(&id.setting("device_sync_resume"),"null")?;
         self.status()
     }
     pub fn status(&self) -> AppResult<Status> {
@@ -207,6 +214,9 @@ impl SyncService {
         let id = self.selected()?;
         let (configured, connected) = id.provider().get_status(&self.entry(id)?)?;
         Ok(Status {
+            details: self.db.get_setting(&id.setting("device_sync_details"))?.and_then(|s|serde_json::from_str(&s).ok()).unwrap_or(json!({"summary":[],"pendingItems":[]})),
+            resume: if connected { self.resume_candidate(Some(id), None)? } else { None },
+            phase: self.phase.lock().clone(),
             provider: id,
             configured,
             connected,
@@ -227,7 +237,10 @@ impl SyncService {
     ) -> AppResult<Document> {
         let _guard = self.gate.lock();
         let mut catalog = catalog::Catalog::load(&self.db)?;
+        let provider=self.selected()?;
         let doc = self.db.with_conn(|c|{let tx=c.transaction()?;let mut j=catalog::read_journal(&tx)?;catalog.use_verified_keys(&j.doc);j.capture(&catalog.snapshot(&tx)?,&catalog.targets());
+            for (key,rows) in &mut j.doc.records { if key.starts_with("position|") { for row in rows.iter_mut().filter(|r|r.device==j.device) { row.value["deviceName"]=json!("Windows 电脑"); } } }
+            let before=catalog.snapshot(&tx)?;
             catalog.describe_likes(&tx,&mut j.doc)?;
             if let Some(doc)=incoming {j.doc.merge(doc).map_err(fail)?;}
             if let Some((key,device,seq))=resolve {let v=j.doc.records.get(key).and_then(|v|v.iter().find(|r|r.device==device && r.seq==seq)).ok_or_else(||fail("记录已变化，请重新同步后选择"))?.value.clone();j.edit(key.into(),v);}
@@ -237,6 +250,11 @@ impl SyncService {
             for (key,value) in selected.iter().filter(|(key,_)|key.starts_with("playlist|")){if let Some(name)=value["name"].as_str(){catalog.names.insert(key.split('|').nth(1).unwrap_or("").into(),format!("歌单 · {name}"));}}
             tx.execute("INSERT INTO app_settings(key,value_json,updated_at) VALUES('device_sync_pending',?1,'') ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",[pending.to_string()])?;
             tx.execute("INSERT INTO app_settings(key,value_json,updated_at) VALUES('device_sync_names',?1,'') ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",[codec::to_string(&catalog.names)?])?;
+            if incoming.is_some() || resolve.is_some() {
+                let (details,resume)=insights::describe(&j.doc,&before,&catalog,&j.device);
+                tx.execute("INSERT INTO app_settings(key,value_json,updated_at) VALUES(?1,?2,'') ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",rusqlite::params![provider.setting("device_sync_details"),codec::to_string(&details)?])?;
+                if let Some(resume)=resume {tx.execute("INSERT INTO app_settings(key,value_json,updated_at) VALUES(?1,?2,'') ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",rusqlite::params![provider.setting("device_sync_resume"),codec::to_string(&resume)?])?;}
+            }
             catalog::save_journal(&tx,&j)?;tx.commit()?;Ok(j.doc)})?;
         if incoming.is_some() || resolve.is_some() {
             if let Some(app) = self.app.lock().as_ref() {
@@ -254,19 +272,23 @@ impl SyncService {
             .run_gate
             .try_lock()
             .ok_or_else(|| fail("同步正在进行"))?;
-        self.auto_attempt
-            .store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
+        let result: AppResult<()>=(|| {
+        *self.phase.lock()="正在读取凭据".into();
+        self.auto_attempt.store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
         let id = self.check_selected(expected)?;
         self.db
             .set_setting("device_sync_provider", &codec::to_string(&id)?)?;
         let provider = id.provider();
         let client = http::client()?;
         let access = provider.access_token(&client, &self.entry(id)?)?;
+        *self.phase.lock()="正在整理本机数据".into();
         let mut merged = self.exchange_local(None, None)?;
         let device = self
             .db
             .with_conn(|c| Ok(catalog::read_journal(c)?.device))?;
+        *self.phase.lock()="正在上传与拉取".into();
         provider.exchange_sync_data(&client, &access, &device, &mut merged)?;
+        *self.phase.lock()="正在应用同步数据".into();
         self.exchange_local(Some(&merged), None)?;
         self.complete_source_information()?;
         self.db
@@ -275,6 +297,11 @@ impl SyncService {
             &id.setting("device_sync_last"),
             &chrono::Utc::now().to_rfc3339(),
         )?;
+        Ok(())
+        })();
+        self.phase.lock().clear();
+        if let Err(ref error)=result {if let Ok(id)=self.selected(){let _=self.db.set_setting(&id.setting("device_sync_auto_error"),&error.message);}}
+        result?;
         self.status()
     }
 }

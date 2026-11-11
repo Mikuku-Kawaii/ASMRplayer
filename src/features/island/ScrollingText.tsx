@@ -2,13 +2,13 @@ import { useLayoutEffect, useRef } from "react";
 
 // T1414: depend on content/available width, never playback ticks. WAAPI keeps motion
 // off React's render loop; endpoints pause for reading before looping or reversing.
-export function ScrollingText({ text, identity, className, loop = false }: { text: string; identity: string; className: string; loop?: boolean }) {
+export function ScrollingText({ text, identity, className, loop = false, active = true }: { text: string; identity: string; className: string; loop?: boolean; active?: boolean }) {
   const viewport = useRef<HTMLSpanElement>(null);
   const content = useRef<HTMLSpanElement>(null);
   useLayoutEffect(() => {
     const box = viewport.current;
     const line = content.current;
-    if (!box || !line) return;
+    if (!box || !line || !active) return;
     const media = window.matchMedia?.("(prefers-reduced-motion: reduce)");
     let animation: Animation | undefined;
     let distance = -1;
@@ -38,7 +38,7 @@ export function ScrollingText({ text, identity, className, loop = false }: { tex
     observer?.observe(box); observer?.observe(line); measure();
     media?.addEventListener?.("change", measure);
     return () => { observer?.disconnect(); media?.removeEventListener?.("change", measure); animation?.cancel(); };
-  }, [text, identity, loop]);
+  }, [text, identity, loop, active]);
   return <span ref={viewport} className={`${className} island-scrolling-text`} aria-label={text}>
     <span key={`${identity}:${text}`} className="island-text-transition" aria-hidden="true">
       <span ref={content} className="island-scrolling-line">{text}</span>

@@ -160,12 +160,14 @@ export function RecognitionSettings({ page = "all", onOpenGlossary }: { page?: "
   const deleteButton = (engine: string, name: string, installed: boolean) => <button type="button" className="btn btn-ghost" disabled={busy || recognitionBusy || !installed} onClick={() => setPendingDelete({engine, name, path: snapshot.modelDirectories?.[engine] ?? (engine === "sensevoice" ? snapshot.recognitionDirectory : "应用模型目录")})}>删除模型</button>;
   const modelLocation = (engine: string) => <div className="settings-row"><label htmlFor={`model-path-${engine}`}>模型路径</label><input id={`model-path-${engine}`} className="input-text" readOnly value={snapshot.modelDirectories?.[engine] ?? (engine === "sensevoice" ? snapshot.recognitionDirectory : "读取中…")} /></div>;
   return <div className="recognition-settings" data-settings-group={page === "translation" ? "translation" : "recognition"} aria-busy={busy}>
-    {pendingDelete && <ContentDialog label="删除模型" busy={busy} onClose={() => setPendingDelete(null)}>
+    {pendingDelete && <ContentDialog size="compact" label="删除模型" busy={busy} onClose={() => setPendingDelete(null)}>
       <h3>删除 {pendingDelete.name}？</h3>
+<div className="dialog-body">
       <p>{pendingDelete.engine === "ollama" ? "将通过 Ollama 删除此模型，其他使用它的应用也会受影响；原始 GGUF 文件保留。" : "删除此识别模型及同目录专用运行库，字幕和音频保留；再次使用需要重新下载。SenseVoice INT8 的独立运行库保留。"}</p>
       <p className="model-path-detail">{pendingDelete.path}</p><ErrorNotice message={error} />
-      <div className="dialog-actions"><button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setPendingDelete(null)}>取消</button>
-      <button type="button" className="btn btn-danger" disabled={busy} onClick={() => void run(async () => {
+      </div>
+<div className="dialog-actions"><button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setPendingDelete(null)}>取消</button>
+      <button type="button" className="btn btn-danger btn-danger-solid" disabled={busy} onClick={() => void run(async () => {
         if (pendingDelete.engine === "ollama") {
           await callCommand("delete_ollama_model", {base: pendingDelete.base, model: pendingDelete.name});
           rememberModels(pendingDelete.base!, (ollamaModels ?? []).filter(model => model.name !== pendingDelete.name));
@@ -175,15 +177,17 @@ export function RecognitionSettings({ page = "all", onOpenGlossary }: { page?: "
     </ContentDialog>}
     {pendingSave && <ContentDialog label="保存翻译配置" busy={busy} onClose={() => setPendingSave(null)}>
       <h3>保存前请确认</h3>
+<div className="dialog-body">
       <ErrorNotice message={error} />
       {pendingSave === "key" || draft.translationProvider === "deepseek" ? <p>使用 DeepSeek 翻译时，会将字幕原文、上下文、相关词库及全局 Prompt 发送至 DeepSeek，并按 API 使用量计费。全文模式每批发送整轨原文及已有中文参考，会增加费用；开启思考也可能增加耗时和费用。自动翻译使用普通模式，播放时会自动调用。保存配置本身不会开始翻译。</p> : <p>本地翻译使用本机 Ollama，不产生 DeepSeek API 费用。全文模式使用更长上下文，思考和输出长度也会增加耗时及资源占用。保存配置不会下载模型或开始翻译。</p>}
-      <div className="dialog-actions"><button type="button" className="btn btn-secondary" disabled={busy} onClick={() => setPendingSave(null)}>取消（不保存）</button><button type="button" className="btn btn-primary" disabled={busy} onClick={() => void run(async () => {
+      </div>
+<div className="dialog-actions"><button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setPendingSave(null)}>取消</button><button type="button" className="btn btn-primary" disabled={busy} onClick={() => void run(async () => {
         if (pendingSave === "key") {
           await callCommand("save_deepseek_key", { key });
           if (mounted.current) { setKey(""); setDeepseekModels([]); setNotice("API Key 已保存。"); }
         } else { await saveSettings(); if (mounted.current) setNotice("翻译设置已保存。"); }
         if (mounted.current) setPendingSave(null);
-      })}>我知道了（保存）</button></div>
+      })}>保存配置</button></div>
     </ContentDialog>}
     {!pendingSave && error && <ErrorNotice message={error} />}
     {notice && <p role="status">{notice}</p>}

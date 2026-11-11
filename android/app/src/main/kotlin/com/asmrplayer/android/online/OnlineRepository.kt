@@ -197,7 +197,7 @@ class OnlineRepository(private val db: LibraryDatabase, val provider: AsmrOnePro
                 file.path to versionId
             }
             dao.invalidateRemoteAssets(workId)
-            val assetIds = detail.files.filter { it.kind in setOf("subtitle", "image") }.map { file ->
+            val assetIds = detail.files.filter { it.kind != "audio" }.map { file ->
                 val assetId = LibraryIndex.id(workId, "asset", file.id, file.path)
                 dao.putRemoteAsset(RemoteAsset(assetId, workId, base, detail.work.sourceId, file.id, file.path, file.kind, file.format, file.bytes))
                 assetId

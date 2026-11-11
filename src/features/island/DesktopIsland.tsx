@@ -312,7 +312,7 @@ export function DesktopIsland() {
         style={{ transitionDuration: layout.animate === false ? "0ms" : undefined }}>{[1, 2, 3, 4, 5, 6].map(n => <span key={n} className={`island-bar bar-${n}`} />)}</div>
       <div className="island-compact-text-motion" aria-hidden={form !== "compact" ? true : undefined}
         style={{ transitionDuration: layout.animate === false ? "0ms" : undefined }}>
-        <ScrollingText className="island-compact-text" text={privacy ? primaryText : compactText.text} identity={privacy ? textIdentity : compactText.identity} loop={!hasSubtitles} />
+        <ScrollingText className="island-compact-text" text={privacy ? primaryText : compactText.text} identity={privacy ? textIdentity : compactText.identity} loop={!hasSubtitles} active={form === "compact" && !avoided} />
       </div>
       <div key={form} className={`island-content island-content-${form}`} style={{ width: layout.width - 2, height: layout.height - 2 }}>
       {form === "expanded" && <>

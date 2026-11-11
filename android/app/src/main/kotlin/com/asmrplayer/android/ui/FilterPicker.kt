@@ -14,6 +14,7 @@ import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 
 internal data class FilterOption(val id: String, val label: String = id, val count: Int? = null)
 
@@ -29,14 +30,20 @@ internal fun FilterPanel(title: String, section: String, leave: () -> Unit, clos
         visibility(true)
         onDispose { visibility(false) }
     }
-    ModalBottomSheet(onDismissRequest = close, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+    val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+    val motion = LocalUiMotion.current
+    fun dismiss() {
+        if (!motion) close() else scope.launch { sheet.hide(); if (!sheet.isVisible) close() }
+    }
+    ModalBottomSheet(onDismissRequest = close, sheetState = sheet) {
         NoticeOverlay(modal = true)
         androidx.activity.compose.BackHandler(section.isNotEmpty()) { leave() }
-        Column(Modifier.fillMaxWidth().imePadding().contentSheetHeight().padding(horizontal = 20.dp)) {
+        Column(Modifier.fillMaxWidth().imePadding().contentSheetHeight().sizeMotion().padding(horizontal = 20.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 if (section.isNotEmpty()) GlyphButton(Glyph.Back, "返回筛选", leave)
                 Text(section.ifEmpty { title }, Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.titleLarge)
-                GlyphButton(Glyph.Close, "关闭筛选", close)
+                GlyphButton(Glyph.Close, "关闭筛选", ::dismiss)
             }
             key(section) { content() }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

@@ -1,3 +1,4 @@
+import { useDialogGeometry } from "../../components/useDialogGeometry";
 import { HelpHint } from "../../components/HelpHint";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { useEffect, useRef, useState } from "react";
@@ -57,6 +58,7 @@ function DiagnosticDialog({ preview, busy, error, onClose, onRefresh, onExport }
   preview: DiagnosticPreview; busy: boolean; error: string; onClose: () => void; onRefresh: () => void; onExport: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null), cancel = useRef<HTMLButtonElement>(null);
+  useDialogGeometry(dialog, "wide");
   const focused = useRef(false);
   useEffect(() => {
     const el = dialog.current, previous = document.activeElement as HTMLElement | null;
@@ -75,11 +77,13 @@ function DiagnosticDialog({ preview, busy, error, onClose, onRefresh, onExport }
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
     }}>
     <header className="storage-heading"><div className="setting-label-help"><h2 id="diagnostic-title">诊断包预览</h2><HelpHint label="诊断包预览" text="包含版本、系统与匿名音频设备信息，播放状态与下载任务数量（不含作品或文件信息），以及最近最多 100 条警告 / 错误的时间、级别和类别。预览有效期为 15 分钟；刷新会重新收集，导出使用当前预览。设备读取失败、日志读取不完整会在内容中标明。选择新的 JSON 文件名，不覆盖已有文件，不自动上传。" /></div><button type="button" className="btn-icon" aria-label="关闭诊断预览" title="关闭诊断预览" disabled={busy} onClick={onClose}><X size={18} /></button></header>
+<div className="dialog-body">
     <p id="diagnostic-description" className="settings-field-hint">完整内容 · {formatBytes(preview.bytes)} · 生成于 {new Date(preview.generatedAt).toLocaleString()}</p>
     <pre className="diagnostic-content" tabIndex={0} aria-label="诊断包完整内容">{preview.content}</pre>
     <p className="diagnostic-digest">SHA-256：{preview.sha256}</p>
     {error && <ErrorNotice message={error} />}
-    <footer className="storage-actions dialog-actions"><button ref={cancel} type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button>
+    </div>
+<footer className="storage-actions dialog-actions"><button ref={cancel} type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button>
       <button type="button" className="btn btn-secondary" disabled={busy} onClick={onRefresh}>刷新预览</button>
       <button type="button" className="btn btn-primary" disabled={busy} onClick={onExport}><Download size={16} /><span className="ui-icon-label">{busy ? "正在处理…" : "保存诊断包"}</span></button></footer>
   </dialog>, document.body);

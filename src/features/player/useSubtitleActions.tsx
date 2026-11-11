@@ -88,11 +88,13 @@ export function useSubtitleActions(versionIds: string[]) {
   const verb = confirmation?.translate ? "翻译" : "识别";
   const dialog = confirmation && <ContentDialog label={`选择${verb}方式`} busy={busy} onClose={() => setConfirmation(null)}>
     <h3>选择{verb}方式</h3>
+<div className="dialog-body">
     <ErrorNotice message={error} />
     <p>{confirmation.count} 条音轨已有字幕或处理进度。</p>
     {confirmation.translate && confirmation.chinese > 0 && <p>其中 {confirmation.chinese} 条字幕文件已含中文。</p>}
     <p>{confirmation.translate ? "增量翻译只补齐缺失译文；重新翻译会重算自动译文，保留手工译文和原时间轴。" : "开始识别会清除本音轨的自动译文。增量识别继续已有进度；重新识别会清除旧识别进度和原文修正，从头生成。"}外部字幕文件保留。</p>
-    <div className="dialog-actions">
+    </div>
+<div className="dialog-actions">
       {confirmation.deletable.length > 0 && <button type="button" className="btn btn-danger" disabled={busy} title={`仅删除 ${confirmation.deletable.length} 条音轨的生成${confirmation.translate ? "译文" : "识别结果"}，保留字幕文件`} onClick={() => void deleteExisting()}>删除已有</button>}
       <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setConfirmation(null)}>取消</button>
       <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void request(confirmation.ids, confirmation.translate, true, confirmation.chinese > 0)}>重新{verb}</button>

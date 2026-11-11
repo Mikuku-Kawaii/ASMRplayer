@@ -430,6 +430,7 @@ pub fn run() {
             commands::preview_smart_import,
             commands::scan_and_import,
             commands::cancel_scan,
+            commands::get_scan_task,
             commands::relocate_library_root,
             commands::sync_watched_roots_now,
             commands::open_online_work,

@@ -341,3 +341,51 @@ fn sync_stale_conflict_choice_cannot_overwrite_a_new_local_edit() {
     let next = service.exchange_local(None, None).unwrap();
     assert_eq!(next.selected()[key], false);
 }
+
+
+#[test]
+fn remote_resume_survives_restart_dismisses_and_never_repeats_unchanged_progress() {
+    let (_a,a)=fixture("resumea");let (dir,b)=fixture("resumeb");
+    a.db.with_conn(|c|{c.execute("INSERT INTO playback_positions(version_id,position_ms,completed,updated_at) VALUES('resumeav',4200,0,'2026-11-11T01:00:00Z')",[])?;Ok(())}).unwrap();
+    let remote=a.exchange_local(None,None).unwrap();
+    b.exchange_local(Some(&remote),None).unwrap();
+    let candidate=b.resume_candidate(None,None).unwrap().unwrap();
+    assert_eq!(candidate["versionId"],"resumebv");assert_eq!(candidate["positionMs"],4200);
+    assert_eq!(candidate["deviceName"],"Windows 电脑");
+    let reopened=SyncService::new(Database::open_and_migrate(&dir.path().join("data"),&dir.path().join("cache")).unwrap());
+    assert_eq!(reopened.resume_candidate(None,None).unwrap().unwrap()["id"],candidate["id"]);
+    reopened.dismiss_resume(None,candidate["id"].as_str().unwrap()).unwrap();
+    reopened.exchange_local(Some(&remote),None).unwrap();
+    assert!(reopened.resume_candidate(None,None).unwrap().is_none());
+    let details:Value=serde_json::from_str(&reopened.db.get_setting(&ProviderId::Github.setting("device_sync_details")).unwrap().unwrap()).unwrap();
+    let position=details["summary"].as_array().unwrap().iter().find(|r|r["kind"]=="position").unwrap();
+    assert_eq!(position["received"],0);assert_eq!(position["total"],1);
+}
+
+#[test]
+fn local_listening_invalidates_handoff_and_old_button_cannot_accept_new_offer() {
+    let (_a,a)=fixture("la");let (_b,b)=fixture("lb");
+    a.db.with_conn(|c|{c.execute("INSERT INTO playback_positions(version_id,position_ms,completed,updated_at) VALUES('lav',1200,0,'2026-11-11T01:00:00Z')",[])?;Ok(())}).unwrap();
+    b.exchange_local(Some(&a.exchange_local(None,None).unwrap()),None).unwrap();
+    let candidate=b.resume_candidate(None,None).unwrap().unwrap();
+    assert!(b.resume_candidate(None,Some("outdated-id")).is_err());
+    b.db.with_conn(|c|{c.execute("UPDATE playback_positions SET position_ms=2200,updated_at='2026-11-11T01:01:00Z' WHERE version_id='lbv'",[])?;Ok(())}).unwrap();
+    assert!(b.resume_candidate(None,Some(candidate["id"].as_str().unwrap())).unwrap().is_none());
+}
+
+#[test]
+fn conflicted_completed_or_unmatched_positions_do_not_offer_resume() {
+    let mut doc=Document::default();
+    let key=format!("position|{}|","a".repeat(64));
+    let row=protocol::Revision{device:"other".into(),seq:1,clock:1,context:Default::default(),value:json!({"positionMs":2000,"durationMs":10000,"updatedMs":1000,"completed":false})};
+    doc.records.insert(key.clone(),vec![row.clone()]);
+    let mut catalog=catalog::Catalog{versions:Default::default(),works:Default::default(),names:Default::default()};
+    let (details,resume)=insights::describe(&doc,&Default::default(),&catalog,"local");
+    assert!(resume.is_none());assert_eq!(details["pendingItems"].as_array().unwrap().len(),1);
+    catalog.versions.insert("v".into(),"a".repeat(64));
+    doc.records.get_mut(&key).unwrap().push(protocol::Revision{device:"third".into(),..row});
+    assert!(insights::describe(&doc,&Default::default(),&catalog,"local").1.is_none());
+    doc.records.get_mut(&key).unwrap().truncate(1);
+    doc.records.get_mut(&key).unwrap()[0].value["completed"]=json!(true);
+    assert!(insights::describe(&doc,&Default::default(),&catalog,"local").1.is_none());
+}

@@ -49,6 +49,7 @@ export function ScriptAlignmentDialog({ versionId, onClose }: { versionId: strin
   }
   return <ContentDialog label="无时间戳台本" busy={busy} onClose={onClose}>
     <h3>无时间戳台本</h3>
+<div className="dialog-body">
     <p className="muted">选择日文台本或按台词分行粘贴。先完成整轨日语识别，再用识别字幕的时间范围匹配；不确定的段落不分配时间。</p>
     <div className="script-file-row">
       <Select aria-label="作品台本" value={loadedPath} disabled={busy || loadingFiles || !files.length} placeholder={loadingFiles ? "查找作品台本…" : files.length ? "选择作品台本" : "未发现作品台本"} options={files.map(file => ({ value: file.path, label: file.attachmentId ? `在线 · ${file.title}` : file.title }))} onValueChange={path => void run(() => loadFile(path))} />
@@ -65,7 +66,8 @@ export function ScriptAlignmentDialog({ versionId, onClose }: { versionId: strin
       <ol className="script-alignment-results" aria-label="台本对齐预览">{preview.rows.map(row => <li key={row.line}><span className="muted">{row.startMs === null ? "未匹配" : `${formatDurationMs(row.startMs)}–${formatDurationMs(row.endMs ?? row.startMs)} · 相似度 ${row.score}%`}</span><p>{row.text}</p></li>)}</ol>
     </>}
     {exported && <p role="status">已导出匹配段落。可使用此字幕，再点击翻译。</p>}
-    <div className="dialog-actions">
+    </div>
+<div className="dialog-actions">
       <button className="btn btn-ghost" type="button" disabled={busy} onClick={onClose}>关闭</button>
       <button className="btn btn-secondary" type="button" disabled={busy || !script.trim()} onClick={() => void run(async () => { setPreview(await callCommand<ScriptPreview>("preview_script_alignment",{versionId,script})); setExported(""); })}>预览对齐</button>
       {exported ? <button className="btn btn-primary" type="button" disabled={busy} onClick={() => void run(async () => { await callCommand("import_local_subtitle",{versionId,path:exported}); onClose(); })}>使用导出字幕</button>

@@ -38,37 +38,12 @@ internal fun rememberUiMotion(lowEffects: Boolean): Boolean {
     return !lowEffects && system
 }
 
-/** One layer for destination title and body. Interrupted changes retain the onscreen offset. */
-@Composable
-internal fun Modifier.routeMotion(identity: String, depth: Int): Modifier {
-    val enabled = LocalUiMotion.current
-    val rtl = androidx.compose.ui.platform.LocalLayoutDirection.current == androidx.compose.ui.unit.LayoutDirection.Rtl
-    val distance = with(LocalDensity.current) { 10.dp.toPx() }
-    val offset = remember { Animatable(0f) }
-    var previous by remember { mutableStateOf(identity) }
-    var previousDepth by remember { mutableIntStateOf(depth) }
-    LaunchedEffect(identity, enabled) {
-        val changed = previous != identity
-        val direction = if (depth < previousDepth) -1f else 1f
-        previous = identity
-        previousDepth = depth
-        if (enabled && changed) {
-            if (offset.value == 0f) offset.snapTo(direction)
-            offset.animateTo(0f, tween(180, easing = LinearOutSlowInEasing))
-        } else offset.snapTo(0f)
-    }
-    return graphicsLayer {
-        translationX = if (enabled) offset.value * distance * (if (rtl) -1 else 1) else 0f
-        alpha = if (enabled) 1f - .12f * kotlin.math.abs(offset.value) else 1f
-    }
-}
-
 @Composable
 internal fun MotionReveal(visible: Boolean, content: @Composable () -> Unit) {
     if (!LocalUiMotion.current) { if (visible) content() }
     else AnimatedVisibility(visible,
-        enter = expandVertically(tween(170, easing = LinearOutSlowInEasing), expandFrom = androidx.compose.ui.Alignment.Top) + fadeIn(tween(120)),
-        exit = shrinkVertically(tween(150), shrinkTowards = androidx.compose.ui.Alignment.Top) + fadeOut(tween(100))) { content() }
+        enter = expandVertically(tween(240, easing = MotionEase), expandFrom = androidx.compose.ui.Alignment.Top) + fadeIn(tween(180)),
+        exit = shrinkVertically(tween(240, easing = MotionEase), shrinkTowards = androidx.compose.ui.Alignment.Top) + fadeOut(tween(180))) { content() }
 }
 
 @Composable
@@ -102,7 +77,7 @@ internal fun motionColors(target: ColorScheme, enabled: Boolean): ColorScheme {
 
 @Composable
 internal fun Modifier.sizeMotion(): Modifier = if (LocalUiMotion.current)
-    animateContentSize(tween(200, easing = FastOutSlowInEasing)) else this
+    animateContentSize(tween(240, easing = MotionEase)) else this
 
 /** Ripple stays native. Only compact buttons compress, never full-width actions or cards. */
 @Composable

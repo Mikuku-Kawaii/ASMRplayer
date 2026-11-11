@@ -87,13 +87,25 @@ class DownloadRepository(private val context: Context, private val db: LibraryDa
     }
 
     private suspend fun enqueueTargets(targetIds: List<String>, attachments: Boolean): List<String> {
-        awaitReady(); require(targetIds.isNotEmpty() && targetIds.size <= 500)
+        require(targetIds.isNotEmpty() && targetIds.size <= 500)
+        return enqueueSelection(if (attachments) emptyList() else targetIds, if (attachments) targetIds else emptyList())
+    }
+
+    /** A confirmed file selection is validated and queued in one transaction, then scheduled once. */
+    suspend fun enqueueSelection(versionIds: List<String>, assetIds: List<String>, skipExisting: Boolean = false): List<String> {
+        awaitReady()
+        val targets = versionIds.distinct().map { it to false } + assetIds.distinct().map { it to true }
+        require(targets.isNotEmpty() && targets.size <= 50_001)
         val ids = mutation.withLock { db.withTransaction {
-            targetIds.distinct().map { targetId ->
+            targets.forEach { (targetId, attachments) ->
                 if (attachments) require(dao.remoteAsset(targetId)?.available == true) { "附件没有可用在线来源" }
                 else requireNotNull(dao.remote(targetId)) { "版本没有在线来源" }
+            }
+            targets.mapNotNull { (targetId, attachments) ->
                 val id = LibraryIndex.id(if (attachments) "download-asset" else "download", targetId)
-                val old = dao.download(id)
+                val stored = dao.download(id)
+                val old = if (skipExisting && stored != null) resetFailedFile(stored) else stored
+                if (skipExisting && old != null && old.state !in setOf("REMOVED", "FAILED")) return@mapNotNull null
                 if (old == null || old.state !in setOf("COMPLETED", "DOWNLOADING", "VERIFYING"))
                     dao.putDownload(old?.copy(state = "QUEUED", errorCode = null, attempts = 0, updatedMs = System.currentTimeMillis())
                         ?: DownloadTask(id, if (attachments) null else targetId, assetId = if (attachments) targetId else null))
@@ -115,15 +127,17 @@ class DownloadRepository(private val context: Context, private val db: LibraryDa
     suspend fun resume(id: String) {
         awaitReady()
         val task = mutation.withLock {
-            val current = requireNotNull(dao.download(id))
-            if (current.state == "FAILED" && current.errorCode in setOf("SOURCE_CHANGED", "INTEGRITY", "INVALID_CONTENT", "MISSING_FILE")) withContext(Dispatchers.IO) {
-                val part = file(id, true); check(!part.exists() || part.delete())
-                if (current.errorCode != "SOURCE_CHANGED") { val final = file(id, false); check(!final.exists() || final.delete()) }
-                dao.putDownload(current.copy(downloadedBytes = 0, etag = null, lastModified = null, sha256 = null))
-            }
-            current
+            resetFailedFile(requireNotNull(dao.download(id)))
         }
         if (task.assetId != null) enqueueAssets(listOf(task.assetId)) else enqueue(listOf(requireNotNull(task.versionId)))
+    }
+    private suspend fun resetFailedFile(task: DownloadTask): DownloadTask {
+        if (task.state != "FAILED" || task.errorCode !in setOf("SOURCE_CHANGED", "INTEGRITY", "INVALID_CONTENT", "MISSING_FILE")) return task
+        return withContext(Dispatchers.IO) {
+            val part = file(task.id, true); check(!part.exists() || part.delete())
+            if (task.errorCode != "SOURCE_CHANGED") { val final = file(task.id, false); check(!final.exists() || final.delete()) }
+            task.copy(downloadedBytes = 0, etag = null, lastModified = null, sha256 = null).also { dao.putDownload(it) }
+        }
     }
     suspend fun remove(id: String) {
         awaitReady(); pause(id); running[id]?.cancelAndJoin()

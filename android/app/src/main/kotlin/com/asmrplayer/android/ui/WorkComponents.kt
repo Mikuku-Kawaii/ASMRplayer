@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import kotlinx.coroutines.delay
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.*
@@ -21,7 +22,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -40,31 +43,38 @@ internal fun WorkCard(title: String, cover: String?, code: String?, badges: List
     tags: List<String> = emptyList(), open: () -> Unit, favorite: Boolean? = null, like: (() -> Unit)? = null,
     onTag:((String)->Unit)?=null, onMetadata:(()->Unit)?=null, voices:List<String> = emptyList(),
     onVoice:((String)->Unit)?=null, inLibrary:Boolean?=null, save:(()->Unit)?=null,saving:Boolean=false,workId:String?=null,
-    discovery:Boolean=false,score:Double?=null,nsfw:Boolean=false,hasSubtitle:Boolean=false) {
-    Surface(shape=RoundedCornerShape(16.dp),color=MaterialTheme.colorScheme.surfaceContainerLow,
-        border=if(discovery)BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant.copy(alpha=.45f)) else null) {
+    score:Double?=null,nsfw:Boolean=false,hasSubtitle:Boolean=false) {
+    val density = LocalDensity.current
+    val status = badges.filter { it != "正在播放" }
+    val hasActionLine = save != null || like != null || status.isNotEmpty()
+    Surface(shape=RoundedCornerShape(16.dp),color=MaterialTheme.colorScheme.surfaceContainerLow) {
         Column {
             Box {
-                CardArtwork(cover,Modifier.fillMaxWidth().aspectRatio(4f/3f).clickable(onClick=open).semantics{contentDescription="打开 $title"},workId,hasSubtitle,nsfw)
+                CardArtwork(cover,Modifier.fillMaxWidth().sharedWorkArtwork(workId).aspectRatio(4f/3f).clickable(onClick=open).semantics{contentDescription="打开 $title"},workId,hasSubtitle,nsfw)
                 if("正在播放" in badges)Box(Modifier.align(Alignment.BottomStart).padding(6.dp)){WorkBadge("正在播放",true)}
             }
-            Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 3.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = if (hasActionLine) 3.dp else 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 9.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    CardTitle(title, Modifier.clickable(onClick = open))
-                    if (voices.isNotEmpty()) CardVoices(voices, onVoice, accent = discovery)
-                    else if (metadata.isNotBlank()) CardMetadata(metadata, onMetadata)
-                    if (tags.isNotEmpty()) CardFooter("", tags, onTag, staticPills = discovery)
-                }
-                if (discovery) {
-                    Box(Modifier.padding(horizontal = 9.dp)) { CardCodeScore(code, score) }
-                } else {
-                    WorkCardActionLine(title, inLibrary, save, saving, favorite, like) {
-                        Column {
-                            if (!code.isNullOrBlank()) Text(code, Modifier.horizontalScroll(rememberScrollState()),
-                                maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            WorkCardStatus(badges.filter { it != "正在播放" })
+                    Column {
+                        CardTitle(title, Modifier.clickable(onClick = open))
+                        Box(Modifier.fillMaxWidth().height(with(density) { 18.sp.toDp() }), contentAlignment = Alignment.CenterStart) {
+                            if (voices.isNotEmpty()) CardVoices(voices, onVoice)
+                            else if (metadata.isNotBlank()) CardMetadata(metadata, onMetadata)
                         }
+                    }
+                    Box(Modifier.fillMaxWidth().height(with(density) { 16.sp.toDp() } + 4.dp), contentAlignment = Alignment.CenterStart) {
+                        if (tags.isNotEmpty()) CardFooter(tags, onTag)
+                    }
+                    if (!hasActionLine) Box(Modifier.fillMaxWidth().height(with(density) { 16.sp.toDp() }), contentAlignment = Alignment.CenterStart) {
+                        CardCodeScore(code, score)
+                    }
+                }
+                if (hasActionLine) WorkCardActionLine(title, inLibrary, save, saving, favorite, like) {
+                    Column {
+                        Text(code.orEmpty(), Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        WorkCardStatus(status)
                     }
                 }
             }
@@ -82,20 +92,27 @@ internal fun CardVoices(voices:List<String>, choose:((String)->Unit)?,accent:Boo
 
 /** Font-scaled slots keep mixed CJK/Latin titles and missing metadata aligned. */
 @Composable
-private fun cardTextHeight(style: androidx.compose.ui.text.TextStyle, lines: Int = 1): androidx.compose.ui.unit.Dp {
+private fun cardTextHeight(style: androidx.compose.ui.text.TextStyle, lines: Int = 1,
+    padding: androidx.compose.ui.unit.Dp = 4.dp): androidx.compose.ui.unit.Dp {
     val measurer = cardMeasurer()
     // Include fallback glyphs: system CJK/bold fonts can exceed the nominal line height.
     val measured = remember(style, lines, measurer) {
-        measurer.measure(AnnotatedString(List(lines) { "国あAg" }.joinToString("\n")), style = style, maxLines = lines)
+        measurer.measure(AnnotatedString(List(lines) { "国あア漢Ag♡☆é" }.joinToString("\n")), style = style, maxLines = lines)
     }
-    return with(LocalDensity.current) { measured.size.height.toDp() } + 4.dp
+    return with(LocalDensity.current) { measured.size.height.toDp() } + padding
 }
 
 @Composable
 internal fun CardTitle(title: String, modifier: Modifier = Modifier) {
-    val style = MaterialTheme.typography.titleSmall.copy(fontSize = 14.sp, lineHeight = 18.sp, fontWeight=androidx.compose.ui.text.font.FontWeight.Medium)
-    Text(title, modifier,
-        maxLines = 2, overflow = TextOverflow.Ellipsis, style = style)
+    val style = MaterialTheme.typography.titleSmall.copy(fontSize = 14.sp, lineHeight = 18.sp,
+        fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold,
+        platformStyle = PlatformTextStyle(includeFontPadding = false),
+        lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None))
+    // Android's CJK fallback may be taller than the requested 18sp line height.
+    // Measure a shared two-line sample instead of capping the paragraph at 36sp,
+    // which makes Android ellipsize after the first line on some vendor fonts.
+    Text(title, modifier.fillMaxWidth().height(cardTextHeight(style, 2, padding = 0.dp)),
+        minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis, style = style)
 }
 
 @Composable
@@ -109,16 +126,15 @@ internal fun CardMetadata(metadata: String, onClick: (() -> Unit)? = null) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun CardFooter(summary: String, tags: List<String>, onTag: ((String) -> Unit)? = null,staticPills:Boolean=false) {
+internal fun CardFooter(tags: List<String>, onTag: ((String) -> Unit)? = null) {
     var expanded by rememberSaveable(tags){mutableStateOf(false)}
     val style=MaterialTheme.typography.labelSmall
     val measurer=cardMeasurer();val density=LocalDensity.current
     Column {
-        if(summary.isNotBlank())Text(summary,style=style,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
         CardWidth(Modifier.fillMaxWidth(), inset = 18.dp) { maxWidth, _ ->
             val width=with(density){maxWidth.toPx()};val gap=with(density){8.dp.toPx()}
-            val pillPadding=with(density){if(staticPills)12.dp.toPx() else 0f}
-            val count = remember(tags, style, measurer, width, staticPills) {
+            val pillPadding=with(density){12.dp.toPx()}
+            val count = remember(tags, style, measurer, width, pillPadding, gap) {
                 var used = 0f
                 var fit = 0
                 for ((i, tag) in tags.withIndex()) {
@@ -131,7 +147,7 @@ internal fun CardFooter(summary: String, tags: List<String>, onTag: ((String) ->
                 }
                 fit
             }
-            if(staticPills) {
+            run {
                 val visibleCount=if(tags.isEmpty())0 else count.coerceAtLeast(1)
                 val hidden=tags.size-visibleCount
                 val reserved=if(hidden>0)with(density){measurer.measure(AnnotatedString("+$hidden"),style).size.width.toDp()}+20.dp else 0.dp
@@ -144,12 +160,16 @@ internal fun CardFooter(summary: String, tags: List<String>, onTag: ((String) ->
                             maxLines=1,overflow=TextOverflow.Ellipsis,style=style,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     if(hidden>0)Text("+$hidden",Modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest,RoundedCornerShape(6.dp))
-                        .padding(horizontal=6.dp,vertical=2.dp).semantics{contentDescription="另有 $hidden 个标签"},
+                        .clickable { expanded = true }.padding(horizontal=6.dp,vertical=2.dp).semantics{contentDescription="展开其余 $hidden 个标签"},
                         maxLines=1,style=style,color=MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-            } else FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
-                (if(expanded)tags else tags.take(count)).forEach{tag->Text(tag,Modifier.then(if(onTag!=null)Modifier.clickable{onTag(tag)}else Modifier).padding(vertical=2.dp),style=style,color=MaterialTheme.colorScheme.primary)}
-                if(tags.size>count)Text(if(expanded)"收起" else "＋${tags.size-count}",Modifier.clickable{expanded=!expanded}.padding(vertical=2.dp).semantics{contentDescription=if(expanded)"收起标签" else "展开其余 ${tags.size-count} 个标签"},style=style,color=MaterialTheme.colorScheme.primary)
+            }
+        }
+    }
+    if (expanded) PlayerSheet("作品标签", { expanded = false }) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            tags.forEach { tag ->
+                SuggestionChip(onClick = { expanded = false; onTag?.invoke(tag) }, label = { Text(tag) }, enabled = onTag != null)
             }
         }
     }
@@ -157,8 +177,18 @@ internal fun CardFooter(summary: String, tags: List<String>, onTag: ((String) ->
 
 @Composable
 internal fun CardCodeScore(code:String?,score:Double?) {
-    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(4.dp)) {
-        if (!code.isNullOrBlank()) Text(code, Modifier.weight(1f, fill = false).alignByBaseline(), maxLines = 1, overflow = TextOverflow.Ellipsis,
+    val style = MaterialTheme.typography.labelSmall
+    val measurer = cardMeasurer()
+    val density = LocalDensity.current
+    val widths = remember(style, measurer) {
+        measurer.measure(AnnotatedString("RJ00000000"), style).size.width to
+            measurer.measure(AnnotatedString("5.00"), style).size.width
+    }
+    CardWidth(Modifier.fillMaxWidth(), inset = 18.dp) { maxWidth, _ ->
+      val codeWidth = with(density) { widths.first.toDp() } + 2.dp
+      val ratingWidth = if (score == null) 0.dp else with(density) { widths.second.toDp() } + 22.dp
+      Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(4.dp)) {
+        Text(code.orEmpty(), Modifier.width(minOf(codeWidth, (maxWidth - ratingWidth).coerceAtLeast(0.dp))).alignByBaseline(), maxLines = 1, overflow = TextOverflow.Ellipsis,
             style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if(score!=null) {
             AppGlyph(Glyph.Star,Modifier.size(12.dp),filled=true,
@@ -166,6 +196,7 @@ internal fun CardCodeScore(code:String?,score:Double?) {
             Text(String.format(java.util.Locale.ROOT,"%.2f",score),maxLines=1,style=MaterialTheme.typography.labelSmall,
                 color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.alignByBaseline().semantics{contentDescription="评分 $score，满分 5 分"})
         }
+      }
     }
 }
 
@@ -185,7 +216,7 @@ internal fun WorkHero(title: String, cover: String?, code: String?, summary: Str
         val coverWidth=minOf(maxWidth*.46f, informationHeight * (4f/3f))
         val stacked = maxWidth < 300.dp || androidx.compose.ui.platform.LocalDensity.current.fontScale >= 1.5f
         val artwork: @Composable (Modifier) -> Unit = { modifier ->
-            AudioArtwork(modifier.aspectRatio(4f/3f)
+            AudioArtwork(modifier.sharedWorkArtwork(workId, hero = true).aspectRatio(4f/3f)
                 .clickable { showCover=true }.semantics { contentDescription="查看作品封面" },
                 cover,ContentScale.Fit,highResolution=true,workId=workId)
         }
@@ -194,7 +225,7 @@ internal fun WorkHero(title: String, cover: String?, code: String?, summary: Str
                 Text(title,Modifier.then(if(overflow) Modifier.clickable(onClickLabel="查看完整标题"){fullTitle=true} else Modifier),
                     maxLines=3,overflow=TextOverflow.Ellipsis,style=typography.titleMedium,
                     onTextLayout={overflow=it.hasVisualOverflow})
-                if(summary.isNotBlank())Text(summary,style=typography.bodySmall,maxLines=1,overflow=TextOverflow.Ellipsis)
+                if(summary.isNotBlank())Text(summary,style=typography.bodySmall,color=colors.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
                 if(!code.isNullOrBlank()) {
                     Row(Modifier.clickable(onClickLabel="复制 RJ 号") {
                         val clipboard=context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
@@ -236,7 +267,7 @@ internal fun DetailDisclosure(title: String, summary: String? = null, content: @
             }
             Text(if (expanded) "收起" else "展开", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
             val angle by androidx.compose.animation.core.animateFloatAsState(if(expanded) 0f else -90f,
-                if(LocalUiMotion.current) androidx.compose.animation.core.tween(160) else androidx.compose.animation.core.snap(),label="disclosure arrow")
+                if(LocalUiMotion.current) androidx.compose.animation.core.tween(240, easing = MotionEase) else androidx.compose.animation.core.snap(),label="disclosure arrow")
             AppGlyph(Glyph.ChevronDown,Modifier.padding(start=4.dp).size(18.dp).rotate(angle),MaterialTheme.colorScheme.primary)
         }
         MotionReveal(expanded) { Column(Modifier.padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp), content = content) }
@@ -245,9 +276,10 @@ internal fun DetailDisclosure(title: String, summary: String? = null, content: @
 
 @Composable
 internal fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(title, Modifier.padding(start = 4.dp, top = 8.dp, bottom = 4.dp), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(title, Modifier.padding(start = 2.dp, top = 6.dp, bottom = 2.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerLow,
+            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .55f))) {
             Column(Modifier.fillMaxWidth(), content = content)
         }
     }
@@ -255,13 +287,13 @@ internal fun SettingsGroup(title: String, content: @Composable ColumnScope.() ->
 
 @Composable
 internal fun SettingsLink(title: String, summary: String, action: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = action).heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 10.dp),
+    Row(Modifier.fillMaxWidth().clickable(onClick = action).heightIn(min = 56.dp).padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleSmall)
             if(summary.isNotBlank()) Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        AppGlyph(Glyph.Back, Modifier.rotate(180f), MaterialTheme.colorScheme.onSurfaceVariant)
+        AppGlyph(Glyph.ChevronRight, Modifier.size(18.dp), MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -277,7 +309,43 @@ internal fun MoreActions(label: String, glyph: Glyph = Glyph.More, content: @Com
 @Composable
 internal fun GroupPicker(groups: List<Pair<String, String>>, selected: Pair<String, String>?, choose: (Pair<String, String>) -> Unit) {
     if (groups.isEmpty()) return
-    fun label(group: Pair<String, String>) = if (group.first.equals(group.second, true)) "${group.second.uppercase()} 格式"
-        else "${group.first.ifBlank { "根目录" }} · ${group.second.uppercase()}"
-    PageTabs(selected, groups.map { it to label(it) }) { choose(it) }
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val current = selected?.takeIf { it in groups } ?: groups.first()
+    fun name(group: Pair<String, String>) = group.first.ifBlank { "根目录" }
+    fun label(group: Pair<String, String>) = if (groups.count { it.first == group.first } > 1)
+        "${name(group)} · ${group.second.uppercase()}" else name(group)
+    MotionOutlinedButton({ expanded = true }, Modifier.fillMaxWidth().heightIn(min = 48.dp)
+        .semantics { contentDescription = "目录 · ${label(current)}" }) {
+        AppGlyph(Glyph.Folder, Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("目录 · ${label(current)}", Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.width(8.dp))
+        AppGlyph(Glyph.ChevronDown, Modifier.size(18.dp))
+    }
+    if (expanded) {
+        val scroll = androidx.compose.foundation.lazy.rememberLazyListState(initialFirstVisibleItemIndex = groups.indexOf(current))
+        PlayerAlertDialog(onDismissRequest = { expanded = false }, title = { Text("选择音轨目录") },
+            confirmButton = { MotionTextButton({ expanded = false }) { Text("关闭") } }, text = {
+                LazyColumn(Modifier.fillMaxWidth().heightIn(max = (LocalConfiguration.current.screenHeightDp * .5f).dp),
+                    state = scroll, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    items(groups) { entry ->
+                        val active = entry == current
+                        Row(Modifier.fillMaxWidth()
+                            .background(if (active) MaterialTheme.colorScheme.primaryContainer else Color.Transparent, RoundedCornerShape(12.dp))
+                            .selectable(selected = active, role = Role.RadioButton, onClick = { expanded = false; choose(entry) })
+                            .padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(name(entry), style = MaterialTheme.typography.bodyLarge,
+                                    color = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface)
+                                Text(entry.second.uppercase(), style = MaterialTheme.typography.labelMedium,
+                                    color = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            if (active) AppGlyph(Glyph.Check, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                            else Spacer(Modifier.size(20.dp))
+                        }
+                    }
+                }
+            })
+    }
 }

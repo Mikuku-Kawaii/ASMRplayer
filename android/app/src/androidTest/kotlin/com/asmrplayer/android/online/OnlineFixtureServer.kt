@@ -12,15 +12,18 @@ import kotlin.concurrent.thread
 
 /** Loopback-only synthetic API/audio. No account, network service or user media is accessed. */
 class OnlineFixtureServer(durationSeconds: Int = 3, sampleRate: Int = 48000, port: Int = 0) : Closeable {
-    data class Request(val path: String, val headers: Map<String, String>, val method:String="GET")
+    data class Request(val path: String, val headers: Map<String, String>, val method:String="GET", val body: String = "")
     private val socket = ServerSocket(port, 16, InetAddress.getByName("127.0.0.1"))
     val base = "http://127.0.0.1:${socket.localPort}"
     val requests = ConcurrentLinkedQueue<Request>()
     val treeRequests = AtomicInteger()
     val mediaRequests = AtomicInteger()
+    @Volatile var browseResponse: ((Request) -> Pair<Int, String>)? = null
     @Volatile var mode = "normal"
     @Volatile var redirect: String? = null
     @Volatile var attachments = false
+    @Volatile var documents = false
+    val documentBytes = "Synthetic document for download selection.".toByteArray()
     @Volatile var secondTrack = false
     @Volatile var hideAttachments = false
     @Volatile var invalidAttachment = false
@@ -51,12 +54,14 @@ class OnlineFixtureServer(durationSeconds: Int = 3, sampleRate: Int = 48000, por
                             if (line.isEmpty()) break
                             headers[line.substringBefore(':').lowercase()] = line.substringAfter(':').trim()
                         }
+                        val requestBody = StringBuilder()
                         if(requestLine[0]=="POST") {
                             val count=headers["content-length"]?.toIntOrNull()?:0
                             var remaining=count
-                            while(remaining>0){val buffer=CharArray(remaining);val n=reader.read(buffer);if(n<0)break;remaining-=n}
+                            while(remaining>0){val buffer=CharArray(remaining);val n=reader.read(buffer);if(n<0)break;requestBody.append(buffer,0,n);remaining-=n}
                         }
-                        requests.add(Request(target, headers,requestLine[0]))
+                        val request = Request(target, headers, requestLine[0], requestBody.toString())
+                        requests.add(request)
                         var code = 200; val responseHeaders = linkedMapOf<String, String>(); var body: ByteArray
                         val nextRedirect = redirect
                         when {
@@ -73,7 +78,11 @@ class OnlineFixtureServer(durationSeconds: Int = 3, sampleRate: Int = 48000, por
                                 val number = treeRequests.incrementAndGet()
                                 val extra = if (attachments && !hideAttachments) """,{"type":"text","title":"01.srt","hash":"fixture-subtitle","size":${subtitleBytes.size},"mediaDownloadUrl":"$base/media/subtitle?signature=$number"},{"type":"image","title":"art.png","hash":"fixture-image","size":${imageBytes.size},"mediaDownloadUrl":"$base/media/image?signature=$number"}""" else ""
                                 val second = if (secondTrack) """,{"type":"audio","title":"02.wav","hash":"fixture-02","size":${bytes.size},"mediaStreamUrl":"$base/media?signature=$number"}""" else ""
-                                body = """[{"type":"folder","title":"WAV","children":[{"type":"audio","title":"01.wav","hash":"fixture-01","size":${bytes.size},"mediaStreamUrl":"$base/media?signature=$number","mediaDownloadUrl":"$base/media?signature=$number"}$second$extra]}]""".toByteArray()
+                                val document = if (documents) """,{"type":"text","title":"readme.txt","hash":"fixture-doc","size":${documentBytes.size},"mediaDownloadUrl":"$base/media/document"}""" else ""
+                                body = """[{"type":"folder","title":"WAV","children":[{"type":"audio","title":"01.wav","hash":"fixture-01","size":${bytes.size},"mediaStreamUrl":"$base/media?signature=$number","mediaDownloadUrl":"$base/media?signature=$number"}$second$extra$document]}]""".toByteArray()
+                            }
+                            browseResponse != null && (target.startsWith("/api/recommender/popular") || target.startsWith("/api/search/") || target.startsWith("/api/works")) -> {
+                                val response = browseResponse!!.invoke(request); code = response.first; body = response.second.toByteArray()
                             }
                             target.startsWith("/api/recommender/popular") && mode == "popular-unavailable" -> { code = 503; body = byteArrayOf() }
                             target.startsWith("/api/recommender/popular") || target.startsWith("/api/search/") || target.startsWith("/api/works") -> body = """{"works":[${work()},{"id":123457,"title":"Adult fixture","age_category_string":"r18"}],"pagination":{"currentPage":1,"pageSize":20,"totalCount":2}}""".toByteArray()
@@ -82,6 +91,7 @@ class OnlineFixtureServer(durationSeconds: Int = 3, sampleRate: Int = 48000, por
                                 if (mode == "expired" && count == 1) { code = 403; body = byteArrayOf() }
                                 else {
                                     val payload = when {
+                                        target.startsWith("/media/document") -> documentBytes
                                         target.startsWith("/media/subtitle") -> subtitleBytes
                                         target.startsWith("/media/image") || target.startsWith("/media/cover") -> imageBytes
                                         else -> bytes

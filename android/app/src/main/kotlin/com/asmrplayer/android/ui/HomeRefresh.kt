@@ -39,7 +39,7 @@ internal fun HomeRefresh(page: Destination, model: PlayerViewModel, browsing: Bo
         when (page) {
             Destination.Library -> model.collections.retry()
             Destination.Favorites -> { model.collections.retryFavoriteWorks(); model.collections.retry() }
-            Destination.Discover -> model.online.search(page = model.online.state.value.requestedPage)
+            Destination.Discover -> model.online.search(page = 1)
             Destination.Queue -> model.refreshQueue()
         }
     }

@@ -4,7 +4,7 @@ package com.asmrplayer.android.ui
 import androidx.annotation.DrawableRes
 import com.asmrplayer.android.R
 
-enum class Glyph { Library, Discover, Heart, Queue, Menu, Search, Plus, Play, Pause, Next, Previous, Back, Eye, Download, Settings, Sliders, Audio, Stop, More, Folder, Collection, CollectionWide, TrackBookmark, Marker, Sleep, Sequence, Shuffle, Repeat, RepeatOne, Check, Close, Drag, Details, ChevronDown, GroupAdd, Flame, Sales, NewArrival, Release, Discussion, History, ChevronRight, Star, Copy, Grid, List }
+enum class Glyph { Library, Discover, Heart, Queue, Menu, Search, Plus, Play, Pause, Next, Previous, Back, Eye, Download, Settings, Sliders, Audio, Stop, More, Folder, Collection, CollectionWide, TrackBookmark, Marker, Sleep, Sequence, Shuffle, Repeat, RepeatOne, Check, Close, Drag, Details, FileAudio, FileImage, ChevronDown, GroupAdd, Flame, Sales, NewArrival, Release, Discussion, History, ChevronRight, Star, Copy, Grid, List }
 
 @DrawableRes
 internal fun Glyph.lucideResource(filled: Boolean): Int = when (this) {
@@ -41,6 +41,8 @@ internal fun Glyph.lucideResource(filled: Boolean): Int = when (this) {
     Glyph.Close -> R.drawable.lucide_x
     Glyph.Drag -> R.drawable.lucide_grip_vertical
     Glyph.Details -> R.drawable.lucide_file_text
+    Glyph.FileAudio -> R.drawable.lucide_file_audio
+    Glyph.FileImage -> R.drawable.lucide_file_image
     Glyph.ChevronDown -> R.drawable.lucide_chevron_down
     Glyph.GroupAdd -> R.drawable.lucide_square_plus
     Glyph.Flame -> R.drawable.lucide_flame

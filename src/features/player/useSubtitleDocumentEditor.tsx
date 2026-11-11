@@ -66,9 +66,10 @@ export function useSubtitleDocumentEditor(versionId?: string | null) {
   const translated = dialogueCues.filter(c => c.translation.trim()).length;
   const dirty = cue && (original !== cue.original || translation !== cue.translation);
   const statusLabels = { pendingTranslation: "待翻译", translationFailed: "翻译失败", audioReview: "待音频核对", noSpeech: "已确认无有效语音", nonDialogue: "非台词，已隐藏", complete: "已完成" };
-  const dialog = document && <ContentDialog size={cue ? "wide" : "compact"} label={cue ? "编辑字幕" : "导出字幕"} busy={busy} onClose={() => setDocument(null)}>
-    <div className="subtitle-document-dialog">
+  const dialog = document && <ContentDialog size={cue ? "wide" : "standard"} label={cue ? "编辑字幕" : "导出字幕"} busy={busy} onClose={() => setDocument(null)}>
+    <div className="subtitle-document-dialog dialog-form">
       <h3>{cue ? "编辑字幕" : "导出字幕"}</h3>
+<div className="dialog-body">
       {cue ? <>
         <p className="settings-field-hint subtitle-document-time">{formatDurationMs(cue.startMs)} – {formatDurationMs(cue.endMs)}</p>
         {cue.status && <p role="status" className="settings-field-hint">{statusLabels[cue.status]}{cue.audioNote ? `：${cue.audioNote}` : ""}</p>}
@@ -98,7 +99,8 @@ export function useSubtitleDocumentEditor(versionId?: string | null) {
       </>}
       {error && <ErrorNotice message={error} />}
       {notice && <p role="status" className="settings-field-hint">{notice}</p>}
-      <div className="dialog-actions">
+      </div>
+<div className="dialog-actions">
         <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setDocument(null)}>取消</button>
         {cue ? <>
           {cue.canExcludeNonDialogue && cue.status !== "nonDialogue" && <button type="button" className="btn btn-ghost" disabled={busy} title="仅隐藏本句声音误识，保留原始记录供核对" onClick={() => saveEdit(false, false, true)}>标记为非台词</button>}

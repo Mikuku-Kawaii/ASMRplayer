@@ -5,8 +5,6 @@ import { subscribeDownloadsUpdated, subscribeLibraryAffinity, subscribeSettingsU
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  FolderPlus,
-  Library,
   Search,
   RefreshCw,
   Heart,
@@ -40,6 +38,7 @@ import { DownloadTaskModal } from "../../components/DownloadTaskModal";
 import { addLibraryTag, LibraryFilters, LibraryFilterSummary, matchesLibraryTags } from "./LibraryFilters";
 import { RemoveWorkDialog, skipsLibraryRemovalConfirmation } from "./RemoveWorkDialog";
 import { BulkOrganizer } from "./BulkOrganizer";
+import { ImportButton } from "./ImportButton";
 import { ImportDialog } from "./ImportDialog";
 import { WorkContentBadges } from "../../components/WorkContentBadges";
 import { LibraryCollectionState, libraryCollectionDefaults } from "./SmartCollections";
@@ -606,26 +605,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 </span>
               </button>
             )}
-            {filterMode === "all" && (
-              <>
-                <button
-                  type="button"
-                  className="btn btn-primary btn-sm"
-                  onClick={() => void handleChooseFolder("single_work")}
-                >
-                  <FolderPlus size={15} />
-                  <span>导入作品文件夹</span>
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  onClick={() => void handleChooseFolder("library_root")}
-                >
-                  <Library size={15} />
-                  <span>导入作品库根目录</span>
-                </button>
-              </>
-            )}
+            {filterMode === "all" && <ImportButton disabled={scanning || previewing} onChoose={mode => void handleChooseFolder(mode)} />}
             {filterMode === "recent" && <button type="button" className="btn btn-ghost btn-sm"
               disabled={clearingRecent || loading} onClick={() => void clearRecent()}
               title="清空最近收听记录，保留音频文件、收藏与音轨播放进度">
@@ -712,6 +692,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               <X size={16} />
             </button>
           </div>
+<div className="dialog-body">
           <div className="modal-path-row">
             <input
               type="text"
@@ -850,7 +831,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
             </div>
           )}
-          <div className="modal-footer dialog-actions">
+          </div>
+<div className="modal-footer dialog-actions">
             <button type="button" className="btn btn-ghost" disabled={scanning} onClick={closeImport}>取消</button>
             {scanning ? <button type="button" className="btn btn-secondary btn-sm" onClick={() => void handleCancelScan()}>取消扫描</button>
               : preview && <button type="button" className="btn btn-primary" disabled={previewing || selectedImportCount === 0} onClick={() => void handleExecuteImport()}>导入选中作品 ({selectedImportCount})</button>}
@@ -933,7 +915,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 <div className="work-card-meta library-card-meta">
                   {work.voiceActors.length > 0 && (
                     <span className="cv-list" title={`CV：${work.voiceActors.join("、")}`}>
-                      CV:{" "}
+                      <span className="cv-label">CV:</span>
                       {work.voiceActors.map((va) => (
                         canFilterCardDetails ? <button key={va} type="button" className="cv-pill cv-pill-btn" title={`筛选声优: ${va}`}
                           onClick={event => { event.stopPropagation(); addCardVoice(va); }}><span className="ui-tag-label">{va}</span></button>

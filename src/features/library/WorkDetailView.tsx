@@ -798,7 +798,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
                 </button>
               ) : null}
 
-              {detail.directoryGroups.length > 0 && <button type="button" className="btn btn-primary"
+              {detail.directoryGroups.length > 0 && <button type="button" className="btn btn-secondary"
                 disabled={startingPlayback} title="从当前目录第一条音轨的开头播放"
                 onClick={() => void handlePlayWork(true)}><RotateCcw size={16} /><span>从头播放</span></button>}
 
@@ -872,6 +872,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
               <X size={16} aria-hidden="true" />
             </button>
           </div>
+<div className="dialog-body">
           <div className="override-grid">
             <WorkRatingSelect key={detail.id} detail={detail} onSaved={setDetail} onError={onError} />
             <div className="override-row">
@@ -884,7 +885,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
               />
               <button
                 type="button"
-                className="btn btn-primary btn-sm"
+                className="btn btn-secondary btn-sm"
                 onClick={() => void handleSaveOverrideField("title", "set", ovTitle)}
               >
                 保存
@@ -909,7 +910,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
               />
               <button
                 type="button"
-                className="btn btn-primary btn-sm"
+                className="btn btn-secondary btn-sm"
                 onClick={() =>
                   void handleSaveOverrideField("circle_name", "set", ovCircle)
                 }
@@ -944,7 +945,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
               />
               <button
                 type="button"
-                className="btn btn-primary btn-sm"
+                className="btn btn-secondary btn-sm"
                 onClick={() =>
                   void handleSaveOverrideField("description", "set", ovDesc)
                 }
@@ -979,7 +980,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
               />
               <button
                 type="button"
-                className="btn btn-primary btn-sm"
+                className="btn btn-secondary btn-sm"
                 onClick={() => {
                   const arr = ovVas
                     .split(",")
@@ -1014,7 +1015,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
               />
               <button
                 type="button"
-                className="btn btn-primary btn-sm"
+                className="btn btn-secondary btn-sm"
                 onClick={() => {
                   const arr = ovTags
                     .split(",")
@@ -1039,7 +1040,8 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
               </button>
             </div>
           </div>
-        </ContentDialog>
+        </div>
+</ContentDialog>
       )}
 
       {showAssocPanel && (
@@ -1056,6 +1058,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
               <X size={16} aria-hidden="true" />
             </button>
           </div>
+<div className="dialog-body">
 
           <div className="override-grid">
             <div className="override-row">
@@ -1127,7 +1130,8 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
               </ul>
             </div>
           )}
-        </ContentDialog>
+        </div>
+</ContentDialog>
       )}
 
       {dlPreview && (

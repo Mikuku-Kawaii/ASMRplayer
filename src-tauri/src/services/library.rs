@@ -123,6 +123,7 @@ pub fn normalize_rel_path(base: &Path, full: &Path) -> String {
 
 #[derive(Clone)]
 pub struct LibraryService {
+    task: Arc<Mutex<serde_json::Value>>,
     db: Database,
     cancel_flag: Arc<AtomicBool>,
     active_scan_lock: Arc<Mutex<bool>>,
@@ -131,12 +132,24 @@ pub struct LibraryService {
 impl LibraryService {
     pub fn new(db: Database) -> Self {
         Self {
+            task: Arc::new(Mutex::new(serde_json::json!({"state":"idle"}))),
             db,
             cancel_flag: Arc::new(AtomicBool::new(false)),
             active_scan_lock: Arc::new(Mutex::new(false)),
         }
     }
 
+    pub fn task_snapshot(&self) -> serde_json::Value { self.task.lock().clone() }
+    fn begin_task(&self,path:&str) {
+        *self.task.lock()=serde_json::json!({"state":"running","title":Path::new(path).file_name().unwrap_or_default().to_string_lossy(),"phase":"正在扫描与整理音频库"});
+    }
+    fn end_task(&self,result:&AppResult<ScanReportDto>) {
+        let mut task=self.task.lock();
+        match result {
+            Ok(report)=> {task["state"]=serde_json::json!(if report.canceled {"cancelled"} else {"completed"});task["phase"]=serde_json::json!(format!("新增 {} 部作品 · 更新 {} 部 · 新增 {} 条音轨",report.works_added,report.works_updated,report.tracks_added));},
+            Err(error)=> {task["state"]=serde_json::json!("failed");task["phase"]=serde_json::json!("扫描未完成");task["error"]=serde_json::json!(error.message);}
+        }
+    }
     pub fn cancel_scan(&self) {
         self.cancel_flag.store(true, Ordering::SeqCst);
     }
@@ -539,7 +552,9 @@ impl LibraryService {
             *active = true;
         }
         self.cancel_flag.store(false, Ordering::SeqCst);
+        self.begin_task(raw_root_path);
         let res = self.scan_and_import_inner(raw_root_path, root_mode, selected_candidates);
+        self.end_task(&res);
         *self.active_scan_lock.lock() = false;
         res
     }
@@ -1543,7 +1558,9 @@ impl LibraryService {
             *active = true;
         }
         self.cancel_flag.store(false, Ordering::SeqCst);
+        self.begin_task(&root.absolute_path);
         let result = self.scan_and_import_inner(&root.absolute_path, &root.root_mode, None);
+        self.end_task(&result);
         if result.as_ref().is_ok_and(|report| !report.canceled) {
             let _ = self.db.set_setting(&format!("watch_fp_{}", root.id), fingerprint);
         }

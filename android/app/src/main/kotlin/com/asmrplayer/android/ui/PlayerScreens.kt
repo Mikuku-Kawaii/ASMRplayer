@@ -3,6 +3,7 @@ package com.asmrplayer.android.ui
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -10,6 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.animation.core.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -19,14 +21,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToLong
 import androidx.media3.common.util.UnstableApi
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.asmrplayer.android.PlayerScreenState
@@ -90,47 +96,82 @@ private val miniBarInset = 8.dp
 private val miniCoverSize = 44.dp
 private val miniTitleGap = 10.dp
 
-@Composable
-internal fun DockWithCat(
-    state: PlayerScreenState,
-    modifier: Modifier = Modifier,
-    toggle: () -> Unit,
-    content: @Composable () -> Unit
-) {
-    val size = 56.dp
-    // Anchor to the title column even when the content filter replaces the track name.
-    val titleStart = miniBarInset + miniCoverSize + miniTitleGap
-    val titleInset = with(androidx.compose.ui.platform.LocalDensity.current) {
-        MaterialTheme.typography.titleSmall.fontSize.toDp() * 2
-    }
-    val start = if (state.queue.isEmpty()) 12.dp else titleStart + titleInset - size / 2
-    Box(modifier) {
-        // The tilted cube drops below its side corners. Seat those corners on the bar edge.
-        Box(Modifier.fillMaxWidth().padding(top = size - 12.dp)) { content() }
-        Box(Modifier.padding(start = start)) {
-            NsfwDockButton(state.lowEffects, state.showNsfw, size, toggle)
-        }
-    }
-}
-
 @UnstableApi
 @Composable
-internal fun MiniPlayer(source:GlassBackdrop,state:PlayerScreenState,model:PlayerViewModel,open:()->Unit,modifier:Modifier=Modifier) {
+internal fun MiniPlayer(source: GlassBackdrop, state: PlayerScreenState, model: PlayerViewModel,
+    open: () -> Unit, modifier: Modifier = Modifier) {
     val position by model.positionMs.collectAsStateWithLifecycle()
-    val openInteraction=remember { MutableInteractionSource() }
-    GlassSurface(source,state.lowEffects,modifier.fillMaxWidth(),baseTint=MaterialTheme.colorScheme.surfaceContainerHigh) {
-        Row(Modifier.align(Alignment.Center).fillMaxWidth().heightIn(min=64.dp).padding(horizontal=miniBarInset,vertical=6.dp),verticalAlignment=Alignment.CenterVertically) {
-            Row(Modifier.weight(1f).clip(RoundedCornerShape(24.dp)).clickable(interactionSource=openInteraction,indication=null,onClick=open)
-                .dockPress(openInteraction,state.lowEffects).heightIn(min=48.dp).padding(end=6.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(miniTitleGap)) {
-                AudioArtwork(Modifier.size(miniCoverSize),currentCover(state),workId=state.currentWork?.takeIf { visibleRating(it.rating,state) }?.id)
-                Column(Modifier.weight(1f)) {
-                    Text(displayTitle(state),maxLines=1,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.titleSmall)
-                    Text("${playbackLabel(state)} · ${time(position)}",maxLines=1,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+    MiniPlayerDock(source, state, position, open, model::togglePlayback, model::next, model::seek, modifier)
+}
+
+@Composable
+internal fun MiniPlayerDock(source: GlassBackdrop, state: PlayerScreenState, position: Long,
+    open: () -> Unit, playPause: () -> Unit, next: () -> Unit, seek: (Long) -> Unit,
+    modifier: Modifier = Modifier) {
+    val duration = state.duration
+    val target = if (duration > 0) (position.toDouble() / duration).coerceIn(0.0, 1.0).toFloat() else 0f
+    val canSeek = state.connected && duration > 0 && (state.seekable || state.canPrepareSeek)
+    val motion = dockMotionEnabled(state.lowEffects)
+    key(state.queue.getOrNull(state.index)?.id) {
+        val progress = animateFloatAsState(target,
+            if (motion && state.playing && !state.buffering) tween(500, easing = LinearEasing) else snap(), label = "mini player progress")
+        var preview by remember(duration, canSeek) { mutableStateOf<Float?>(null) }
+        val commit by rememberUpdatedState(seek)
+        fun positionAt(fraction: Float) = (fraction.coerceIn(0f, 1f).toDouble() * duration).roundToLong()
+
+        val openInteraction = remember { MutableInteractionSource() }
+        val colors = MaterialTheme.colorScheme
+        val fill = colors.primary.copy(alpha = if (colors.background.luminance() < .5f) .14f else .10f)
+        GlassSurface(source, state.lowEffects, modifier.fillMaxWidth().testTag("mini-player")
+            .pointerInput(duration, canSeek) {
+                if (!canSeek) return@pointerInput
+                fun fractionAt(x: Float) = (x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
+                detectHorizontalDragGestures(
+                    onDragStart = { preview = fractionAt(it.x) },
+                    onDragCancel = { preview = null },
+                    onDragEnd = {
+                        val fraction = preview
+                        preview = null
+                        fraction?.let { commit(positionAt(it)) }
+                    },
+                    onHorizontalDrag = { change, _ -> preview = fractionAt(change.position.x) },
+                )
             }
-            DockButton(if(state.playRequested)Glyph.Pause else Glyph.Play,if(state.playRequested)"暂停" else "播放",state.lowEffects,state.connected,model::togglePlayback)
-            DockButton(Glyph.Next,"下一轨",state.lowEffects,state.canNext,model::next)
+            .semantics {
+                if (duration > 0) progressBarRangeInfo = ProgressBarRangeInfo(preview ?: target, 0f..1f)
+                if (canSeek) setProgress { fraction ->
+                    if (!fraction.isFinite()) false
+                    else { commit(positionAt(fraction)); true }
+                }
+            }, baseTint = colors.surfaceContainerHigh) {
+            Canvas(Modifier.matchParentSize()) {
+                drawRect(fill, size = Size(size.width * (preview ?: progress.value), size.height))
+            }
+            Row(
+                Modifier.align(Alignment.Center).fillMaxWidth().heightIn(min = 64.dp)
+                    .padding(horizontal = miniBarInset, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    Modifier.weight(1f).clip(RoundedCornerShape(24.dp))
+                        .clickable(interactionSource = openInteraction, indication = null, onClick = open)
+                        .dockPress(openInteraction, state.lowEffects).heightIn(min = 48.dp).padding(end = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(miniTitleGap)
+                ) {
+                    AudioArtwork(Modifier.size(miniCoverSize), currentCover(state),
+                        workId = state.currentWork?.takeIf { visibleRating(it.rating, state) }?.id)
+                    Column(Modifier.weight(1f)) {
+                        Text(displayTitle(state), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
+                        Text("${playbackLabel(state)} · ${time(preview?.let(::positionAt) ?: position)}",
+                            maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall,
+                            color = colors.onSurfaceVariant)
+                    }
+                }
+                DockButton(if (state.playRequested) Glyph.Pause else Glyph.Play, if (state.playRequested) "暂停" else "播放",
+                    state.lowEffects, state.connected, playPause)
+                DockButton(Glyph.Next, "下一轨", state.lowEffects, state.canNext, next)
+            }
         }
     }
 }
-

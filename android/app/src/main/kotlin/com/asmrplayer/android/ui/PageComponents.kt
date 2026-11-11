@@ -12,6 +12,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -33,7 +34,7 @@ internal fun PageSearch(value: String, change: (String) -> Unit, placeholder: St
         placeholder = { Text(placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis,style=MaterialTheme.typography.bodyMedium) },
         leadingIcon = { if (search == null) AppGlyph(Glyph.Search) else GlyphButton(Glyph.Search, "提交搜索", search) },
         trailingIcon = if (value.isNotEmpty()) ({ GlyphButton(Glyph.Close, "清空搜索", { change("") }) }) else null,
-        shape = RoundedCornerShape(28.dp),
+        shape = RoundedCornerShape(14.dp),
         colors = TextFieldDefaults.colors(focusedContainerColor = colors.surfaceContainerLow,
             unfocusedContainerColor = colors.surfaceContainerLow,
             focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
@@ -50,7 +51,7 @@ internal fun HomeSearch(value: String, change: (String) -> Unit, hint: String, m
     val keyboard = LocalSoftwareKeyboardController.current
     val style = MaterialTheme.typography.bodyMedium
     BasicTextField(value, change, modifier.fillMaxWidth().heightIn(min = 48.dp)
-        .background(colors.surfaceContainerLow, RoundedCornerShape(24.dp)).semantics { contentDescription = hint },
+        .background(colors.surfaceContainerLow, RoundedCornerShape(14.dp)).semantics { contentDescription = hint },
         singleLine = true, textStyle = style.copy(color = colors.onSurface), cursorBrush = SolidColor(colors.primary),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
         keyboardActions = KeyboardActions(onSearch = { submit?.invoke(); keyboard?.hide() }),
@@ -80,4 +81,12 @@ internal fun PageIntro(title: String, description: String? = null, glyph: Glyph?
             description?.let { Text(it, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
     }
+}
+
+
+/** All home pages share title baseline, edge spacing and action height. */
+@Composable
+internal fun HomeHeader(content: @Composable RowScope.() -> Unit) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("home-header").padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically, content = content)
 }

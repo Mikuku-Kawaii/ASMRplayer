@@ -1,11 +1,19 @@
 package com.asmrplayer.android.ui
 
+import android.os.Build
 import androidx.compose.material3.*
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.ExperimentalTextApi
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.sp
+import com.asmrplayer.android.R
 
 /** Surface colors are authored for each mode so large areas stay softly tinted. */
 internal enum class ColorPreset(
@@ -94,13 +102,24 @@ private fun wisteriaColors(dark: Boolean): ColorScheme = if (dark) darkColorSche
     errorContainer = Color(0xFFFFDAD6), onErrorContainer = Color(0xFF7D2929), scrim = Color.Black,
 )
 
-private fun type(size: Int, height: Int, weight: FontWeight = FontWeight.Normal) =
-    TextStyle(fontSize = size.sp, lineHeight = height.sp, fontWeight = weight)
+@OptIn(ExperimentalTextApi::class)
+internal val PlayerFontFamily = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) FontFamily(
+    listOf(400, 500, 600, 700).map { weight -> Font(R.font.noto_sans_sc,
+        weight = FontWeight(weight), variationSettings = FontVariation.Settings(FontVariation.weight(weight))) }
+) else FontFamily.SansSerif
+
+private fun type(size: Int, height: Int, weight: FontWeight = FontWeight.Medium) =
+    TextStyle(fontFamily = PlayerFontFamily, fontSize = size.sp, lineHeight = height.sp, fontWeight = weight,
+        letterSpacing = 0.sp, fontFeatureSettings = "tnum",
+        platformStyle = PlatformTextStyle(includeFontPadding = false),
+        lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None))
 
 internal val PlayerTypography = Typography(
-    headlineMedium = type(26, 34, FontWeight.SemiBold), headlineSmall = type(22, 30, FontWeight.SemiBold),
-    titleLarge = type(20, 28, FontWeight.SemiBold), titleMedium = type(16, 24, FontWeight.Medium),
-    titleSmall = type(14, 21, FontWeight.Medium), bodyLarge = type(16, 24), bodyMedium = type(14, 21),
-    bodySmall = type(12, 18), labelLarge = type(14, 20, FontWeight.Medium),
-    labelMedium = type(12, 18, FontWeight.Medium), labelSmall = type(11, 16, FontWeight.Medium),
+    displayLarge = type(36, 44, FontWeight.SemiBold), displayMedium = type(30, 38, FontWeight.SemiBold),
+    displaySmall = type(26, 34, FontWeight.SemiBold), headlineLarge = type(24, 32, FontWeight.SemiBold),
+    headlineMedium = type(22, 30, FontWeight.SemiBold), headlineSmall = type(20, 28, FontWeight.SemiBold),
+    titleLarge = type(18, 26, FontWeight.SemiBold), titleMedium = type(15, 22, FontWeight.SemiBold),
+    titleSmall = type(14, 20, FontWeight.SemiBold), bodyLarge = type(15, 23), bodyMedium = type(13, 20),
+    bodySmall = type(12, 18), labelLarge = type(13, 18),
+    labelMedium = type(12, 16), labelSmall = type(11, 15),
 )

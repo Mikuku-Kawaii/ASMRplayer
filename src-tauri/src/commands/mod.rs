@@ -276,6 +276,9 @@ pub async fn scan_and_import(
 }
 
 #[tauri::command]
+pub fn get_scan_task(state: State<'_, AppState>) -> serde_json::Value { state.library.task_snapshot() }
+
+#[tauri::command]
 pub fn cancel_scan(state: State<'_, AppState>) -> AppResult<()> {
     state.library.cancel_scan();
     Ok(())

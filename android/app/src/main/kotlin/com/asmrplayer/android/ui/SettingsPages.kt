@@ -24,7 +24,7 @@ private val settingsEntries=listOf(
     SettingEntry("资料库与同步","在线来源","来源地址与访问凭据","online-source"),
     SettingEntry("资料库与同步","跨设备同步","GitHub Gist、OneDrive、WebDAV 和 Supabase","sync"),
     SettingEntry("资料库与同步","资料备份与恢复","作品、喜欢、进度、标记与媒体授权","backup"),
-    SettingEntry("下载与存储","下载队列","下载进度、离线文件与附件","downloads"),
+    SettingEntry("下载与存储","任务中心","离线下载、扫描、同步与双端继续收听","tasks"),
     SettingEntry("下载与存储","下载存储与缓存","占用统计与封面缓存","storage"),
     SettingEntry("播放与字幕","音效与均衡器","预设、PEQ、AutoEQ、声道与响度","effects"),
     SettingEntry("播放与字幕","耳机音效偏好","保存方案、输出设备与自动切换","headphones"),
@@ -38,7 +38,7 @@ private val settingsEntries=listOf(
 internal fun SettingsPage(state:PlayerScreenState,open:(String)->Unit) {
     var query by rememberSaveable{mutableStateOf("")}
     val entries=remember(query){settingsEntries.filter{query.isBlank()||"${it.title} ${it.summary} ${it.group}".contains(query.trim(),true)}}
-    LazyColumn(Modifier.navigationBarsPadding(),contentPadding=PageSpace.padding,verticalArrangement=Arrangement.spacedBy(18.dp)) {
+    LazyColumn(Modifier.navigationBarsPadding(),contentPadding=PageSpace.padding,verticalArrangement=Arrangement.spacedBy(12.dp)) {
         item{PageSearch(query,{query=it},"搜索设置")}
         entries.groupBy{it.group}.forEach{(group,rows)->item(key=group){SettingsGroup(group){rows.forEachIndexed{index,entry->
             SettingsLink(entry.title,when(entry.route){

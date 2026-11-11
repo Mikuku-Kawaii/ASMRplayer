@@ -7,6 +7,7 @@ import { useSubtitleDocumentEditor } from "./useSubtitleDocumentEditor";
 import { AudioOutputPanel } from "./AudioOutputPanel";
 import { BookmarkNotes } from "./BookmarkNotes";
 import { ImmersionPanel } from "./ImmersionPanel";
+import { useImmersionDrawerMotion } from "./useImmersionDrawerMotion";
 import { Playlists } from "./PlaylistDrawer";
 import { PlaylistMenuItem } from "./PlaylistPicker";
 import { subtitleWindows } from "../../lib/subtitleWindow";
@@ -44,6 +45,7 @@ import {
 
 interface RightDrawerProps {
   activeTab: "none" | "queue" | "playlists" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio";
+  playerToolsTrigger?: React.RefObject<HTMLButtonElement>;
   onClose: () => void;
   snapshot: PlaybackSnapshot;
   onSnapshotChange: (snap: PlaybackSnapshot) => void;
@@ -60,6 +62,7 @@ const LOG_FREQS_HZ: number[] = Array.from({ length: 48 }, (_, i) => {
 
 export const RightDrawer: React.FC<RightDrawerProps> = ({
   activeTab,
+  playerToolsTrigger,
   onClose,
   snapshot,
   onSnapshotChange,
@@ -68,6 +71,14 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
   onOpenWorkDetail,
   onError,
 }) => {
+  const immersionOpen = activeTab === "immersion";
+  const { retain, panelRef, closeRef } = useImmersionDrawerMotion(immersionOpen, activeTab === "none");
+  const immersionClosing = activeTab === "none" && retain;
+  const showImmersion = immersionOpen || immersionClosing;
+  const closeFromDrawer = () => {
+    if (immersionOpen) playerToolsTrigger?.current?.focus({ preventScroll: true });
+    onClose();
+  };
   // React capture also includes menus/dialogs rendered through this drawer's portals.
   const insidePointerEvents = useRef(new WeakSet<Event>());
   useEffect(() => {
@@ -170,7 +181,7 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
     [dspConfig]
   );
 
-  if (activeTab === "none") return null;
+  if (activeTab === "none" && !immersionClosing) return null;
 
   const handlePlayQueueItem = async (versionId: string, preferredSourceId?: string | null) => {
     try {
@@ -564,13 +575,21 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
   };
 
   return (
-    <aside className="right-drawer player-glass-panel" aria-label="右侧辅助抽屉"
+    <aside ref={panelRef}
+      className={`right-drawer player-glass-panel${showImmersion ? " immersion-drawer" : ""}`}
+      aria-label="右侧辅助抽屉" aria-hidden={immersionClosing}
+      onKeyDown={event => {
+        if (!immersionOpen || event.key !== "Escape" || event.defaultPrevented) return;
+        event.preventDefault();
+        event.stopPropagation();
+        closeFromDrawer();
+      }}
       onPointerDownCapture={event => insidePointerEvents.current.add(event.nativeEvent)}>
       <div className="drawer-header">
         <h3 className="drawer-header-title">
           {activeTab === "queue"
             ? `播放队列 (${snapshot.queue.length})`
-            : activeTab === "immersion" ? "沉浸设置"
+            : showImmersion ? <><Sparkles size={14} aria-hidden="true" /><span>沉浸设置</span></>
             : activeTab === "playlists" ? "歌单"
             : activeTab === "bookmarks"
             ? "标记 · 循环 · 睡眠定时"
@@ -609,7 +628,8 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
           <button
             type="button"
             className="btn-icon drawer-close-btn"
-            onClick={onClose}
+            ref={showImmersion ? closeRef : undefined}
+            onClick={closeFromDrawer}
             aria-label="关闭抽屉"
             title="关闭抽屉"
           >
@@ -618,7 +638,7 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
         </div>
       </div>
 
-      {activeTab === "immersion" && <ImmersionPanel />}
+      {showImmersion && <ImmersionPanel />}
       {activeTab === "playlists" && <Playlists onSnapshotChange={onSnapshotChange} />}
       {queueMenu && <ContextMenu x={queueMenu.x} y={queueMenu.y} label="队列音轨操作" onClose={() => setQueueMenu(null)}><PlaylistMenuItem target={{ versionIds: [queueMenu.version] }} onClose={() => setQueueMenu(null)} /></ContextMenu>}
 

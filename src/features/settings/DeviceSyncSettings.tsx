@@ -1,3 +1,4 @@
+import { SyncResultDetails } from "./SyncResultDetails";
 import { useEffect, useState } from "react";
 import { Cloud } from "lucide-react";
 import { callCommand, normalizeAppError } from "../../lib/api";
@@ -7,9 +8,7 @@ import { SettingsDisclosure } from "./SettingsDisclosure";
 
 const stores = { github: "GitHub Gist", onedrive: "OneDrive", webdav: "WebDAV", supabase: "Supabase" } as const;
 type Provider = keyof typeof stores;
-type Policy = { foreground: boolean; periodic: boolean; intervalMinutes: number };
-type Choice = { device: string; seq: number; value: unknown };
-type Status = { provider: Provider; configured: boolean; connected: boolean; records: number; pending: number; lastSync: string | null; conflicts: {key: string; label: string; choices: Choice[]}[]; autoPolicy: Policy; autoError?: string; metadataPending?: number; metadataError?: string };
+type Status = import("../../lib/deviceSync").DeviceSyncStatus;
 const request = (action: string, input: unknown = null, provider?: Provider) => callCommand<Status>("device_sync_command", {action, input, provider});
 function choiceText(value: unknown) {
   if (value === null) return "已删除";
@@ -49,7 +48,7 @@ export function DeviceSyncSettings({active, onSynced}: {active: boolean; onSynce
     return () => {live = false; clearInterval(timer);};
   }, [active,busy]);
   async function run(action: string, input?: unknown) {
-    if (busy) return;
+    if (busy || status?.phase) return;
     setBusy(action); setError(""); setMessage("");
     try {
       const s = await request(action,input,status?.provider);
@@ -83,21 +82,21 @@ export function DeviceSyncSettings({active, onSynced}: {active: boolean; onSynce
     <div className="settings-group-body">
       <div className="settings-row">
         <label htmlFor="sync-store">存储方式</label>
-        <Select id="sync-store" value={selected} disabled={!!busy || !status}
+        <Select id="sync-store" value={selected} disabled={!!busy || !!status?.phase || !status}
           options={Object.entries(stores).map(([value,label]) => ({value,label}))}
           onValueChange={value => void run("select", value)}/>
       </div>
       {selected === "supabase" && !status?.connected && <>
         <div className="settings-row"><label htmlFor="sync-mail">邮箱</label>
-          <input className="input-text" id="sync-mail" type="email" autoComplete="username" disabled={!!busy} value={email} onChange={e=>setEmail(e.target.value)}/></div>
+          <input className="input-text" id="sync-mail" type="email" autoComplete="username" disabled={!!busy || !!status?.phase} value={email} onChange={e=>setEmail(e.target.value)}/></div>
         <div className="settings-row"><label htmlFor="sync-password">密码</label>
-          <input className="input-text" id="sync-password" type="password" autoComplete="current-password" disabled={!!busy} value={password} onChange={e=>setPassword(e.target.value)}/></div>
+          <input className="input-text" id="sync-password" type="password" autoComplete="current-password" disabled={!!busy || !!status?.phase} value={password} onChange={e=>setPassword(e.target.value)}/></div>
       </>}
       {selected === "webdav" && !status?.connected && (["url","username","password"] as const).map(field =>
         <div className="settings-row" key={field}>
           <label htmlFor={`dav-${field}`}>{{url:"HTTPS 文件夹地址",username:"用户名",password:"密码或应用密码"}[field]}</label>
           <input id={`dav-${field}`} className="input-text" type={field==="password"?"password":field==="url"?"url":"text"} autoComplete="off"
-            disabled={!!busy} value={dav[field]} onChange={e=>setDav({...dav,[field]:e.target.value})}/>
+            disabled={!!busy || !!status?.phase} value={dav[field]} onChange={e=>setDav({...dav,[field]:e.target.value})}/>
         </div>)}
       {selected === "github" && useToken && !status?.connected && <div className="settings-row">
         <div className="settings-label-block">
@@ -105,7 +104,7 @@ export function DeviceSyncSettings({active, onSynced}: {active: boolean; onSynce
           <span className="settings-field-hint" id="gist-token-hint">使用有 Gist 读写权限的令牌。</span>
         </div>
         <input id="gist-token" type="password" autoComplete="off" className="input-text"
-          aria-describedby="gist-token-hint" disabled={!!busy} value={token} onChange={e => setToken(e.target.value)}/>
+          aria-describedby="gist-token-hint" disabled={!!busy || !!status?.phase} value={token} onChange={e => setToken(e.target.value)}/>
       </div>}
       {needsConfig && !status.connected && <div className="settings-row">
         <span>{store} 账号</span>
@@ -118,36 +117,38 @@ export function DeviceSyncSettings({active, onSynced}: {active: boolean; onSynce
         </div>
         {status && <div className="track-actions">
           {status.connected ? <>
-            <button type="button" className="btn btn-primary btn-sm" disabled={!!busy || needsConfig} onClick={() => void run("sync")}>
+            <button type="button" className="btn btn-primary btn-sm" disabled={!!busy || !!status?.phase || needsConfig} onClick={() => void run("sync")}>
               {busy === "sync" ? "正在同步…" : "立即同步"}
             </button>
-            <button type="button" className="btn btn-ghost btn-sm" disabled={!!busy} onClick={() => void run("logout")}>退出此设备</button>
+            <button type="button" className="btn btn-ghost btn-sm" disabled={!!busy || !!status?.phase} onClick={() => void run("logout")}>退出此设备</button>
           </> : selected==="supabase" ? <>
-            <button type="button" className="btn btn-primary btn-sm" disabled={!!busy || !email.trim() || !password} onClick={()=>void run("login",{email,password})}>{busy==="login" ? "正在连接…" : "登录并同步"}</button>
-            <button type="button" className="btn btn-ghost btn-sm" disabled={!!busy || !email.trim() || !password} onClick={()=>void run("login",{email,password,signup:true})}>注册账号</button>
+            <button type="button" className="btn btn-primary btn-sm" disabled={!!busy || !!status?.phase || !email.trim() || !password} onClick={()=>void run("login",{email,password})}>{busy==="login" ? "正在连接…" : "登录并同步"}</button>
+            <button type="button" className="btn btn-ghost btn-sm" disabled={!!busy || !!status?.phase || !email.trim() || !password} onClick={()=>void run("login",{email,password,signup:true})}>注册账号</button>
           </> : selected==="github" && !useToken ? <>
             {githubCode ? <>
               <span>GitHub 授权码 <strong>{githubCode}</strong></span>
-              <button type="button" className="btn btn-primary btn-sm" disabled={!!busy} onClick={()=>{
+              <button type="button" className="btn btn-primary btn-sm" disabled={!!busy || !!status?.phase} onClick={()=>{
                 void navigator.clipboard?.writeText(githubCode).catch(()=>{});
                 void run("login",{device:true});
               }}>{busy==="login" ? "等待 GitHub 授权…" : "打开 GitHub 完成授权"}</button>
               <button type="button" className="btn btn-ghost btn-sm" onClick={()=>void cancelGithub()}>取消登录</button>
-            </> : <button type="button" className="btn btn-primary btn-sm" disabled={!!busy} onClick={()=>void startGithub()}>登录 GitHub 并同步</button>}
-          </> : <button type="button" className="btn btn-primary btn-sm" disabled={!!busy || (selected === "github" && !token.trim()) || (selected === "webdav" && !(dav.url.trim() && dav.username.trim() && dav.password))} onClick={() => void run("login", selected === "github" ? {token} : selected==="webdav" ? dav : null)}>
+            </> : <button type="button" className="btn btn-primary btn-sm" disabled={!!busy || !!status?.phase} onClick={()=>void startGithub()}>登录 GitHub 并同步</button>}
+          </> : <button type="button" className="btn btn-primary btn-sm" disabled={!!busy || !!status?.phase || (selected === "github" && !token.trim()) || (selected === "webdav" && !(dav.url.trim() && dav.username.trim() && dav.password))} onClick={() => void run("login", selected === "github" ? {token} : selected==="webdav" ? dav : null)}>
             {busy === "login" ? (selected === "github" || selected === "webdav" ? "正在连接…" : "等待浏览器授权…") : selected === "github" ? "绑定 GitHub 并同步" : selected==="webdav" ? "连接 WebDAV 并同步" : `登录 ${store} 并同步`}
           </button>}
         </div>}
       </div>}
       {selected==="github" && !status?.connected && !githubCode && <div className="settings-row">
         <span className="settings-field-hint">知道秘密 Gist 链接的人可以读取同步内容。</span>
-        <button type="button" className="btn btn-ghost btn-sm" disabled={!!busy} onClick={()=>{setUseToken(!useToken);setToken("");}}>
+        <button type="button" className="btn btn-ghost btn-sm" disabled={!!busy || !!status?.phase} onClick={()=>{setUseToken(!useToken);setToken("");}}>
           {useToken ? "使用浏览器登录" : "使用访问令牌"}</button>
       </div>}
       {status?.lastSync && <div className="settings-row">
         <span>上次同步</span>
         <span className="settings-field-hint tabular-nums">{new Date(status.lastSync).toLocaleString()} · {status.pending} 条待匹配</span>
       </div>}
+      {status?.phase && <p role="status" className="settings-save-note">{status.phase}</p>}
+      {status && <SyncResultDetails status={status} />}
       {message && <p className="settings-save-note" role="status">{message}</p>}
       {!!status?.metadataPending && <p className="settings-save-note" role="status">
         {status.metadataPending} 部作品的来源信息待补全。{status.metadataError} 下次同步时将重试。
@@ -156,12 +157,12 @@ export function DeviceSyncSettings({active, onSynced}: {active: boolean; onSynce
       {status?.connected && <SettingsDisclosure title="自动同步">
         {(["foreground", "periodic"] as const).map(key => <label className="settings-row" key={key}>
           <span>{key === "foreground" ? "回到应用时同步" : "后台定期同步"}</span>
-          <input type="checkbox" className="toggle-switch" checked={status.autoPolicy[key]} disabled={!!busy}
+          <input type="checkbox" className="toggle-switch" checked={status.autoPolicy[key]} disabled={!!busy || !!status?.phase}
             onChange={e => void run("autoPolicy", {...status.autoPolicy, [key]: e.target.checked})}/>
         </label>)}
         {status.autoPolicy.periodic && <div className="settings-row">
           <label htmlFor="drive-sync-interval">同步间隔</label>
-          <Select id="drive-sync-interval" value={String(status.autoPolicy.intervalMinutes)} disabled={!!busy}
+          <Select id="drive-sync-interval" value={String(status.autoPolicy.intervalMinutes)} disabled={!!busy || !!status?.phase}
             options={[15, 30, 60, 180, 360].map(n => ({value: String(n), label: `${n} 分钟`}))}
             onValueChange={v => void run("autoPolicy", {...status.autoPolicy, intervalMinutes: Number(v)})}/>
         </div>}
@@ -170,9 +171,9 @@ export function DeviceSyncSettings({active, onSynced}: {active: boolean; onSynce
         {status.conflicts.map(c => <div className="settings-row" key={c.key}>
           <span>{c.label}</span>
           <div className="track-actions drive-sync-choices">{c.choices.map(v =>
-            <button type="button" key={v.device + v.seq} className="btn btn-secondary btn-sm" disabled={!!busy}
+            <button type="button" key={v.device + v.seq} className="btn btn-secondary btn-sm" disabled={!!busy || !!status?.phase}
               onClick={() => void run("resolve", {key: c.key, device: v.device, seq: v.seq})}>
-              {v.device.slice(0, 8)} · 采用 {choiceText(v.value)}
+              {typeof v.value === "object" && v.value && "deviceName" in v.value ? String(v.value.deviceName) : `设备 ${v.device.slice(0, 8)}`} · 采用 {choiceText(v.value)}
             </button>
           )}</div>
         </div>)}

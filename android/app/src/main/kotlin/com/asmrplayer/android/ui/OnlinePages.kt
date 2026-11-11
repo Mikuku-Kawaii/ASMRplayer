@@ -32,7 +32,8 @@ import java.util.Locale
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun DiscoverPage(data: OnlineScreenState, tools: OnlineTools, bottom: Dp, state:PlayerScreenState,
-    open: (String, String) -> Unit) {
+    active: Boolean = true,
+    download: (String, String) -> Unit, open: (String, String) -> Unit) {
     var query by rememberSaveable { mutableStateOf(data.query) }
     LaunchedEffect(data.query) { query=data.query }
     val grid = rememberLazyGridState()
@@ -68,7 +69,7 @@ internal fun DiscoverPage(data: OnlineScreenState, tools: OnlineTools, bottom: D
     }
     fun voice(value:String) { filter(data.filters.copy(voices=(data.filters.voices+value).distinct().take(5))) }
     var shownPage by rememberSaveable { mutableStateOf("") }
-    val pageKey = "${data.account.apiBase}|${data.order}|${data.page?.page}"
+    val pageKey = "${data.account.apiBase}|${data.feedRevision}"
     LaunchedEffect(data.page, data.loading, data.error, pageKey) {
         if (data.loading || data.page == null) return@LaunchedEffect
         val saved = anchor
@@ -77,16 +78,23 @@ internal fun DiscoverPage(data: OnlineScreenState, tools: OnlineTools, bottom: D
             data.page.items.distinctBy { it.sourceId }.indexOfFirst { data.account.apiBase + it.sourceId == key }
         } ?: -1
         if (saved != null && row >= 0)
-            grid.scrollToItem(row + 1 + (if (data.actionError != null) 1 else 0) + (if (data.error != null) 1 else 0), saved.second)
+            grid.scrollToItem(row + 1 + (if (data.error != null) 1 else 0), saved.second)
         else if (shownPage != pageKey) grid.scrollToItem(0)
         shownPage = pageKey
     }
+    LaunchedEffect(active, data.feedRevision, data.page?.page, data.loading, data.loadingMore, data.moreError, data.error) {
+        if (!active || data.loading || data.loadingMore || data.moreError != null || data.error != null || !data.hasMore) return@LaunchedEffect
+        snapshotFlow {
+            val layout = grid.layoutInfo
+            layout.totalItemsCount > 0 && (layout.visibleItemsInfo.lastOrNull()?.index ?: -1) >= layout.totalItemsCount - 5
+        }.collect { nearEnd -> if (nearEnd) tools.loadNextPage() }
+    }
     CatalogGrid(grid, bottom) {
-        item(span = { GridItemSpan(maxLineSpan) }) {
+        item(key = "discover-controls", span = { GridItemSpan(maxLineSpan) }) {
             Column {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    HomeSearch(query, { if (it.length <= 200) query = it }, "作品名或 RJ 号",
-                        modifier = Modifier.weight(1f), submit = { anchor = null; tools.search(query) })
+                    HomeSearch(query, { if (it.length <= 200) query = it }, "作品名或 RJ 号", Modifier.weight(1f),
+                        submit = { anchor = null; tools.search(query) })
                     FilterButton("筛选", data.filters.count) { filterOpen = true; tools.loadTags() }
                 }
                 LazyRow(Modifier.fillMaxWidth(), state = categoryScroll, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -114,8 +122,8 @@ internal fun DiscoverPage(data: OnlineScreenState, tools: OnlineTools, bottom: D
         val page = data.page
         if (page != null) {
 
-            if (page.items.isEmpty() && !data.loading) item(span = { GridItemSpan(maxLineSpan) }) {
-                EmptyContent("本页没有可显示的作品", "可调整搜索或内容显示设置；来源分页经过内容筛选后可能为空。", Glyph.Discover)
+            if (page.items.isEmpty() && !data.loading && !data.hasMore) item(span = { GridItemSpan(maxLineSpan) }) {
+                EmptyContent("没有匹配的作品", "可调整搜索或内容显示设置。", Glyph.Discover)
             }
             items(page.items.distinctBy { it.sourceId }, key = { data.account.apiBase + it.sourceId }, contentType = { "work" }) { work ->
                 val workId=com.asmrplayer.android.library.LibraryIndex.id("asmr_one",data.account.apiBase,work.sourceId)
@@ -135,16 +143,25 @@ internal fun DiscoverPage(data: OnlineScreenState, tools: OnlineTools, bottom: D
                     CardAction("下一首播放", close, ready && state.connected) { act(OnlineTools.CardAction.Next) }
                     CardAction("加入播放队列", close, ready && state.connected) { act(OnlineTools.CardAction.Queue) }
                     CardAction("加入歌单", close, ready) { act(OnlineTools.CardAction.Playlist) }
-                    CardAction("下载首组音轨", close, ready) { act(OnlineTools.CardAction.Download) }
+                    CardAction("下载作品", close, ready) { download(data.account.apiBase, work.sourceId) }
                 }) {
-                    WorkCard(work.title,work.coverUrl,work.code,emptyList(),work.circle,work.tags,{open(data.account.apiBase,work.sourceId)},onTag=::tag,nsfw=work.rating=="NSFW",hasSubtitle=work.hasSubtitle,voices=work.voices,onVoice=::voice,workId=workId,discovery=true,score=work.score)
+                    WorkCard(work.title,work.coverUrl,work.code,
+                        if(state.playRequested && state.currentWork?.id == workId) listOf("正在播放") else emptyList(),
+                        work.circle,work.tags,{open(data.account.apiBase,work.sourceId)},onTag=::tag,
+                        nsfw=work.rating=="NSFW",hasSubtitle=work.hasSubtitle,voices=work.voices,onVoice=::voice,
+                        workId=workId,score=work.score)
                 }
             }
-            item(span = { GridItemSpan(maxLineSpan) }) { Text("第 ${page.page} 页 · 本页 ${page.items.size} 部", style = MaterialTheme.typography.bodySmall, color=MaterialTheme.colorScheme.onSurfaceVariant) }
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    MotionOutlinedButton({ anchor=null;tools.search(page = page.page - 1) }, enabled = !data.loading && page.page > 1) { Text("上一页") }
-                    MotionOutlinedButton({ anchor=null;tools.search(page = page.page + 1) }, enabled = !data.loading && page.page < 100_000 && page.page.toLong() * page.pageSize.coerceAtLeast(1) < page.total) { Text("下一页") }
+            item(key = "discover-load-more", span = { GridItemSpan(maxLineSpan) }) {
+                when {
+                    data.loadingMore -> LoadingRing("正在加载更多作品")
+                    data.moreError != null -> Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                        Text(data.moreError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                        MotionTextButton(tools::loadNextPage) { Text("重试加载更多") }
+                    }
+                    !data.hasMore && page.items.isNotEmpty() -> Text("已显示全部 ${page.items.size} 部作品", Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                 }
             }
         }

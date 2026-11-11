@@ -43,8 +43,9 @@ export function SubtitleSyncDialog({ versionIds, onClose }: { versionIds: string
     finally { locked.current = false; setBusy(false); }
   }
   return <ContentDialog size="wide" label="同步识别字幕" busy={busy} onClose={onClose}>
-    <div className="subtitle-document-dialog">
+    <div className="subtitle-document-dialog dialog-form">
       <header className="library-remove-header"><h3>同步识别字幕</h3><button type="button" className="btn-icon" aria-label="关闭字幕同步" title="关闭字幕同步 (Esc)" disabled={busy} onClick={onClose}><X size={18} /></button></header>
+<div className="dialog-body">
       <p>将完整识别的原文、已保存译文和手工修正复制到同一作品的其他音频格式。请确认所选文件内容和时间轴相同。</p>
       <p className="settings-field-hint">按文件名、目录与时长寻找候选，仅忽略 WAV、MP3 等格式目录。已有字幕或识别记录的目标会跳过，播放进度保持独立。</p>
       {loading ? <p role="status">正在匹配音轨…</p> : synced !== null ? <p role="status">已同步到 {synced} 条音轨</p> : candidates.length ? <div className="subtitle-sync-candidates">
@@ -54,9 +55,10 @@ export function SubtitleSyncDialog({ versionIds, onClose }: { versionIds: string
         </label>)}
       </div> : !error && <p role="status">没有可同步的其他格式。请先完成源音轨识别，并导入同名、时长一致且尚无字幕的其他格式文件。</p>}
       {error && <ErrorNotice message={error} />}
-      <div className="dialog-actions">
+      </div>
+<div className="dialog-actions">
         <button type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>{synced !== null ? "关闭" : "取消"}</button>
-        {synced === null && <button type="button" className="btn btn-primary" disabled={loading || busy || selected.length === 0} onClick={() => void sync()}>{busy ? "正在同步…" : `确认同步 (${selected.length})`}</button>}
+        {synced === null && <button type="button" className="btn btn-primary" disabled={loading || busy || selected.length === 0} onClick={() => void sync()}>{busy ? "正在同步…" : `同步字幕 (${selected.length})`}</button>}
       </div>
     </div>
   </ContentDialog>;

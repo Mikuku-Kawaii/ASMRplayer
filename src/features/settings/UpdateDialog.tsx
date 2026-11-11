@@ -1,3 +1,4 @@
+import { useDialogGeometry } from "../../components/useDialogGeometry";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -70,6 +71,7 @@ export function UpdateDialog({ update, run, onClose }: {
   update: UpdateSnapshot; run: (command: string, args?: Record<string, unknown>) => Promise<unknown>; onClose: () => void;
 }) {
   const dialog = useRef<HTMLDivElement>(null);
+  useDialogGeometry(dialog, "standard");
   const [error, setError] = useState<AppError | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const pendingRef = useRef<string | null>(null);
@@ -129,6 +131,12 @@ export function UpdateDialog({ update, run, onClose }: {
         {update.publishedAt && <p className="settings-field-hint">发布日期：{new Date(update.publishedAt).toLocaleDateString()}</p>}</div>
         {!locked && <button className="btn-icon" aria-label="稍后提醒" title="稍后提醒 (Esc)" onClick={close}><X size={18} /></button>}
       </header>
+<div className="dialog-body">
+      <div className="update-extra-actions">
+        <button className="btn btn-neutral btn-sm" disabled={locked} onClick={() => void callCommand("open_release_page").catch(e => setError(normalizeAppError(e)))}>查看发布页</button>
+        {!locked && <button className="btn btn-ghost" disabled={!!pending || ["downloading", "verifying"].includes(update.phase) || update.skippedVersion === update.latestVersion}
+            onClick={() => { if (!pendingRef.current) void run("dismiss_update", { skip: true }).then(onClose).catch(e => setError(normalizeAppError(e))); }}>跳过此版本</button>}
+      </div>
       <div className="update-dialog-body" tabIndex={0} role="region" aria-label="更新内容">
         <ReleaseNotes notes={update.notes} onError={setError} />
       </div>
@@ -141,14 +149,14 @@ export function UpdateDialog({ update, run, onClose }: {
         {actualError && <ErrorNotice message={[actualError.message, actualError.hint].filter(Boolean).join(" ")} />}
         {update.phase === "ready" && <p className="settings-field-hint">安装会暂停播放并重启应用；音频库、收藏、标记和离线文件会保留。</p>}
       </div>
-      <footer className="update-actions dialog-actions">
+      </div>
+<footer className="update-actions dialog-actions">
         {!locked && <>
           <button className="btn btn-ghost" onClick={close}>稍后提醒</button>
-          <button className="btn btn-ghost" disabled={!!pending || ["downloading", "verifying"].includes(update.phase) || update.skippedVersion === update.latestVersion}
-            onClick={() => { if (!pendingRef.current) void run("dismiss_update", { skip: true }).then(onClose).catch(e => setError(normalizeAppError(e))); }}>跳过此版本</button>
+
         </>}
         {update.phase === "downloading" && <button className="btn btn-secondary" onClick={() => void run("cancel_update_download").catch(e => setError(normalizeAppError(e)))}>取消下载</button>}
-        <button className="btn btn-ghost" disabled={locked} onClick={() => void callCommand("open_release_page").catch(e => setError(normalizeAppError(e)))}>查看发布页</button>
+
         {["available", "error"].includes(update.phase) && <button className="btn btn-primary" disabled={!!pending} onClick={() => void perform("download_update")}>{update.phase === "error" ? "重试下载" : "下载更新"}</button>}
         {(update.phase === "ready" || locked) && <button className="btn btn-primary" disabled={!!pending || locked} onClick={() => void perform("install_update")}>{locked ? "正在安装…" : "安装并重启"}</button>}
       </footer>

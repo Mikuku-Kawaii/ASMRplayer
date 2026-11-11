@@ -39,6 +39,7 @@ function PlaylistPicker({ target, onClose }: { target: PlaylistTarget; onClose: 
   }
   return <ContentDialog label="加入歌单" onClose={onClose} busy={busy}>
     <header className="modal-header"><h3>加入歌单</h3><button type="button" className="btn-icon" disabled={busy} onClick={onClose} aria-label="关闭加入歌单" title="关闭"><X size={18} /></button></header>
+<div className="dialog-body">
     <p className="text-muted">{ids === null ? error ? "音轨读取未完成" : "正在读取优先音轨…" : ids.length ? `已选择 ${ids.length} 首音轨` : "没有可加入的音轨，请检查作品来源。"}</p>
     {error && ids === null && <button type="button" className="btn btn-ghost btn-sm" onClick={() => setRetry(value => value + 1)}>重试读取音轨</button>}
     <div className="playlist-picker-groups">{groups.map(group => {
@@ -49,5 +50,6 @@ function PlaylistPicker({ target, onClose }: { target: PlaylistTarget; onClose: 
     })}</div>
     <form className="playlist-name-form" onSubmit={event => { event.preventDefault(); void add(); }}><label htmlFor="playlist-picker-name">新建歌单</label><div className="playlist-inline-form"><input id="playlist-picker-name" className="input-text" maxLength={80} placeholder="歌单名称" value={name} disabled={busy} onChange={event => setName(event.target.value)} /><button className="btn btn-primary btn-sm" disabled={busy || !name.trim() || !ids?.length}><Plus size={15} /><span className="ui-icon-label">新建并加入</span></button></div></form>
     {error && <ErrorNotice message={error} />}{notice && <Toast message={notice} onClose={() => setNotice("")} />}
-  </ContentDialog>;
+  </div>
+</ContentDialog>;
 }

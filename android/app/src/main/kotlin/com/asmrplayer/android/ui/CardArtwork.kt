@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -20,7 +21,6 @@ import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -81,6 +81,7 @@ private fun ContentBadge(adult: Boolean, source: GraphicsLayer?, origin: () -> L
             .then(if (adult) Modifier.border(1.dp, rose.copy(alpha = .38f), shape) else Modifier)
             .padding(horizontal = 7.dp, vertical = 2.dp),
         color = if (adult) Color(0xFFFB7185) else green,
-        style = TextStyle(fontSize = 11.sp, lineHeight = 14.sp, fontWeight = if (adult) FontWeight.Bold else FontWeight.SemiBold),
+        style = MaterialTheme.typography.labelSmall.copy(lineHeight = 14.sp,
+            fontWeight = if (adult) FontWeight.Bold else FontWeight.SemiBold),
         maxLines = 1, softWrap = false)
 }

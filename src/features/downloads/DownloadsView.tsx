@@ -11,6 +11,8 @@ import {
   Settings2,
   FolderOpen,
   MoreHorizontal,
+  CloudDownload,
+  LoaderCircle,
 } from "lucide-react";
 import {
   DownloadTaskDto,
@@ -25,6 +27,7 @@ import { Select } from "../../components/Select";
 import { ContextMenu } from "../../components/ContextMenu";
 
 interface DownloadsViewProps {
+  embedded?: boolean;
   onSelectWork: (workId: string) => void;
   onError: (err: AppError) => void;
   onOpenSettings: () => void;
@@ -36,12 +39,14 @@ const bulkCommands: Record<BulkAction, string> = {
 };
 
 export const DownloadsView: React.FC<DownloadsViewProps> = ({
+  embedded = false,
   onSelectWork,
   onError,
   onOpenSettings,
 }) => {
   const [tasks, setTasks] = useState<DownloadTaskDto[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [openingDirectory, setOpeningDirectory] = useState(false);
   const directoryOpening = useRef(false);
   const [moreMenu, setMoreMenu] = useState<{ x: number; y: number } | null>(null);
@@ -53,6 +58,7 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
   const loadTasks = useCallback(async () => {
     const id = ++request.current;
     setLoading(true);
+    setLoadError("");
     try {
       const list = await callCommand<DownloadTaskDto[]>("list_download_tasks");
       if (!mounted.current || id !== request.current) return;
@@ -67,7 +73,11 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
         });
       }
     } catch (e) {
-      if (mounted.current && id === request.current) onError(normalizeAppError(e));
+      if (mounted.current && id === request.current) {
+        const error = normalizeAppError(e);
+        setLoadError(error.message);
+        onError(error);
+      }
     } finally {
       if (mounted.current && id === request.current) setLoading(false);
     }
@@ -82,6 +92,7 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
       if (disposed) return;
       request.current++;
       setLoading(false);
+      setLoadError("");
       setTasks(updated);
       const failed = updated.find((t) => t.status === "failed" && !t.nextRetryAt && t.errorMessage);
       if (failed && failed.errorMessage) {
@@ -180,10 +191,14 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
   };
 
   return (
-    <div className="page-container downloads-page">
-      <header className="top-app-bar downloads-top-bar" aria-label="下载工具栏">
-          <h2>离线下载</h2>
-          <div className="downloads-toolbar-actions" role="group" aria-label="常用下载操作" aria-busy={bulkPending!==null}>
+    <div className={embedded ? "downloads-page task-downloads" : "page-container downloads-page"}>
+      <div className="download-panel">
+      <header className="downloads-top-bar" aria-label="下载工具栏">
+          <div className="downloads-heading">
+            {embedded ? <h3>下载队列</h3> : <h2>离线下载</h2>}
+            <span className="downloads-count tabular-nums">{tasks.length ? `${tasks.length} 个文件` : loading ? "正在读取" : loadError ? "未读取" : "0 个文件"}</span>
+          </div>
+          {tasks.length > 0 && <div className="downloads-toolbar-actions" role="group" aria-label="常用下载操作" aria-busy={bulkPending!==null}>
             <button type="button" className="btn btn-primary btn-sm" disabled={bulkDisabled || !canResume} onClick={()=>void mutateAll("resume")}
               title="继续所有已暂停或失败的任务，遵守下载时段与并发限制">
               <Play size={14} aria-hidden="true"/><span className="ui-icon-label">全部继续</span>
@@ -192,7 +207,7 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
               title="暂停所有未完成任务，保留下载进度和 .part 临时文件">
               <Pause size={14} aria-hidden="true"/><span className="ui-icon-label">全部暂停</span>
             </button>
-          </div>
+          </div>}
           <div className="downloads-toolbar-tools" role="group" aria-label="下载工具">
             <button type="button" className="btn-icon" disabled={openingDirectory} aria-busy={openingDirectory}
               onClick={() => void openDownloadDirectory()} aria-label="在资源管理器中打开" title="在资源管理器中打开下载目录">
@@ -224,10 +239,16 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
         </button>
       </ContextMenu>}
 
-      {tasks.length === 0 && !loading ? (
-        <div className="empty-state-box">
-          <h3>暂无下载任务</h3>
-          <p>在作品详情中选择音轨并加入下载队列。</p>
+      {tasks.length === 0 ? (
+        <div className={`downloads-empty${loadError && !loading ? " is-error" : ""}`} role="status">
+          <span className={`downloads-empty-icon${loading ? " is-loading" : ""}`} aria-hidden="true">
+            {loading ? <LoaderCircle size={24}/> : loadError ? <AlertTriangle size={24}/> : <CloudDownload size={24}/>}
+          </span>
+          <div className="downloads-empty-copy">
+            <h3>{loading ? "正在读取下载任务" : loadError ? "下载任务读取失败" : "暂无下载任务"}</h3>
+            <p>{loading ? "稍等片刻，正在获取最新状态。" : loadError || "在作品详情中选择文件，即可添加下载。"}</p>
+            {!loading && loadError && <button className="btn btn-secondary btn-sm" onClick={()=>void loadTasks()}>重新读取</button>}
+          </div>
         </div>
       ) : tasks.length > 0 ? (
         <div className="downloads-table-scroll" role="region" aria-label="下载任务列表" tabIndex={0}><table className="tracks-table">
@@ -380,6 +401,7 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
           </tbody>
         </table></div>
       ) : null}
+      </div>
     </div>
   );
 };

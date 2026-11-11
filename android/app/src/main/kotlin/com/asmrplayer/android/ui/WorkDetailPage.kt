@@ -30,18 +30,28 @@ import com.asmrplayer.android.online.BrowseFilters
 @UnstableApi
 @Composable
 internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId:String,open:(String)->Unit,back:()->Unit,origin:String?=null,sourceId:String?=null,bottom:androidx.compose.ui.unit.Dp=24.dp) {
-    val online by model.online.state.collectAsStateWithLifecycle()
-    val detailState by model.details.state.collectAsStateWithLifecycle()
+    val observedOnline by model.online.state.collectAsStateWithLifecycle()
+    val online = routeSnapshot(observedOnline)
+    val observedDetail by model.details.state.collectAsStateWithLifecycle()
+    val detailState = routeSnapshot(observedDetail)
     val collection by model.collections.state.collectAsStateWithLifecycle()
-    DisposableEffect(workId,origin,sourceId) {
+    val active = LocalRouteActive.current
+    if (active) DisposableEffect(workId,origin,sourceId) {
         model.details.select(workId)
         if(origin!=null&&sourceId!=null)model.online.loadDetail(origin,sourceId)
-        onDispose {model.details.select(null);if(origin!=null)model.online.leaveDetail()}
+        onDispose {
+            if (model.details.state.value.workId == workId) model.details.select(null)
+            if (origin != null && model.online.state.value.detailOrigin == origin && model.online.state.value.detailId == sourceId) model.online.leaveDetail()
+        }
     }
     val local=state.lookup.byId[workId]
     val remote=online.detail?.takeIf {origin!=null&&online.detailOrigin==origin&&online.detailId==sourceId}
     val meta=state.metadata[workId]
-    val title=remote?.work?.title?:local?.title
+    // The browse card already has the hero metadata. Show it during the network request so
+    // the cover has a destination on the first navigation frame.
+    val preview = online.page?.items?.firstOrNull { origin == online.account.apiBase && it.sourceId == sourceId }
+    val presentedWork = remote?.work ?: preview
+    val title=presentedWork?.title?:local?.title
     val audio=remote?.files.orEmpty().filter{it.kind=="audio"}
     val groups=if(remote!=null)audio.map{it.path.substringBeforeLast('/',"") to it.format}.distinct() else local?.versions.orEmpty().map{it.groupPath to it.format}.distinct()
     var group by rememberSaveable(workId){mutableStateOf("")}
@@ -72,6 +82,10 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
     val latest=groupVersions.mapNotNull(positions::get).latestUnfinished()
     val current=state.queue.getOrNull(state.index)?.id
     val busy=detailState.busy||online.working
+    fun download(ids: Set<String>? = null, paths: Set<String>? = null) {
+        model.downloadPlan.open(workId, origin ?: detailState.remoteOrigin, sourceId ?: detailState.remoteId,
+            initialIds = ids, initialPaths = paths)
+    }
     fun act(action:String,ids:List<String> = available,paths:List<String> = files.map{it.path}) {
         if(remote!=null) {
             val startPath=if(action=="play") files.firstOrNull { it.versionId(workId)==latest?.versionId }?.path else null
@@ -83,13 +97,12 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
             "restart" -> model.playGroup(ids,true)
             "playlist" -> model.choosePlaylist(ids)
             "enqueue","next" -> model.enqueue(ids,action=="next")
-            "download" -> model.details.download(ids)
         }
         if(action in setOf("play","restart"))open("player")
     }
-    val voices=remote?.work?.voices?:meta?.voices().orEmpty()
-    val tags=remote?.work?.tags?:meta?.tags().orEmpty()
-    val circle=remote?.work?.circle?:meta?.circle.orEmpty()
+    val voices=presentedWork?.voices?:meta?.voices().orEmpty()
+    val tags=presentedWork?.tags?:meta?.tags().orEmpty()
+    val circle=presentedWork?.circle?:meta?.circle.orEmpty()
     fun discover(tag:String?=null,voice:String?=null) {
         model.online.search("",conditions=BrowseFilters(tags=listOfNotNull(tag),voices=listOfNotNull(voice)));open("discover")
     }
@@ -98,7 +111,7 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
             if (remote != null && origin != null) model.online.cardAction(origin, remote.work.sourceId, com.asmrplayer.android.OnlineTools.CardAction.Playlist)
             else model.choosePlaylist(com.asmrplayer.android.data.preferredPlaylistVersions(local?.versions.orEmpty()))
         }
-        if(remote!=null||detailState.remoteId!=null) DropdownMenuItem(text={Text("下载作品")},enabled=!busy&&(files.isNotEmpty()||available.isNotEmpty()),onClick={close();act("download")})
+        if(remote!=null||detailState.remoteId!=null) DropdownMenuItem(text={Text("下载作品")},enabled=!busy,onClick={close();download()})
         DropdownMenuItem(text={Text("加入队列")},enabled=!busy,onClick={close();act("enqueue")})
         if(remote!=null)DropdownMenuItem(text={Text(if(local?.inLibrary!=true)"加入音频库" else "刷新作品信息")},onClick={close();if(local?.inLibrary==true&&origin!=null)model.details.refresh(remote.work.sourceId,origin) { model.online.loadDetail(origin, remote.work.sourceId) } else model.online.act("save")})
         else if(detailState.remoteId!=null&&detailState.remoteOrigin!=null)DropdownMenuItem(text={Text("刷新作品信息")},onClick={close();model.details.refresh(detailState.remoteId!!,detailState.remoteOrigin!!)})
@@ -119,7 +132,7 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
         LazyColumn(Modifier.navigationBarsPadding(),state=listState,contentPadding=PaddingValues(start=20.dp,end=20.dp,top=8.dp,bottom=bottom),verticalArrangement=Arrangement.spacedBy(8.dp)) {
             item {
                 CardActions(title, menu = workActions) {
-                    WorkHero(title, remote?.work?.coverUrl ?: local?.coverUri, remote?.work?.code ?: local?.code, circle, workId)
+                    WorkHero(title, presentedWork?.coverUrl ?: local?.coverUri, presentedWork?.code ?: local?.code, circle, workId)
                 }
             }
             item {
@@ -143,7 +156,7 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                     }
                 
                 }
-                if(busy)LoadingRing()
+                if(busy || (online.detailLoading && remote == null))LoadingRing()
                 detailState.error?.let {Text(it,color=MaterialTheme.colorScheme.error)}
             }
             if (voices.isNotEmpty()) item(key = "detail-cast") {
@@ -170,7 +183,7 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                     if(tags.isEmpty())Text("暂无标签",style=MaterialTheme.typography.bodyMedium)
                 }
             } else if(page=="tracks") {
-                if (groups.size > 1) item {
+                if (groups.isNotEmpty()) item {
                     GroupPicker(groups,selected){group=it.first;format=it.second}
                 }
                 if(remote!=null) itemsIndexed(files,key={_,it->it.path}) {index,file ->
@@ -184,7 +197,7 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                         DropdownMenuItem(text={Text("下一首播放")},onClick={close();act("next",paths=listOf(file.path))})
                         DropdownMenuItem(text={Text("加入队列")},onClick={close();act("enqueue",paths=listOf(file.path))})
                         DropdownMenuItem(text={Text("加入歌单")},onClick={close();act("playlist",paths=listOf(file.path))})
-                        DropdownMenuItem(text={Text("下载音轨")},onClick={close();act("download",paths=listOf(file.path))})
+                        DropdownMenuItem(text={Text("下载音轨")},onClick={close();download(paths=setOf(file.path))})
                         DropdownMenuItem(text={Text("文件信息")},onClick={close();fileInfo=file.path})
                     }
                 } else itemsIndexed(versions,key={_,it->it.id}) {index,version ->
@@ -196,12 +209,12 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                         DropdownMenuItem(text={Text("下一首播放")},enabled=version.available,onClick={close();model.enqueue(listOf(version.id),true)})
                         DropdownMenuItem(text={Text("加入队列")},enabled=version.available,onClick={close();model.enqueue(listOf(version.id))})
                         DropdownMenuItem(text={Text("加入歌单")},onClick={close();model.choosePlaylist(listOf(version.id))})
-                        if(detailState.remoteId!=null)DropdownMenuItem(text={Text("下载音轨")},onClick={close();model.details.download(listOf(version.id))})
+                        if(detailState.remoteId!=null)DropdownMenuItem(text={Text("下载音轨")},onClick={close();download(ids=setOf(version.id))})
                         DropdownMenuItem(text={Text("文件信息")},onClick={close();fileInfo="${version.groupPath}/${version.title}"})
                     }
                 }
             } else {
-                val remoteAssets=remote?.files.orEmpty().filter{it.kind in setOf("subtitle","image")}
+                val remoteAssets=remote?.files.orEmpty().filter{it.kind!="audio"}
                 val pictures=detailState.assets.filter {it.available&&it.format in LibraryIndex.imageExtensions}
                 items(pictures.chunked(2),key={"pictures:${it.first().id}"}) { row ->
                     Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
@@ -219,14 +232,14 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                         if(row.size==1)Spacer(Modifier.weight(1f))
                     }
                 }
-                if(detailState.ready&&remoteAssets.isEmpty()&&detailState.assets.isEmpty()&&detailState.remoteAssets.none{it.kind in setOf("image","subtitle")})item{EmptyContent("暂无附件","已扫描或下载的字幕与图片会出现在这里。",Glyph.Library)}
-                if(remote?.work?.coverUrl!=null)item{MotionTextButton({model.online.act("cover")},enabled=!busy){Text("缓存作品封面")}}
+                if(detailState.ready&&remoteAssets.isEmpty()&&detailState.assets.isEmpty()&&detailState.remoteAssets.none{it.kind!="cover"})item{EmptyContent("暂无附件","字幕、图片与文档会出现在这里。",Glyph.Library)}
+                if(remote?.work?.coverUrl!=null)item{MotionTextButton({download(ids=setOf(LibraryIndex.id(workId,"cover")))},enabled=!busy){Text("缓存作品封面")}}
                 items(remoteAssets.filter { f -> pictures.none { it.relativePath==f.path } },key={"remote:${it.path}"}) {file ->
                     val asset=detailState.assets.firstOrNull{it.relativePath==file.path&&it.available}
                     CardActions(file.title, menu = { close ->
                         CardAction("文件信息", close) { fileInfo = file.path }
                         if (asset == null) {
-                            CardAction("下载附件", close, !busy) { model.online.act("assets", listOf(file.path)) }
+                            CardAction("下载附件", close, !busy) { download(paths=setOf(file.path)) }
                             if (file.kind == "image" && (file.downloadUrl ?: file.streamUrl) != null)
                                 CardAction("查看图片", close) { image = file.downloadUrl ?: file.streamUrl }
                         } else LocalAssetMenu(asset, close, { image = it }, model.details::preview, { binding = it })
@@ -237,7 +250,7 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                             Row {
                                 if(asset==null) {
                                     if(file.kind=="image"&&(file.downloadUrl?:file.streamUrl)!=null)MotionTextButton({image=file.downloadUrl?:file.streamUrl}){Text("查看图片")}
-                                    MotionTextButton({model.online.act("assets",listOf(file.path))},enabled=!busy){Text("下载附件")}
+                                    MotionTextButton({download(paths=setOf(file.path))},enabled=!busy){Text("下载附件")}
                                 }
                                 else AssetActions(asset,{image=it},{model.details.preview(it)},{binding=it})
                             }
@@ -245,12 +258,12 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                         }
                     }
                 }
-                if(remote==null)items(detailState.remoteAssets.filter{r->r.kind in setOf("image","subtitle")&&detailState.assets.none{it.relativePath==r.relativePath}},key={"reference:${it.id}"}) {asset->
+                if(remote==null)items(detailState.remoteAssets.filter{r->r.kind!="cover"&&detailState.assets.none{it.relativePath==r.relativePath}},key={"reference:${it.id}"}) {asset->
                     CardActions(asset.relativePath.substringAfterLast('/'), menu = { close ->
                         CardAction("文件信息", close) { fileInfo = asset.relativePath }
                         if (asset.kind == "image") CardAction("查看图片", close, !busy) { model.details.previewImage(asset) { image = it } }
                         val task = online.tasks.firstOrNull { it.assetId == asset.id }
-                        CardAction("下载附件", close, !busy && task?.state !in setOf("QUEUED", "RUNNING")) { model.details.downloadAsset(asset) }
+                        CardAction("下载附件", close, !busy && task?.state !in setOf("QUEUED", "DOWNLOADING", "VERIFYING")) { download(ids=setOf(asset.id)) }
                     }) {
                         Column {
                             Text(asset.relativePath.substringAfterLast('/'),style=MaterialTheme.typography.titleSmall)
@@ -258,7 +271,7 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                             Text("${asset.format.uppercase()} · ${task?.let{downloadLabel(it.state)}?:"未下载"}",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                             Row {
                                 if(asset.kind=="image")MotionTextButton({model.details.previewImage(asset){image=it}},enabled=!busy){Text("查看图片")}
-                                MotionTextButton({model.details.downloadAsset(asset)},enabled=!busy&&task?.state !in setOf("QUEUED","RUNNING")){Text("下载附件")}
+                                MotionTextButton({download(ids=setOf(asset.id))},enabled=!busy&&task?.state !in setOf("QUEUED","DOWNLOADING","VERIFYING")){Text("下载附件")}
                             }
                             HorizontalDivider()
                         }

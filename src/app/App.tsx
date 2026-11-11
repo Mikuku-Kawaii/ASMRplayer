@@ -1,3 +1,5 @@
+import { TaskCenter } from "../features/tasks/TaskCenter";
+import { useDeviceSyncStatus, syncRequest } from "../lib/deviceSync";
 import { SubtitleActions } from "../features/player/useSubtitleActions";
 import { useActiveSubtitles } from "../features/lyrics/useActiveSubtitles";
 import { useSubtitleFollow } from "../features/lyrics/useSubtitleFollow";
@@ -67,6 +69,7 @@ type NavPage =
   | "online"
   | "favorites"
   | "recent"
+  | "tasks"
   | "downloads"
   | "settings";
 
@@ -79,12 +82,36 @@ const AppShell: React.FC = () => {
   const commandPending = useRef(false);
   const { snapshot: update, run: runUpdate } = useUpdater();
   const [activeNav, setActiveNav] = useState<NavPage>("library");
+  const deviceSync = useDeviceSyncStatus();
+  const [syncBusy, setSyncBusy] = useState(false);
+  const syncAction = useRef(false);
+  const [resumeNotice, setResumeNotice] = useState(false);
+  const announcedResume = useRef("");
+  useEffect(() => {
+    const id=deviceSync.status?.resume?.id;
+    if(!id || announcedResume.current===id) return;
+    announcedResume.current=id;setResumeNotice(true);
+    const timer=window.setTimeout(()=>setResumeNotice(false),3000);
+    return ()=>window.clearTimeout(timer);
+  },[deviceSync.status?.resume?.id]);
+  async function syncOperation(action: "resume" | "dismissResume" | "sync") {
+    if(syncAction.current || !deviceSync.status) return;
+    syncAction.current=true;setSyncBusy(true);
+    try {
+      if(action==="resume") applySnapshot(await callCommand<PlaybackSnapshot>("device_sync_command",{action,input:{id:deviceSync.status.resume?.id},provider:deviceSync.status.provider}));
+      else await syncRequest(action,action==="dismissResume"?{id:deviceSync.status.resume?.id}:null,deviceSync.status.provider);
+      await deviceSync.refresh();setResumeNotice(false);
+    } catch(e) {setGlobalError(normalizeAppError(e));}
+    finally {syncAction.current=false;setSyncBusy(false);}
+  }
+
   const [selectedWorkId, setSelectedWorkId] = useState<string | null>(null);
   const [bookmarkVersion, setBookmarkVersion] = useState<string | undefined>();
   const [snapshot, setSnapshot] = useState<PlaybackSnapshot>(defaultSnapshot);
   const [drawerTab, setDrawerTab] = useState<
     "none" | "queue" | "playlists" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio"
   >("none");
+  const playerToolsTrigger = useRef<HTMLButtonElement>(null);
   const [globalError, setGlobalError] = useState<AppError | null>(null);
   const [isMaximized, setIsMaximized] = useState<boolean>(false);
   useEffect(() => {
@@ -1002,18 +1029,8 @@ const AppShell: React.FC = () => {
                 <span>最近收听</span>
               </button>
             </li>
-            <li>
-              <button
-                type="button"
-                className={`nav-btn ${
-                  activeNav === "downloads" && !selectedWorkId ? "active" : ""
-                }`}
-                onClick={() => handleSelectNav("downloads")}
-              >
-                <Download size={17} />
-                <span>离线下载</span>
-              </button>
-            </li>
+            <li><button type="button" className={`nav-btn ${["tasks","downloads"].includes(activeNav) && !selectedWorkId ? "active" : ""}`} onClick={() => handleSelectNav("tasks")}>
+              <ListMusic size={17}/><span>任务中心{deviceSync.status?.resume ? " · 接续" : ""}</span></button></li>
             <li>
               <button
                 type="button"
@@ -1290,8 +1307,13 @@ const AppShell: React.FC = () => {
                 }}
                 onError={setGlobalError}
               />
-            ) : activeNav === "downloads" ? (
-              <DownloadsView
+            ) : activeNav === "tasks" || activeNav === "downloads" ? (
+              <TaskCenter sync={deviceSync.status} syncError={deviceSync.error} syncBusy={syncBusy}
+                resume={()=>void syncOperation("resume")} dismissResume={()=>void syncOperation("dismissResume")} runSync={()=>void syncOperation("sync")}
+                openDownloads={()=>handleSelectNav("downloads")} openSettings={section=>{setSettingsSection(section);handleSelectNav("settings");}}
+                section={activeNav === "downloads" ? "downloads" : "all"}
+                onSectionChange={section=>handleSelectNav(section === "downloads" ? "downloads" : "tasks")}
+                downloadContent={<DownloadsView embedded
                 onSelectWork={handleOpenWorkDetail}
                 onError={setGlobalError}
                 onOpenSettings={() => {
@@ -1300,7 +1322,7 @@ const AppShell: React.FC = () => {
                   setSelectedWorkId(null);
                   setActiveNav("settings");
                 }}
-              />
+              />}/>
             ) : (
               <SettingsView onError={setGlobalError} initialSection={settingsSection} onSectionChange={setSettingsSection}
                 searchQuery={pageSearches.settings} onSearchQueryChange={value => updatePageSearch("settings", value)} />
@@ -1308,9 +1330,13 @@ const AppShell: React.FC = () => {
           </div>
         </main>
 
+        {resumeNotice && deviceSync.status?.resume && <div className="sync-resume-toast" role="status"><span>另一台设备有更新的收听位置</span>
+          <button className="btn btn-primary btn-sm" disabled={syncBusy} onClick={()=>void syncOperation("resume")}>继续收听</button>
+          <button className="btn btn-ghost btn-sm" onClick={()=>{setResumeNotice(false);handleSelectNav("tasks");}}>查看</button></div>}
         <PlaylistPickerHost />
         <RightDrawer
           activeTab={drawerTab}
+          playerToolsTrigger={playerToolsTrigger}
           onClose={() => setDrawerTab("none")}
           snapshot={snapshot}
           onSnapshotChange={applySnapshot}
@@ -1323,6 +1349,7 @@ const AppShell: React.FC = () => {
 
       <PlayerBar
         snapshot={snapshot}
+        playerToolsTrigger={playerToolsTrigger}
         onSnapshotChange={applySnapshot}
         activeDrawerTab={drawerTab}
         onToggleDrawer={handleToggleDrawer}

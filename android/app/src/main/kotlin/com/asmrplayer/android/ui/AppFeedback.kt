@@ -76,5 +76,5 @@ internal fun NoticeOverlay(modal: Boolean = false) {
 internal fun PlayerAlertDialog(onDismissRequest: () -> Unit, confirmButton: @Composable () -> Unit,
     dismissButton: (@Composable () -> Unit)? = null, title: (@Composable () -> Unit)? = null, text: (@Composable () -> Unit)? = null) {
     AlertDialog(onDismissRequest = onDismissRequest, title = title, text = text, dismissButton = dismissButton,
-        confirmButton = { NoticeOverlay(modal = true); confirmButton() })
+        confirmButton = { DialogMotion(); NoticeOverlay(modal = true); confirmButton() })
 }

@@ -55,10 +55,8 @@ internal fun <T : Any> PageTabs(selected: T?, options: List<Pair<T, String>>, mo
         val active = options.indexOfFirst { it.first == selected }
         // Animate in slots, not pixels. Springs retain velocity when another tab interrupts the glide.
         val target = active.coerceAtLeast(0).toFloat()
-        val position = animateFloatAsState(target, if (motion) spring(dampingRatio = 1f, stiffness = 660f,
+        val position = animateFloatAsState(target, if (motion) spring(dampingRatio = 1f, stiffness = 900f,
             visibilityThreshold = .001f) else snap(), label = "tab glide")
-        val tail = animateFloatAsState(target, if (motion) spring(dampingRatio = 1f, stiffness = 395f,
-            visibilityThreshold = .001f) else snap(), label = "tab trailing edge")
         LaunchedEffect(active, segmentWidth, stripWidth, motion) {
             if (active < 0) return@LaunchedEffect
             val first = scroll.firstVisibleItemIndex * segmentWidth + scroll.firstVisibleItemScrollOffset
@@ -74,10 +72,8 @@ internal fun <T : Any> PageTabs(selected: T?, options: List<Pair<T, String>>, mo
             val height = (size.height - 2 * inset).coerceAtLeast(0f)
             val scrollX = scroll.firstVisibleItemIndex * segmentWidth + scroll.firstVisibleItemScrollOffset
             val front = position.value * segmentWidth
-            val limit = minOf(10.dp.toPx(), segmentWidth * .10f)
-            val lag = ((tail.value - position.value) * segmentWidth).coerceIn(-limit, limit)
-            val start = front + minOf(lag, 0f) - scrollX
-            val width = segmentWidth + abs(lag)
+            val start = front - scrollX
+            val width = segmentWidth.toFloat()
             val x = if (layoutDirection == LayoutDirection.Ltr) start else size.width - start - width
             drawRoundRect(colors.primaryContainer, Offset(x, inset), Size(width, height), CornerRadius(height / 2))
         }, state = scroll, verticalAlignment = Alignment.CenterVertically) {

@@ -62,18 +62,22 @@ class PlayerMotionTest {
         ui.runOnIdle { assertEquals(1, opened) }
     }
 
-    @Test fun workGroupChipsScrollAndSelectFolderAndFormatTogether() {
+    @Test fun workGroupDialogSelectsFolderAndFormatAndDismissesWithoutChangingSelection() {
         val groups = listOf("本編" to "wav", "特典" to "wav", "特典" to "mp3")
         var selected by mutableStateOf(groups.first())
         ui.runOnUiThread { ui.activity.setContent {
             Box(Modifier.width(190.dp)) { GroupPicker(groups, selected) { selected = it } }
         } }
-        val strip = ui.onNode(hasScrollToIndexAction())
-        strip.performTouchInput { swipeLeft() }
-        ui.onNodeWithText("特典 · MP3").assertIsDisplayed().performClick()
+        ui.onNodeWithContentDescription("目录 · 本編").performClick()
+        ui.onNodeWithText("选择音轨目录").assertIsDisplayed()
+        ui.onNodeWithText("MP3").assertIsDisplayed().performClick()
         ui.runOnIdle { assertEquals(groups.last(), selected) }
-        strip.performTouchInput { swipeRight() }
-        ui.onNodeWithText("本編 · WAV").assertIsDisplayed().performClick()
+        ui.onNodeWithText("选择音轨目录").assertDoesNotExist()
+        ui.onNodeWithContentDescription("目录 · 特典 · MP3").performClick()
+        ui.onNodeWithText("关闭").performClick()
+        ui.runOnIdle { assertEquals(groups.last(), selected) }
+        ui.onNodeWithContentDescription("目录 · 特典 · MP3").performClick()
+        ui.onNodeWithText("本編").assertIsDisplayed().performClick()
         ui.runOnIdle { assertEquals(groups.first(), selected) }
     }
 
@@ -165,8 +169,9 @@ class PlayerMotionTest {
             ui.onNodeWithContentDescription("返回").performClick()
             ui.mainClock.advanceTimeBy(32)
             ui.onNodeWithContentDescription("设置").performClick()
-            ui.mainClock.advanceTimeBy(240)
-            body.assertIsDisplayed()
+            ui.mainClock.advanceTimeBy(400)
+            // Re-entry targets the current page, not the departing page handle.
+            ui.onNodeWithText("搜索设置").assertIsDisplayed()
         } finally { ui.mainClock.autoAdvance = true }
     }
 

@@ -65,7 +65,7 @@ internal fun PlayerSheet(title: String, close: () -> Unit, contentScrolls: Boole
     }
     ModalBottomSheet(onDismissRequest=close, sheetState=sheetState,
         containerColor=MaterialTheme.colorScheme.surfaceContainer, contentColor=MaterialTheme.colorScheme.onSurface) {
-        Box(Modifier.fillMaxWidth().imePadding().contentSheetHeight()) {
+        Box(Modifier.fillMaxWidth().imePadding().contentSheetHeight().sizeMotion()) {
         Column(Modifier.fillMaxWidth()) {
             Row(Modifier.fillMaxWidth().padding(start=20.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically) {
                 Text(title,Modifier.weight(1f),style=MaterialTheme.typography.titleMedium)
@@ -102,6 +102,7 @@ internal data class CoverTransform(val scale: Float = 1f, val offset: Offset = O
 internal fun FullscreenArtwork(uri: String?, workId:String?=null, close: () -> Unit) {
     val artwork=rememberArtwork(uri, highResolution=true, workId=workId, fullscreen=true)
     Dialog(onDismissRequest=close,properties=DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
+        DialogMotion()
         NoticeOverlay(modal = true)
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             if (artwork.loading) CircularProgressIndicator(Modifier.align(Alignment.Center).size(28.dp))

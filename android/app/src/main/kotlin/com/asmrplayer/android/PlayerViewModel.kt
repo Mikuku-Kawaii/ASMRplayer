@@ -75,6 +75,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             override val replayCache get() = listOf(value)
         }
     }
+    private val syncStatusMutable = MutableStateFlow<com.asmrplayer.android.sync.SyncStatus?>(null)
+    val syncStatus = syncStatusMutable.asStateFlow()
+    private var announcedResume: String? = null
     private val foreground = MutableStateFlow(true)
     fun setForeground(visible: Boolean) { foreground.value = visible }
     private var soundDirty = true
@@ -97,6 +100,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     fun closePlaylistPicker() { playlistSelection.value = null }
     val queueGroups = QueueGroupTools(application, viewModelScope, ::feedback)
     val details = DetailTools(application, viewModelScope)
+    val downloadPlan = DownloadPlanTools(application, viewModelScope) { feedback(it) }
     val collections = CollectionTools(application, viewModelScope, ::feedback)
     val maintenance = MaintenanceTools(application, viewModelScope) {
         check(send(LibraryPlayback.SAVE_SESSION, Bundle.EMPTY).resultCode == SessionResult.RESULT_SUCCESS)
@@ -140,6 +144,24 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     init {
+        viewModelScope.launch {
+            foreground.collectLatest { visible ->
+                if(visible) while(isActive) {
+                    try {
+                        val status=withContext(Dispatchers.IO) { AndroidBackend.get(getApplication()).sync.status() }
+                        syncStatusMutable.value=status
+                        status.resume?.let { resume ->
+                            if(announcedResume!=resume.optString("id")) {
+                                announcedResume=resume.optString("id")
+                                feedback("另一台设备有更新的收听位置", "继续收听") {resumeSynced(resume.getString("id"),status.provider)}
+                            }
+                        }
+                    } catch(e:CancellationException) { throw e } catch(_:Exception) { /* Sync page exposes binding errors. */ }
+                    delay(4000)
+                }
+            }
+        }
+
         viewModelScope.launch {
             AndroidBackend.get(application).database.metadata().observe()
                 .map { rows -> rows.associateBy { it.workId } }.flowOn(Dispatchers.Default)
@@ -327,6 +349,33 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         val versions = work.versions.filter { it.available && it.groupPath == group && it.format == selectedFormat }.map { it.id }
         playVersions(versions)
     }
+    fun resumeSynced(id: String, provider:com.asmrplayer.android.sync.Storage) {
+        if (screenState.value.opening) return
+        val generation=++openGeneration
+        mutable.update { it.copy(opening=true,error=null) }
+        viewModelScope.launch {
+            try {
+                val repo=AndroidBackend.get(getApplication()).sync
+                val resume=withContext(Dispatchers.IO) { repo.resumeCandidate(provider,id) }
+                    ?: error("此位置已失效或已在本机继续收听")
+                if(generation!=openGeneration) return@launch
+                val p=controller ?: connection.awaitResult()
+                if(generation!=openGeneration) return@launch
+                check(LibraryPlayback.play(p,listOf(resume.getString("versionId")),startPositionMs=resume.getLong("positionMs")).awaitResult().resultCode==SessionResult.RESULT_SUCCESS)
+                withContext(Dispatchers.IO) { repo.dismissResume(provider,id) }
+                syncStatusMutable.value=withContext(Dispatchers.IO) { repo.status() }
+            } catch(e:CancellationException) { throw e }
+            catch(e:Exception) { if(generation==openGeneration) showError(e.message ?: "无法继续收听，请检查音源") }
+            finally { if(generation==openGeneration) mutable.update { it.copy(opening=false) } }
+        }
+    }
+    fun dismissSynced(id:String,provider:com.asmrplayer.android.sync.Storage) {
+        viewModelScope.launch {
+            try { val repo=AndroidBackend.get(getApplication()).sync
+                syncStatusMutable.value=withContext(Dispatchers.IO) {repo.dismissResume(provider,id);repo.status()} }
+            catch(e:CancellationException){throw e}catch(e:Exception){showError(e.message ?: "操作未完成")}
+        }
+    }
     fun playVersion(id: String) = playVersions(listOf(id))
     fun repeat(mode: Int) { if (mode in 0..2) playbackOrder(PlaybackOrder.from(mode,false)) }
     fun playbackOrder(order:PlaybackOrder) { controller?.let { it.repeatMode=order.repeatMode;it.shuffleModeEnabled=order.shuffle } }
@@ -372,7 +421,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 val backend=AndroidBackend.get(getApplication())
                 if(work==null||backend.database.library().remote(id)==null) {feedback("当前音轨已是本地文件，或没有可下载来源");return@launch}
-                backend.downloads.enqueue(listOf(id)); libraryStore.setMembership(work.id,true); feedback("已加入下载队列")
+                downloadPlan.open(workId=work.id, initialIds=setOf(id))
             }
             catch(e: CancellationException) { throw e } catch(_: Exception) { showError("无法添加下载，请在下载管理中检查来源。") }
         }

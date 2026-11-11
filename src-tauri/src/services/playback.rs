@@ -914,6 +914,10 @@ impl PlaybackService {
 
     /// T1503: bind the bookmark time to the same generation as its exact version.
     /// A separate frontend play/seek sequence could seek a newer, unrelated track.
+    pub async fn resume_synced(&self, version_id: &str, position_ms: i64) -> AppResult<PlaybackSnapshot> {
+        self.play_with_position(version_id, None, false, None, Some(position_ms.max(0))).await
+    }
+
     pub async fn play_bookmark(&self, bookmark_id: &str) -> AppResult<PlaybackSnapshot> {
         let bm = self.db.get_bookmark(bookmark_id)?;
         self.play_with_position(&bm.version_id, None, false, None, Some(bm.position_ms)).await

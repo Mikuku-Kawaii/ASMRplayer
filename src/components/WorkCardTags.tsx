@@ -57,8 +57,10 @@ export function WorkCardTags({ tags, onTag }: { tags: string[]; onTag: (tag: str
     </button>}
     {open && <ContentDialog label="全部作品标签" onClose={() => setOpen(false)}>
       <header className="modal-header"><h3>全部作品标签</h3><button type="button" className="btn-icon" aria-label="关闭标签" title="关闭标签" onClick={() => setOpen(false)}><X size={18} aria-hidden="true" /></button></header>
+<div className="dialog-body">
       <div className="work-card-tag-dialog-list">{tags.map(tag => <button key={tag} type="button" className="tag-pill tag-pill-btn" title={`筛选标签: ${tag}`}
         onClick={() => { setOpen(false); onTag(tag); }}><span className="ui-tag-label">{tag}</span></button>)}</div>
-    </ContentDialog>}
+    </div>
+</ContentDialog>}
   </div>;
 }

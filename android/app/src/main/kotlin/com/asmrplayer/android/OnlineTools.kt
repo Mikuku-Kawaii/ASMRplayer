@@ -10,6 +10,7 @@ data class OnlineScreenState(
     val account: ProviderAccountState = ProviderAccountState(ProviderAccount.DEFAULT_BASE, false),
     val filters:BrowseFilters=BrowseFilters(), val query: String = "", val order: String = "popular", val ascending: Boolean = false,
     val page: OnlinePage? = null, val requestedPage: Int = 1, val loading: Boolean = false, val error: String? = null,
+    val loadingMore: Boolean = false, val moreError: String? = null, val feedRevision: Long = 0,
     val detailId: String? = null, val detailOrigin: String? = null, val detail: OnlineDetail? = null,
     val detailLoading: Boolean = false, val detailError: String? = null,
     val savingWorks:Set<String> = emptySet(), val working: Boolean = false, val accountSaving: Boolean = false, val accountError: String? = null,
@@ -18,6 +19,10 @@ data class OnlineScreenState(
     val tasks: List<DownloadTask> = emptyList(), val tasksReady: Boolean = false, val tasksError: String? = null,
     val taskBusy: Set<String> = emptySet(), val assets: Map<String, RemoteAsset> = emptyMap(),
 )
+
+internal val OnlineScreenState.hasMore: Boolean get() = page?.let {
+    it.page < 100_000 && it.page.toLong() * it.pageSize.coerceAtLeast(1) < it.total
+} == true
 
 /** UI orchestration only. Repository owns credentials, stable media identities and download execution. */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -42,7 +47,7 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
                     mutable.update { it.copy(account = account, tagOptions=if(it.account.apiBase==account.apiBase)it.tagOptions else emptyList(),tagCounts=if(it.account.apiBase==account.apiBase)it.tagCounts else emptyMap(),tagsError=null) }; filters = prefs
                     if (changed) {
                         ++browseGeneration; browseJob?.cancel()
-                        mutable.update { it.copy(page = null, requestedPage = 1, loading = false, error = null) }
+                        mutable.update { it.copy(page = null, requestedPage = 1, loading = false, error = null, loadingMore = false, moreError = null, feedRevision = it.feedRevision + 1) }
                         if (browsing) search()
                         val current = mutable.value
                         if (current.detailId != null && current.detailOrigin != null) loadDetail(current.detailOrigin, current.detailId)
@@ -123,7 +128,7 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
     fun browsing(active: Boolean) {
         browsing = active
         if (active && mutable.value.page == null && !mutable.value.loading) search()
-        if (!active) { ++browseGeneration; browseJob?.cancel(); mutable.update { it.copy(loading = false) } }
+        if (!active) { ++browseGeneration; browseJob?.cancel(); mutable.update { it.copy(loading = false, loadingMore = false) } }
     }
     fun search(query: String = mutable.value.query, order: String = mutable.value.order,
         ascending: Boolean = mutable.value.ascending, page: Int = 1, conditions:BrowseFilters=mutable.value.filters) {
@@ -133,12 +138,12 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
         val old = mutable.value
         val identityChanged = old.query != query.trim() || old.order != order || old.ascending != ascending || old.filters != conditions
         mutable.update { it.copy(filters=conditions, query = query.trim(), order = order, ascending = ascending, requestedPage = page,
-            page = if (identityChanged) null else it.page, loading = true, error = null) }
+            page = if (identityChanged) null else it.page, loading = true, error = null, loadingMore = false, moreError = null) }
         browseJob = scope.launch {
             try {
                 val result = backend.online.browse(query.trim(), page, order, ascending, conditions)
                 ensureActive()
-                if (generation == browseGeneration) mutable.update { it.copy(page = result) }
+                if (generation == browseGeneration) mutable.update { it.copy(page = result.copy(items = result.items.distinctBy { work -> work.sourceId }), feedRevision = it.feedRevision + 1) }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 val message = when {
@@ -149,6 +154,31 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
                 if (generation == browseGeneration) mutable.update { it.copy(error = message) }
             }
             finally { if (generation == browseGeneration) mutable.update { it.copy(loading = false) } }
+        }
+    }
+
+    /** Append only the next server page. Request generation also guards source/filter changes. */
+    fun loadNextPage() {
+        val old = mutable.value
+        val current = old.page ?: return
+        if (!browsing || old.loading || old.loadingMore || old.error != null || !old.hasMore) return
+        val next = current.page + 1
+        val generation = ++browseGeneration
+        browseJob?.cancel()
+        mutable.update { it.copy(loadingMore = true, moreError = null, requestedPage = next) }
+        browseJob = scope.launch {
+            try {
+                val result = backend.online.browse(old.query, next, old.order, old.ascending, old.filters)
+                ensureActive()
+                if (generation == browseGeneration) mutable.update {
+                    it.copy(page = result.copy(page = next, items = (current.items + result.items).distinctBy { work -> work.sourceId }))
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                if (generation == browseGeneration) mutable.update { it.copy(moreError = onlineMessage(e)) }
+            } finally {
+                if (generation == browseGeneration) mutable.update { it.copy(loadingMore = false) }
+            }
         }
     }
 
@@ -258,7 +288,7 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
                 change(); mutable.update { it.copy(accountNotice = "来源设置已保存。") }
                 // Replacing a token can leave hasToken unchanged; still invalidate authenticated results.
                 ++browseGeneration; browseJob?.cancel()
-                mutable.update { it.copy(page = null, loading = false) }
+                mutable.update { it.copy(page = null, requestedPage = 1, loading = false, loadingMore = false, moreError = null, feedRevision = it.feedRevision + 1) }
                 if (browsing) search()
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { mutable.update { it.copy(accountError = if (e is IllegalArgumentException)

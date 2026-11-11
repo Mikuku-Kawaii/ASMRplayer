@@ -5,7 +5,6 @@ import android.os.Build
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
@@ -25,7 +24,6 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.*
-import com.asmrplayer.android.R
 import androidx.compose.foundation.pager.PagerState
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -48,25 +46,6 @@ internal fun DockButton(glyph: Glyph, label: String, lowEffects: Boolean, enable
     IconButton(onClick=action,enabled=enabled,interactionSource=interaction,
         modifier=Modifier.size(48.dp).dockPress(interaction,lowEffects).semantics { contentDescription=label }) {
         AppGlyph(glyph,Modifier.size(24.dp))
-    }
-}
-
-@Composable
-internal fun NsfwDockButton(lowEffects: Boolean, enabled: Boolean, diameter: Dp, toggle: ()->Unit) {
-    val interaction=remember { MutableInteractionSource() }
-    val motion=dockMotionEnabled(lowEffects)
-    val amount by animateFloatAsState(if(enabled) 1f else 0f,if(motion) tween(180) else snap(),label="content visibility")
-    val filter=ColorMatrix().apply { setToSaturation(.18f+.82f*amount) }
-    Box(
-        modifier = Modifier.size(diameter).dockPress(interaction, lowEffects)
-            .selectable(enabled, role = Role.Switch, interactionSource = interaction, indication = null, onClick = toggle)
-            .semantics { contentDescription = "显示 NSFW 内容"; stateDescription = if (enabled) "已开启" else "已关闭" },
-        contentAlignment = Alignment.Center
-    ) {
-        Image(
-            painterResource(R.drawable.brand_mark), null, Modifier.fillMaxSize().padding(2.dp),
-            alpha = .70f + .30f * amount, colorFilter = ColorFilter.colorMatrix(filter)
-        )
     }
 }
 

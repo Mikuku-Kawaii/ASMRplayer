@@ -73,6 +73,8 @@ export interface RecognitionSnapshotDto {
 export interface AvailableModelDto { name: string; size: number | null }
 
 export interface SubtitleTaskDto {
+  trackTitle?: string | null;
+  workTitle?: string | null;
   automatic?: boolean;
   tracksCompleted?: number;
   tracksTotal?: number;
