@@ -1,37 +1,64 @@
-# ASMR Player
+<div align="center">
+  <img src="public/desktop-brand-mark.svg" width="150" alt="ASMR Player 透明背景角色图标" />
 
-ASMR Player 是一款面向 Windows 和 Android 的音声播放器。可以从本地文件夹建立音频库，也可以浏览在线作品。两端可同步作品、收藏音轨和收听进度，在另一台设备上找到上次听到的位置。
+  <h1>ASMR Player</h1>
+  <p><strong>为音声收听而设计的 Windows &amp; Android 播放器</strong></p>
+  <p>在电脑上整理作品，在手机上继续收听。<br />
+  本地音频、在线作品、双语台本与收听记录，都有自己的位置。</p>
+  <p><a href="https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest">下载最新版本</a> · <a href="docs/releases/v26.11.12.md">更新说明</a> · <a href="https://github.com/Mikuku-Kawaii/ASMRplayer/issues">反馈问题</a></p>
+</div>
 
-[下载最新版本](https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest) · [26.11.12 更新说明](docs/releases/v26.11.12.md) · [反馈问题](https://github.com/Mikuku-Kawaii/ASMRplayer/issues)
+---
 
-## 选择安装包
+## 在喜欢的设备上收听
 
-| 设备 | 下载文件 | 安装方式 |
+**Windows** 适合整理大容量音频库、管理字幕与沉浸收听；**Android** 把音频库、后台播放和双语台本带到手机。两端可以绑定同一种存储服务，同步作品资料与收听记录。
+
+### Windows
+
+<table>
+  <tr>
+    <td align="center"><img src="readme/PixPin_2026-11-12_20-25-46.png" alt="Windows 音频库" /><br /><sub>音频库 · 整理你的作品</sub></td>
+    <td align="center"><img src="readme/PixPin_2026-11-12_20-26-59.png" alt="Windows 沉浸台本" /><br /><sub>沉浸台本 · 跟随声音阅读</sub></td>
+  </tr>
+</table>
+
+### Android
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="readme/Screenshot_2026-11-12-20-22-50-50_e34910c6bea77f.jpg" alt="Android 音频库" width="240" /><br /><sub>音频库</sub></td>
+    <td align="center" width="33%"><img src="readme/Screenshot_2026-11-12-20-24-53-51_e34910c6bea77f.jpg" alt="Android 播放页" width="240" /><br /><sub>播放页</sub></td>
+    <td align="center" width="33%"><img src="readme/Screenshot_2026-11-12-20-25-20-46_e34910c6bea77f.jpg" alt="Android 台本阅读" width="240" /><br /><sub>双语台本</sub></td>
+  </tr>
+</table>
+
+## 为每次收听准备好
+
+- **建立自己的音频库**：导入本地文件夹，也可以在线浏览作品并下载。用作品喜欢、音轨收藏、歌单和时间标记整理想听的内容。
+- **跟着台本一起听**：关联原文与译文，调整时间偏移。手机上点封面展开台本、点句子跳转；Windows 还提供独立桌面歌词，并支持配置语音识别与翻译。
+- **从上次的位置继续**：通过 GitHub Gist、OneDrive、WebDAV 或 Supabase 同步作品资料、喜欢、歌单、进度和时间标记。[查看同步范围与绑定说明](docs/releases/DEVICE_SYNC.md)
+- **让播放融入日常**：Windows 提供桌面灵动岛、快捷键和系统媒体控制；Android 支持后台播放、锁屏与通知控制、桌面小组件。两端均有均衡器和睡眠定时。
+
+> 同步不传输本地音频文件。本地作品需要在目标设备另行导入或授权；在线音轨可根据同步的来源信息匹配。Supabase 注册确认邮件受当前邮件服务的投递限制。
+
+## 下载与安装
+
+前往 [GitHub Releases](https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest)，选择适合设备的安装包：
+
+| 平台 | 安装包 | 安装方式 |
 | --- | --- | --- |
-| Windows x64 | 以 `x64-setup.exe` 结尾的文件 | 双击运行安装向导。需要 MSI 的用户可下载同一版本的 `.msi`。 |
-| Android 6.0 及以上 | 以 `universal.apk` 结尾的文件 | 在手机上打开 APK，按系统提示允许安装。 |
+| Windows x64 | `x64-setup.exe` 或 `.msi` | 打开安装包，按照向导完成安装。 |
+| Android 6.0 及以上 | `universal.apk` | 在手机上打开 APK，按系统提示允许安装。 |
 
-## 从一部作品开始
-
-1. **添加作品。** 在音频库添加本地目录，或在在线浏览中选择作品。Android 首次导入时，在系统文件选择器里授予目录访问权限。
-2. **整理想听的内容。** 把作品加入音频库，在喜欢页查看点过心形的作品。可以单独收藏音轨、将音轨加入歌单，或为某个片段保存时间标记。
-3. **配合字幕收听。** 为音轨关联原文和译文，按需调整时间偏移。在手机播放页点封面可展开台本，点句子即可跳转。Windows 还可将字幕放到独立的桌面歌词窗口。
-4. **换设备继续。** 在两端打开「设置 → 跨设备同步」，选择同一存储服务并绑定同一账号，然后点击同步。本地音频文件需在目标设备另行导入或授权。[同步范围与绑定说明](docs/releases/DEVICE_SYNC.md)
-
-## 两端能做什么
-
-| 场景 | Windows | Android |
-| --- | --- | --- |
-| 管理与播放 | 本地目录扫描、在线浏览、下载、歌单和播放队列 | 系统目录授权、在线浏览、下载、歌单和后台播放 |
-| 字幕 | 双语台本、桌面歌词，可配置语音识别和翻译 | 导入及下载现有字幕、双语台本、原文与译文时间轴 |
-| 播放控制 | 桌面灵动岛、系统媒体控制、快捷键 | 迷你播放器、锁屏与通知媒体控制、桌面小组件 |
-| 音效与助眠 | 均衡器、沉浸设置、睡眠定时 | 均衡器、耳机音效方案、睡眠定时 |
-
-跨设备同步支持 GitHub Gist、OneDrive、WebDAV 和 Supabase。各方式独立绑定。Supabase 邮箱注册的确认邮件受当前邮件服务的投递限制。
+安装后，在音频库添加本地目录，或从在线浏览选择一部作品。Android 首次导入时，需要通过系统文件选择器授予目录访问权限。
 
 ## 从源码运行
 
-Windows 客户端使用 Tauri 2、React、Rust、SQLite 和 libmpv。准备 Node.js、pnpm、Rust 和 Visual Studio C++ 构建工具后，在仓库根目录运行：
+<details>
+<summary><strong>Windows · Tauri 2 / React / Rust / SQLite / libmpv</strong></summary>
+
+准备 Node.js、pnpm、Rust 和 Visual Studio C++ 构建工具，然后在仓库根目录运行：
 
 ```powershell
 pnpm install --frozen-lockfile
@@ -39,6 +66,26 @@ pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-Android 客户端使用 Kotlin、Jetpack Compose、Media3 和 Room。准备 JDK 17、Android SDK 36 后，在根目录执行 `pnpm install --frozen-lockfile` 和 `.\android\gradlew.bat -p android :app:assembleDebug`。也可以用 Android Studio 打开 `android/`。
+</details>
 
-[Android 开发说明](android/README.md) · [签名与更新机制](docs/releases/UPDATING.md) · [开发计划](docs/releases/TODO.md)
+<details>
+<summary><strong>Android · Kotlin / Jetpack Compose / Media3 / Room</strong></summary>
+
+准备 JDK 17 和 Android SDK 36，然后在仓库根目录运行：
+
+```powershell
+pnpm install --frozen-lockfile
+.\android\gradlew.bat -p android :app:assembleDebug
+```
+
+也可以用 Android Studio 打开 `android/`。[Android 开发说明](android/README.md)
+
+</details>
+
+---
+
+<div align="center">
+  <a href="docs/releases/UPDATING.md">签名与更新机制</a> ·
+  <a href="docs/releases/TODO.md">开发计划</a> ·
+  <a href="https://github.com/Mikuku-Kawaii/ASMRplayer/issues">问题反馈</a>
+</div>
