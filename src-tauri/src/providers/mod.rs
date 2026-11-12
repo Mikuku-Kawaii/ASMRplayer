@@ -773,10 +773,13 @@ impl AsmrOneProvider {
         let base = self.api_base();
         let tracks_url = format!("{}/api/tracks/{}?v=2", base, source_work_id);
 
-        let info_body = self.work_info_body(&source_work_id).await?;
-        let work = parse_work_info_json(&info_body)?;
+        let (info_body, tracks_body) = tokio::join!(
+            self.work_info_body(&source_work_id),
+            self.get_text_with_retry(&tracks_url),
+        );
+        let work = parse_work_info_json(&info_body?)?;
 
-        let tracks_body = self.get_text_with_retry(&tracks_url).await?;
+        let tracks_body = tracks_body?;
         let nodes = parse_tracks_v2_json(&work.source_work_id, &tracks_body)?;
 
         self.media_cache.write().insert(
@@ -838,6 +841,50 @@ impl AsmrOneProvider {
         } else {
             None
         }
+    }
+
+    /// Navigation uses a complete, unexpired persisted tree. Explicit refresh keeps
+    /// using open_online_work; signed playback URLs are still resolved separately.
+    pub async fn open_online_work_for_detail(&self, raw_work_id: &str) -> AppResult<WorkDetailDto> {
+        let source_id = normalize_work_id_input(raw_work_id)?;
+        let db = self.db.clone();
+        let cached = tokio::task::spawn_blocking(move || -> AppResult<Option<WorkDetailDto>> {
+            let id: Option<String> = db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT work_id FROM work_sources WHERE provider=?1 AND source_work_id=?2
+                     AND cached_tree_json IS NOT NULL AND cached_tree_json!=''
+                     AND julianday(expires_at)>julianday('now') LIMIT 1",
+                    params![PROVIDER_ASMR_ONE, source_id], |r| r.get(0),
+                ).optional()?)
+            })?;
+            id.map(|id| db.get_work_detail(&id)).transpose()
+        }).await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))??;
+        if let Some(detail) = cached { return Ok(detail); }
+
+        let (work, nodes, tree) = self.fetch_work_and_tree(raw_work_id).await?;
+        let provider = self.clone();
+        let cover_work = work.clone();
+        let detail = tokio::task::spawn_blocking(move || -> AppResult<WorkDetailDto> {
+            let id = provider.upsert_online_work_in_db(&work, &nodes, &tree)?;
+            provider.db.get_work_detail(&id)
+        }).await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))??;
+
+        // Cache artwork for offline use without holding navigation behind its
+        // six-second network timeout. Never replace a newer/local/user cover.
+        let provider = self.clone();
+        let id = detail.id.clone();
+        tokio::spawn(async move {
+            if let Some(path) = provider.download_and_cache_cover(
+                &cover_work.source_work_id, cover_work.cover_url.as_deref(),
+            ).await {
+                let _ = tokio::task::spawn_blocking(move || provider.db.with_conn(|conn| {
+                    conn.execute("UPDATE works SET cover_ref=?1 WHERE id=?2 AND (cover_ref IS NULL OR cover_ref=?3)",
+                        params![path, id, cover_work.cover_url])?;
+                    Ok(())
+                })).await;
+            }
+        });
+        Ok(detail)
     }
 
     /// T302/T303/T403: Fetches an online work by ID/RJ and persists or refreshes it in SQLite.
@@ -2001,6 +2048,47 @@ mod provider_tests {
     use tempfile::tempdir;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn detail_navigation_skips_slow_cover_and_reuses_only_complete_fresh_trees() {
+        let server = MockServer::start().await;
+        let dir = tempdir().unwrap();
+        let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
+        let provider = AsmrOneProvider::new(db.clone());
+        provider.set_api_base(&server.uri()).unwrap();
+        Mock::given(method("GET")).and(path("/api/workInfo/01705068"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(200)).set_body_string(
+                include_str!("../../../tests/fixtures/provider/work_info_sample.json").replace("https://api.example.invalid", &server.uri())))
+            .expect(3).mount(&server).await;
+        Mock::given(method("GET")).and(path("/api/tracks/1705068"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(200)).set_body_string(
+                include_str!("../../../tests/fixtures/provider/tracks_v2_sample.json")))
+            .expect(3).mount(&server).await;
+        Mock::given(method("GET")).and(path("/api/cover/1705068.jpg"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(2)).set_body_bytes(vec![1u8; 100]))
+            .mount(&server).await;
+
+        let start = std::time::Instant::now();
+        let detail = tokio::time::timeout(Duration::from_millis(1500), provider.open_online_work_for_detail("RJ01705068"))
+            .await.expect("artwork must not block detail navigation").unwrap();
+        let cold = start.elapsed();
+        assert!(!detail.tracks.is_empty());
+        let start = std::time::Instant::now();
+        let warm = provider.open_online_work_for_detail("1705068").await.unwrap();
+        eprintln!("detail_navigation cold={cold:?}, warm={:?}, artwork_delay=2s", start.elapsed());
+        assert_eq!(warm.id, detail.id);
+        // A complete fresh tree is reusable; an expired or absent tree is not.
+        db.with_conn(|conn| { conn.execute("UPDATE work_sources SET expires_at='2000-01-01T00:00:00Z' WHERE work_id=?1", [&detail.id])?; Ok(()) }).unwrap();
+        assert_eq!(provider.open_online_work_for_detail("1705068").await.unwrap().id, detail.id);
+        db.with_conn(|conn| { conn.execute("UPDATE work_sources SET cached_tree_json=NULL WHERE work_id=?1", [&detail.id])?; Ok(()) }).unwrap();
+        assert_eq!(provider.open_online_work_for_detail("1705068").await.unwrap().id, detail.id);
+        // A later cover choice must win over the delayed cache completion.
+        db.with_conn(|conn| { conn.execute("UPDATE works SET cover_ref='user-cover.jpg' WHERE id=?1", [&detail.id])?; Ok(()) }).unwrap();
+        tokio::time::sleep(Duration::from_millis(2400)).await;
+        let cover: String = db.with_conn(|conn| Ok(conn.query_row("SELECT cover_ref FROM works WHERE id=?1", [&detail.id], |r| r.get(0))?)).unwrap();
+        assert_eq!(cover, "user-cover.jpg");
+        assert!(db.cache_dir.join("covers/asmr_1705068.jpg").exists());
+    }
 
     #[tokio::test]
     async fn successive_requests_reuse_one_connection() {

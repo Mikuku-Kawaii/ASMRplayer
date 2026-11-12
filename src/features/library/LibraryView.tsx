@@ -56,7 +56,7 @@ interface LibraryViewProps {
   onCollectionStateChange?: (value: LibraryCollectionState) => void;
   canReturnToDetail?: boolean;
   onReturnToDetail?: () => void;
-  onSelectWork: (workId: string) => void;
+  onSelectWork: (workId: string, online?: boolean) => void;
   onSnapshotChange: (snap: PlaybackSnapshot) => void;
   onOpenDownloads?: () => void;
   onError: (err: AppError) => void;
@@ -149,7 +149,6 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
   // Quick open online work by ID/RJ
   const [quickOnlineId, setQuickOnlineId] = useState("");
-  const [openingOnline, setOpeningOnline] = useState(false);
 
   // Right-click context menu state
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -356,21 +355,11 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     }
   };
 
-  const handleQuickOpenOnline = async (e: React.FormEvent) => {
+  const handleQuickOpenOnline = (e: React.FormEvent) => {
     e.preventDefault();
     if (!quickOnlineId.trim()) return;
-    setOpeningOnline(true);
-    try {
-      const detail = await callCommand<WorkDetailDto>("open_online_work", {
-        workIdOrRj: quickOnlineId.trim(),
-      });
-      setQuickOnlineId("");
-      onSelectWork(detail.id);
-    } catch (err) {
-      onError(normalizeAppError(err));
-    } finally {
-      setOpeningOnline(false);
-    }
+    onSelectWork(quickOnlineId.trim(), true);
+    setQuickOnlineId("");
   };
 
   const handleResumeWork = async (work: WorkSummary, e?: React.MouseEvent) => {
@@ -657,7 +646,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               <button
                 type="submit"
                 className="btn btn-secondary btn-sm"
-                disabled={openingOnline || !quickOnlineId.trim()}
+                disabled={!quickOnlineId.trim()}
               >
                 打开作品
               </button>

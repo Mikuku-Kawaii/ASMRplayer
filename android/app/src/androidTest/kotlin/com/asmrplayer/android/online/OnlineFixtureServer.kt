@@ -19,6 +19,8 @@ class OnlineFixtureServer(durationSeconds: Int = 3, sampleRate: Int = 48000, por
     val treeRequests = AtomicInteger()
     val mediaRequests = AtomicInteger()
     @Volatile var browseResponse: ((Request) -> Pair<Int, String>)? = null
+    @Volatile var beforeTreeResponse: (() -> Unit)? = null
+    @Volatile var originalArtwork: ByteArray? = null
     @Volatile var mode = "normal"
     @Volatile var redirect: String? = null
     @Volatile var attachments = false
@@ -76,10 +78,12 @@ class OnlineFixtureServer(durationSeconds: Int = 3, sampleRate: Int = 48000, por
                             }
                             target.startsWith("/api/tracks/") -> {
                                 val number = treeRequests.incrementAndGet()
+                                beforeTreeResponse?.invoke()
                                 val extra = if (attachments && !hideAttachments) """,{"type":"text","title":"01.srt","hash":"fixture-subtitle","size":${subtitleBytes.size},"mediaDownloadUrl":"$base/media/subtitle?signature=$number"},{"type":"image","title":"art.png","hash":"fixture-image","size":${imageBytes.size},"mediaDownloadUrl":"$base/media/image?signature=$number"}""" else ""
                                 val second = if (secondTrack) """,{"type":"audio","title":"02.wav","hash":"fixture-02","size":${bytes.size},"mediaStreamUrl":"$base/media?signature=$number"}""" else ""
                                 val document = if (documents) """,{"type":"text","title":"readme.txt","hash":"fixture-doc","size":${documentBytes.size},"mediaDownloadUrl":"$base/media/document"}""" else ""
-                                body = """[{"type":"folder","title":"WAV","children":[{"type":"audio","title":"01.wav","hash":"fixture-01","size":${bytes.size},"mediaStreamUrl":"$base/media?signature=$number","mediaDownloadUrl":"$base/media?signature=$number"}$second$extra$document]}]""".toByteArray()
+                                val original = originalArtwork?.let { """,{"type":"image","title":"cover.png","hash":"fixture-original","size":${it.size},"mediaDownloadUrl":"$base/media/original"}""" }.orEmpty()
+                                body = """[{"type":"folder","title":"WAV","children":[{"type":"audio","title":"01.wav","hash":"fixture-01","size":${bytes.size},"mediaStreamUrl":"$base/media?signature=$number","mediaDownloadUrl":"$base/media?signature=$number"}$second$extra$document$original]}]""".toByteArray()
                             }
                             browseResponse != null && (target.startsWith("/api/recommender/popular") || target.startsWith("/api/search/") || target.startsWith("/api/works")) -> {
                                 val response = browseResponse!!.invoke(request); code = response.first; body = response.second.toByteArray()
@@ -91,6 +95,7 @@ class OnlineFixtureServer(durationSeconds: Int = 3, sampleRate: Int = 48000, por
                                 if (mode == "expired" && count == 1) { code = 403; body = byteArrayOf() }
                                 else {
                                     val payload = when {
+                                        target.startsWith("/media/original") -> requireNotNull(originalArtwork)
                                         target.startsWith("/media/document") -> documentBytes
                                         target.startsWith("/media/subtitle") -> subtitleBytes
                                         target.startsWith("/media/image") || target.startsWith("/media/cover") -> imageBytes

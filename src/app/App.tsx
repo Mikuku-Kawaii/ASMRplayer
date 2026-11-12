@@ -106,6 +106,7 @@ const AppShell: React.FC = () => {
   }
 
   const [selectedWorkId, setSelectedWorkId] = useState<string | null>(null);
+  const [selectedWorkIsOnline, setSelectedWorkIsOnline] = useState(false);
   const [bookmarkVersion, setBookmarkVersion] = useState<string | undefined>();
   const [snapshot, setSnapshot] = useState<PlaybackSnapshot>(defaultSnapshot);
   const [drawerTab, setDrawerTab] = useState<
@@ -175,7 +176,7 @@ const AppShell: React.FC = () => {
   const mainRef = useRef<HTMLElement | null>(null);
   usePageScroll(mainRef, selectedWorkId ? `detail:${selectedWorkId}` : activeNav === "settings" ? null : activeNav);
   const detailHistoryRef = useRef<
-    Array<{ workId: string | null; scrollTop: number; nav?: NavPage }>
+    Array<{ workId: string | null; online?: boolean; scrollTop: number; nav?: NavPage }>
   >([]);
 
   // Guard eventSeq so stale out-of-order events never overwrite newer playback state
@@ -415,18 +416,24 @@ const AppShell: React.FC = () => {
   };
 
   const handleOpenWorkDetail = useCallback(
-    (workId: string, versionId?: string) => {
+    (workId: string, versionId?: string, online = false) => {
       setBookmarkVersion(versionId);
       setIsImmersiveOpen(false);
       detailHistoryRef.current.push({
         workId: selectedWorkId,
+        online: selectedWorkIsOnline,
         scrollTop: mainRef.current?.scrollTop ?? 0,
         nav: activeNav,
       });
       setSelectedWorkId(workId);
+      setSelectedWorkIsOnline(online);
     },
-    [selectedWorkId, activeNav]
+    [selectedWorkId, selectedWorkIsOnline, activeNav]
   );
+
+  const handleSelectWork = useCallback((workId: string, online = false) => {
+    handleOpenWorkDetail(workId, undefined, online);
+  }, [handleOpenWorkDetail]);
 
   const handleBackFromDetail = useCallback(() => {
     const prev = detailHistoryRef.current.pop();
@@ -434,6 +441,7 @@ const AppShell: React.FC = () => {
       setActiveNav(prev.nav);
     }
     setSelectedWorkId(prev?.workId ?? null);
+    setSelectedWorkIsOnline(prev?.online ?? false);
     setLibraryRefreshTick((t) => t + 1);
     const targetScroll = prev?.scrollTop ?? 0;
     requestAnimationFrame(() => {
@@ -452,6 +460,7 @@ const AppShell: React.FC = () => {
       if (selectedWorkId) {
         detailHistoryRef.current.push({
           workId: selectedWorkId,
+          online: selectedWorkIsOnline,
           scrollTop: mainRef.current?.scrollTop ?? 0,
           nav: activeNav,
         });
@@ -463,7 +472,7 @@ const AppShell: React.FC = () => {
         seq: ++searchRequestSeqRef.current,
       });
     },
-    [selectedWorkId, activeNav]
+    [selectedWorkId, selectedWorkIsOnline, activeNav]
   );
 
   const handleSelectNav = useCallback((page: NavPage) => {
@@ -1204,6 +1213,7 @@ const AppShell: React.FC = () => {
           {selectedWorkId && (
             <WorkDetailView
               workId={selectedWorkId}
+              online={selectedWorkIsOnline}
               focusVersionId={bookmarkVersion}
               onBack={handleBackFromDetail}
               onSnapshotChange={applySnapshot}
@@ -1237,7 +1247,7 @@ const AppShell: React.FC = () => {
                 refreshTick={libraryRefreshTick}
                 canReturnToDetail={canReturnToDetail}
                 onReturnToDetail={handleBackFromDetail}
-                onSelectWork={handleOpenWorkDetail}
+                onSelectWork={handleSelectWork}
                 onSnapshotChange={applySnapshot}
                 onOpenDownloads={() => {
                   detailHistoryRef.current = [];
@@ -1258,7 +1268,7 @@ const AppShell: React.FC = () => {
                 refreshTick={libraryRefreshTick}
                 canReturnToDetail={canReturnToDetail}
                 onReturnToDetail={handleBackFromDetail}
-                onSelectWork={handleOpenWorkDetail}
+                onSelectWork={handleSelectWork}
                 onSnapshotChange={applySnapshot}
                 onOpenDownloads={() => {
                   detailHistoryRef.current = [];
@@ -1279,7 +1289,7 @@ const AppShell: React.FC = () => {
                 refreshTick={libraryRefreshTick}
                 canReturnToDetail={canReturnToDetail}
                 onReturnToDetail={handleBackFromDetail}
-                onSelectWork={handleOpenWorkDetail}
+                onSelectWork={handleSelectWork}
                 onSnapshotChange={applySnapshot}
                 onOpenDownloads={() => {
                   detailHistoryRef.current = [];
@@ -1299,7 +1309,7 @@ const AppShell: React.FC = () => {
                 onExternalSearchHandled={handleOnlineSearchHandled}
                 canReturnToDetail={canReturnToDetail}
                 onReturnToDetail={handleBackFromDetail}
-                onOpenWorkDetail={handleOpenWorkDetail}
+                onOpenWorkDetail={handleSelectWork}
                 onOpenDownloads={() => {
                   detailHistoryRef.current = [];
                   setSelectedWorkId(null);
@@ -1314,7 +1324,7 @@ const AppShell: React.FC = () => {
                 section={activeNav === "downloads" ? "downloads" : "all"}
                 onSectionChange={section=>handleSelectNav(section === "downloads" ? "downloads" : "tasks")}
                 downloadContent={<DownloadsView embedded
-                onSelectWork={handleOpenWorkDetail}
+                onSelectWork={handleSelectWork}
                 onError={setGlobalError}
                 onOpenSettings={() => {
                   updatePageSearch("settings", "");

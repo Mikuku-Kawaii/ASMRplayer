@@ -27,6 +27,8 @@ import androidx.media3.common.util.UnstableApi
 import com.asmrplayer.android.*
 import com.asmrplayer.android.online.OnlineFile
 import com.asmrplayer.android.online.BrowseFilters
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import java.util.Locale
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -75,7 +77,7 @@ internal fun DiscoverPage(data: OnlineScreenState, tools: OnlineTools, bottom: D
         val saved = anchor
         anchor = null
         val row = saved?.let { (key, _) ->
-            data.page.items.distinctBy { it.sourceId }.indexOfFirst { data.account.apiBase + it.sourceId == key }
+            data.page.items.indexOfFirst { data.account.apiBase + it.sourceId == key }
         } ?: -1
         if (saved != null && row >= 0)
             grid.scrollToItem(row + 1 + (if (data.error != null) 1 else 0), saved.second)
@@ -88,6 +90,22 @@ internal fun DiscoverPage(data: OnlineScreenState, tools: OnlineTools, bottom: D
             val layout = grid.layoutInfo
             layout.totalItemsCount > 0 && (layout.visibleItemsInfo.lastOrNull()?.index ?: -1) >= layout.totalItemsCount - 5
         }.collect { nearEnd -> if (nearEnd) tools.loadNextPage() }
+    }
+    LaunchedEffect(active, filterOpen, data.account, data.page, data.loading, data.error) {
+        if (!active || filterOpen || data.loading || data.error != null) return@LaunchedEffect
+        val origin = data.account.apiBase
+        if (data.page?.items.isNullOrEmpty()) return@LaunchedEffect
+        snapshotFlow {
+            if (grid.isScrollInProgress) emptyList()
+            else grid.layoutInfo.visibleItemsInfo.asSequence()
+                .mapNotNull { item -> (item.key as? String)?.takeIf { it.startsWith(origin) }?.removePrefix(origin) }
+                .take(2).toList()
+        }.collectLatest { ids ->
+            if (ids.isNotEmpty()) {
+                delay(350)
+                tools.prefetchDetails(origin, ids)
+            }
+        }
     }
     CatalogGrid(grid, bottom) {
         item(key = "discover-controls", span = { GridItemSpan(maxLineSpan) }) {
@@ -125,7 +143,7 @@ internal fun DiscoverPage(data: OnlineScreenState, tools: OnlineTools, bottom: D
             if (page.items.isEmpty() && !data.loading && !data.hasMore) item(span = { GridItemSpan(maxLineSpan) }) {
                 EmptyContent("没有匹配的作品", "可调整搜索或内容显示设置。", Glyph.Discover)
             }
-            items(page.items.distinctBy { it.sourceId }, key = { data.account.apiBase + it.sourceId }, contentType = { "work" }) { work ->
+            items(page.items, key = { data.account.apiBase + it.sourceId }, contentType = { "work" }) { work ->
                 val workId=com.asmrplayer.android.library.LibraryIndex.id("asmr_one",data.account.apiBase,work.sourceId)
                 val local = state.lookup.byId[workId]
                 val ready = work.sourceId !in data.savingWorks

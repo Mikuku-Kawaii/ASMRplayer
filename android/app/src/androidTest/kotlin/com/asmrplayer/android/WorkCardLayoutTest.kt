@@ -1,10 +1,12 @@
 package com.asmrplayer.android
 
+import android.graphics.Bitmap
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
@@ -14,17 +16,59 @@ import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.util.UnstableApi
+import androidx.test.platform.app.InstrumentationRegistry
 import com.asmrplayer.android.ui.CardTitle
 import com.asmrplayer.android.ui.WorkCard
 import com.asmrplayer.android.ui.PlayerTypography
 import com.asmrplayer.android.ui.CardCodeScore
+import com.asmrplayer.android.ui.playerColors
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
+import java.io.File
 
 @UnstableApi
 class WorkCardLayoutTest {
     @get:Rule val ui = createAndroidComposeRule<MainActivity>()
+
+    @Test fun metadataRowsKeepEvenSpacingInLightTheme() {
+        var scale by mutableFloatStateOf(1f)
+        ui.runOnUiThread { ui.activity.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, scale)) {
+                MaterialTheme(colorScheme = playerColors(false, "berry"), typography = PlayerTypography) {
+                    Box(Modifier.padding(16.dp).width(175.dp)) {
+                        WorkCard("双语作品\nバイノーラル", null, "RJ12345678", listOf("在线"), "",
+                            listOf("治愈", "耳语", "双声道立体声"), {}, favorite = false,
+                            like = {}, voices = listOf("示例声优"), inLibrary = false, save = {})
+                    }
+                }
+            }
+        } }
+
+        if (InstrumentationRegistry.getArguments().getString("visualFixture") == "true") {
+            val directory = ui.activity.getExternalFilesDir(null)
+            val screenshot = ui.onRoot().captureToImage().asAndroidBitmap()
+            File(directory, "work-card-light.png").outputStream().use {
+                screenshot.compress(Bitmap.CompressFormat.PNG, 100, it)
+            }
+        }
+
+        fun bounds(text: String) = ui.onNodeWithText(text, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        for (fontScale in listOf(1f, 1.5f)) {
+            ui.runOnIdle { scale = fontScale }
+            val metadata = ui.onNodeWithTag("work-card-metadata").fetchSemanticsNode().boundsInRoot
+            val tags = ui.onNodeWithTag("work-card-tags").fetchSemanticsNode().boundsInRoot
+            val gaps = listOf(
+                metadata.top - bounds("双语作品\nバイノーラル").bottom,
+                tags.top - metadata.bottom,
+                bounds("RJ12345678").top - tags.bottom,
+                bounds("在线").top - bounds("RJ12345678").bottom,
+            )
+            val expected = with(ui.density) { 4.dp.toPx() }
+            gaps.forEach { assertEquals("At font scale $fontScale", expected, it, 1f) }
+        }
+    }
 
     @Test fun ratingStartsAtTheSameColumnAfterShortAndLongCodes() {
         ui.runOnUiThread { ui.activity.setContent {

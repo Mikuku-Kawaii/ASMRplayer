@@ -211,14 +211,14 @@ internal fun StoragePage(tools: MaintenanceTools, downloads: () -> Unit) {
 @OptIn(ExperimentalLayoutApi::class)
 @UnstableApi
 @Composable
-internal fun UpdatePage(model: PlayerViewModel) {
+internal fun UpdatePage(model: PlayerViewModel, confirmInstallOnOpen: Boolean = false) {
     val tools = model.maintenance
     val data by tools.state.collectAsStateWithLifecycle()
     val update by tools.update.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var preparing by remember { mutableStateOf(false) }
-    var confirm by remember { mutableStateOf(false) }
+    var confirm by rememberSaveable { mutableStateOf(confirmInstallOnOpen && update.phase == UpdatePhase.READY) }
     var launched by rememberSaveable { mutableStateOf("") }
     val installer = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         tools.notice(if (launched == "permission") {
@@ -260,7 +260,10 @@ internal fun UpdatePage(model: PlayerViewModel) {
                     }
                 }
             } }
-            if (release.notes.isNotBlank()) item { Text("更新说明", style = MaterialTheme.typography.titleMedium); Text(release.notes) }
+            if (release.notes.isNotBlank()) item {
+                Text("更新日志", style = MaterialTheme.typography.titleMedium)
+                UpdateReleaseLog(release.notes)
+            }
         }
         if (update.release == null && update.skippedVersion != null) item { MotionTextButton({ tools.skipUpdate(null) }) { Text("恢复版本 ${update.skippedVersion} 的提醒") } }
         item { MaintenanceCard {

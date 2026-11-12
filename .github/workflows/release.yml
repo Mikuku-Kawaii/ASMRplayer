@@ -85,6 +85,8 @@ jobs:
           if ($LASTEXITCODE) { throw 'Android backend checks failed.' }
           node --test scripts/android-update-manifest.test.mjs
           if ($LASTEXITCODE) { throw 'Shared manifest checks failed.' }
+          node --test scripts/assemble-update-channels.test.mjs
+          if ($LASTEXITCODE) { throw 'Update channel checks failed.' }
       - name: Build Android and merge shared manifest
         if: env.BUILD_ANDROID == 'true'
         shell: pwsh
@@ -104,6 +106,12 @@ jobs:
           } finally {
             if (Test-Path -LiteralPath $env:ANDROID_KEYSTORE_FILE) { Remove-Item -LiteralPath $env:ANDROID_KEYSTORE_FILE -Force }
           }
+      - name: Prepare independent update channels and legacy bridge
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          node scripts/assemble-update-channels.mjs "output/release/v$version"
+          if ($LASTEXITCODE) { throw 'Failed to prepare update channels; no release should be published.' }
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.BUILD_ANDROID == 'true' && 'signed-windows-android-release' || 'signed-windows-release' }}
@@ -116,6 +124,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $files = @(Get-ChildItem "output/release/v$version" -File | Where-Object { $_.Extension -in @('.exe', '.msi', '.apk') -or $_.Name -eq 'latest.json' } | ForEach-Object FullName)
+          $files = @(Get-ChildItem "output/release/v$version" -File | Where-Object { $_.Extension -in @('.exe', '.msi', '.apk') -or $_.Name -in @('latest.json', 'latest-windows.json', 'latest-android.json') } | ForEach-Object FullName)
           gh release create "v$version" @files --draft --verify-tag --title "ASMR Player $version" --notes-file "docs/releases/v$version.md"
           if ($LASTEXITCODE) { throw 'Failed to create release draft' }

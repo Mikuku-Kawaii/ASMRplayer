@@ -99,16 +99,21 @@ internal data class CoverTransform(val scale: Float = 1f, val offset: Offset = O
 }
 
 @Composable
-internal fun FullscreenArtwork(uri: String?, workId:String?=null, close: () -> Unit) {
+internal fun FullscreenArtwork(uri: String?, workId: String? = null, label: String = "作品封面", close: () -> Unit) {
     val artwork=rememberArtwork(uri, highResolution=true, workId=workId, fullscreen=true)
     Dialog(onDismissRequest=close,properties=DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
         DialogMotion()
         NoticeOverlay(modal = true)
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             if (artwork.loading) CircularProgressIndicator(Modifier.align(Alignment.Center).size(28.dp))
-            artwork.image?.let { bitmap -> key(uri, workId) { ZoomableCover(bitmap, Modifier.fillMaxSize()) } }
+            artwork.image?.let { bitmap -> key(uri, workId) { ZoomableCover(bitmap, Modifier.fillMaxSize(), label) } }
+            if (artwork.image == null && !artwork.loading) {
+                Text("无法打开图片", Modifier.align(Alignment.Center), color = Color.White)
+            }
             CompositionLocalProvider(LocalContentColor provides Color.White) {
-                Box(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp)) { GlyphButton(Glyph.Close,"关闭封面",close) }
+                Box(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp)) {
+                    GlyphButton(Glyph.Close, if (label == "作品封面") "关闭封面" else "关闭图片", close)
+                }
             }
         }
     }
@@ -116,12 +121,12 @@ internal fun FullscreenArtwork(uri: String?, workId:String?=null, close: () -> U
 
 
 @Composable
-internal fun ZoomableCover(bitmap: ImageBitmap, modifier: Modifier = Modifier) {
+internal fun ZoomableCover(bitmap: ImageBitmap, modifier: Modifier = Modifier, label: String = "作品封面") {
     BoxWithConstraints(modifier.clipToBounds()) {
         val viewport = IntSize(constraints.maxWidth, constraints.maxHeight)
         val pixels = IntSize(bitmap.width, bitmap.height)
         var transform by remember(viewport, pixels) { mutableStateOf(CoverTransform()) }
-        Image(bitmap, "作品封面", Modifier.fillMaxSize().pointerInput(viewport, pixels) {
+        Image(bitmap, label, Modifier.fillMaxSize().pointerInput(viewport, pixels) {
             detectTransformGestures { centroid, pan, zoom, _ ->
                 transform = transform.gesture(viewport, pixels, centroid, pan, zoom)
             }

@@ -18,29 +18,38 @@ import androidx.media3.common.util.UnstableApi
 import com.asmrplayer.android.PlayerScreenState
 import com.asmrplayer.android.PlayerViewModel
 
-private data class SettingEntry(val group:String,val title:String,val summary:String,val route:String)
+private data class SettingEntry(
+    val group: String, val title: String, val summary: String, val route: String, val keywords: String = "",
+) {
+    fun matches(query: String) = listOf(title, summary, group, keywords).any { it.contains(query, ignoreCase = true) }
+}
+
 private val settingsEntries=listOf(
-    SettingEntry("资料库与同步","作品目录与扫描","导入、目录授权与重新扫描","directories"),
-    SettingEntry("资料库与同步","在线来源","来源地址与访问凭据","online-source"),
-    SettingEntry("资料库与同步","跨设备同步","GitHub Gist、OneDrive、WebDAV 和 Supabase","sync"),
-    SettingEntry("资料库与同步","资料备份与恢复","作品、喜欢、进度、标记与媒体授权","backup"),
-    SettingEntry("下载与存储","任务中心","离线下载、扫描、同步与双端继续收听","tasks"),
-    SettingEntry("下载与存储","下载存储与缓存","占用统计与封面缓存","storage"),
-    SettingEntry("播放与字幕","音效与均衡器","预设、PEQ、AutoEQ、声道与响度","effects"),
-    SettingEntry("播放与字幕","耳机音效偏好","保存方案、输出设备与自动切换","headphones"),
-    SettingEntry("播放与字幕","字幕设置","原文、译文、导入与时间偏移","subtitle-settings"),
-    SettingEntry("界面与系统","外观","颜色预设、明暗与低效果模式","appearance"),
-    SettingEntry("界面与系统","内容显示","NSFW 与未分级作品","content-settings"),
-    SettingEntry("界面与系统","系统媒体与灵动岛","通知、锁屏与媒体隐私","system-media"),
-    SettingEntry("界面与系统","应用更新","检查版本、下载与安装","updates"))
+    SettingEntry("资料库与同步","作品目录与扫描","导入、目录授权与重新扫描","directories","文件夹 本地路径"),
+    SettingEntry("资料库与同步","在线来源","来源地址与访问凭据","online-source","API Token"),
+    SettingEntry("资料库与同步","跨设备同步","GitHub Gist、OneDrive、WebDAV 和 Supabase","sync","局域网 自动同步"),
+    SettingEntry("资料库与同步","资料备份与恢复","作品、喜欢、进度、标记与媒体授权","backup","还原 数据迁移"),
+    SettingEntry("下载与存储","任务中心","离线下载、扫描、同步与双端继续收听","tasks","下载管理 失败任务"),
+    SettingEntry("下载与存储","下载存储与缓存","占用统计与封面缓存","storage","清理缓存 空间不足"),
+    SettingEntry("播放与字幕","音效与均衡器","预设、PEQ、AutoEQ、声道与响度","effects","EQ 左右声道 响度均衡"),
+    SettingEntry("播放与字幕","耳机音效偏好","保存方案、输出设备与自动切换","headphones","蓝牙 有线耳机"),
+    SettingEntry("播放与字幕","字幕设置","原文、译文、导入与时间偏移","subtitle-settings","台本 时间对齐"),
+    SettingEntry("界面与系统","外观","颜色预设、明暗与低效果模式","appearance",
+        "主题 配色 浅色 深色 跟随系统 关闭动效 " + ColorPreset.entries.joinToString(" ") { it.label }),
+    SettingEntry("界面与系统","内容显示","NSFW 与未分级作品","content-settings","R18 SFW 成人向 全年龄"),
+    SettingEntry("界面与系统","系统媒体与灵动岛","通知、锁屏与媒体隐私","system-media","隐藏封面 隐藏标题"),
+    SettingEntry("界面与系统","应用更新","检查版本、下载与安装","updates","版本号 更新日志"))
 
 @Composable
 internal fun SettingsPage(state:PlayerScreenState,open:(String)->Unit) {
     var query by rememberSaveable{mutableStateOf("")}
-    val entries=remember(query){settingsEntries.filter{query.isBlank()||"${it.title} ${it.summary} ${it.group}".contains(query.trim(),true)}}
+    val groups = remember(query) {
+        val terms = query.trim().split(Regex("\\s+")).filter(String::isNotBlank)
+        settingsEntries.filter { entry -> terms.all(entry::matches) }.groupBy { it.group }
+    }
     LazyColumn(Modifier.navigationBarsPadding(),contentPadding=PageSpace.padding,verticalArrangement=Arrangement.spacedBy(12.dp)) {
         item{PageSearch(query,{query=it},"搜索设置")}
-        entries.groupBy{it.group}.forEach{(group,rows)->item(key=group){SettingsGroup(group){rows.forEachIndexed{index,entry->
+        groups.forEach{(group,rows)->item(key=group){SettingsGroup(group){rows.forEachIndexed{index,entry->
             SettingsLink(entry.title,when(entry.route){
                 "appearance"->"${ColorPreset.from(state.colorPreset).label} · ${when(state.theme){"light"->"浅色";"dark"->"深色";else->"跟随系统"}}"
                 "content-settings"->if(state.showNsfw)"包含 NSFW 内容" else "隐藏 NSFW 内容"
@@ -51,7 +60,7 @@ internal fun SettingsPage(state:PlayerScreenState,open:(String)->Unit) {
             }){open(entry.route)}
             if(index<rows.lastIndex)HorizontalDivider(Modifier.padding(horizontal=16.dp),color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.3f))
         }}}}
-        if(entries.isEmpty())item{EmptyContent("没有匹配的设置","试试“字幕”“下载”或“颜色”等关键词。",Glyph.Search)}
+        if(groups.isEmpty())item{EmptyContent("没有匹配的设置","试试“字幕”“下载”或“颜色”等关键词。",Glyph.Search)}
     }
 }
 

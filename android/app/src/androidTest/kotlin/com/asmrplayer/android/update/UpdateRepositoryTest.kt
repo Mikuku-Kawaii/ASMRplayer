@@ -5,6 +5,7 @@ import android.content.ContextWrapper
 import androidx.core.content.FileProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.asmrplayer.android.BuildConfig
 import com.asmrplayer.android.online.HttpTransport
 import com.asmrplayer.android.online.OnlineFixtureServer
 import kotlinx.coroutines.*
@@ -26,6 +27,8 @@ class UpdateRepositoryTest {
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
     private class Fixture : UpdateRemote {
         val bytes = ByteArray(100_000) { (it % 251).toByte() }
+        val version = BuildConfig.VERSION_NAME.substringBeforeLast('.') + "." +
+            (BuildConfig.VERSION_NAME.substringAfterLast('.').toLong() + 1)
         private val key = Ed25519PrivateKeyParameters(ByteArray(32) { (it + 7).toByte() }, 0)
         private val id = ByteArray(8) { it.toByte() }
         private fun sign(bytes: ByteArray) = Ed25519Signer().run { init(true, key); update(bytes, 0, bytes.size); generateSignature() }
@@ -37,12 +40,12 @@ class UpdateRepositoryTest {
         init {
             val digest = Blake2bDigest(512); digest.update(bytes, 0, bytes.size)
             val hash = ByteArray(64); digest.doFinal(hash, 0)
-            val sig = sign(hash); val comment = "timestamp:1\tversion:1.4.0"
+            val sig = sign(hash); val comment = "timestamp:1\tversion:$version"
             val signature = Base64.toBase64String(("untrusted comment: fixture\n" + Base64.toBase64String("ED".toByteArray() + id + sig) +
                 "\ntrusted comment: $comment\n" + Base64.toBase64String(sign(sig + comment.toByteArray())) + "\n").toByteArray())
-            json = JSONObject().put("version", "1.4.0").put("platforms", JSONObject().put("android-universal", JSONObject()
-                .put("url", "https://github.com/Mikuku-Kawaii/ASMRplayer/releases/download/v1.4.0/fixture.apk")
-                .put("versionCode", 14).put("minSdk", 23).put("signature", signature).put("size", bytes.size)
+            json = JSONObject().put("version", version).put("platforms", JSONObject().put("android-universal", JSONObject()
+                .put("url", "https://github.com/Mikuku-Kawaii/ASMRplayer/releases/download/v$version/fixture.apk")
+                .put("versionCode", BuildConfig.VERSION_CODE + 1).put("minSdk", 23).put("signature", signature).put("size", bytes.size)
                 .put("sha256", MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }))).toString()
         }
         override suspend fun manifest(): String { checks++; return json }
@@ -89,7 +92,7 @@ class UpdateRepositoryTest {
         val isolated = isolated(); val remote = Fixture().apply { suspended = true }
         try {
             val repository = UpdateRepository(isolated, remote, remote.publicKey) { _, _ -> }
-            repository.check(); repository.skipVersion("1.4.0")
+            repository.check(); repository.skipVersion(remote.version)
             assertEquals(UpdatePhase.UP_TO_DATE, repository.check(manual = false).phase)
             assertEquals(UpdatePhase.AVAILABLE, repository.check().phase)
             val job = launch(Dispatchers.IO) { repository.download() }

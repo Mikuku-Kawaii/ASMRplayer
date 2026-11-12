@@ -2,7 +2,7 @@
 
 ASMR Player 是一款面向 Windows 和 Android 的音声播放器。可以从本地文件夹建立音频库，也可以浏览在线作品。两端可同步作品、收藏音轨和收听进度，在另一台设备上找到上次听到的位置。
 
-[下载最新版本](https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest) · [26.11.11 更新说明](docs/releases/v26.11.11.md) · [反馈问题](https://github.com/Mikuku-Kawaii/ASMRplayer/issues)
+[下载最新版本](https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest) · [26.11.12 更新说明](docs/releases/v26.11.12.md) · [反馈问题](https://github.com/Mikuku-Kawaii/ASMRplayer/issues)
 
 ## 选择安装包
 

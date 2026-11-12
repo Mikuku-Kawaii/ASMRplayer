@@ -74,9 +74,13 @@ private fun TaskOverview(state:PlayerScreenState,model:PlayerViewModel,open:(Str
         val hidden=state.privateMetadata || work?.let{!visibleRating(it.rating,state)}==true
         rows.add(TaskRow(task.id,if(hidden)"内容已隐藏" else version?.title ?: asset?.relativePath?.substringAfterLast('/') ?: "下载文件",
             if(hidden)"下载" else work?.title?.let{"下载 · $it"} ?: "下载",task.state,
-            "${byteSize(task.downloadedBytes)} / ${byteSize(task.totalBytes)}"+(task.errorCode?.let{" · $it"} ?: ""),
+            "${byteSize(task.downloadedBytes)} / ${byteSize(task.totalBytes)}" + (task.errorCode?.let { " · ${downloadError(it)}" } ?: ""),
             task.totalBytes?.takeIf{it>0}?.let{(task.downloadedBytes.toFloat()/it).coerceIn(0f,1f)},task.id in data.taskBusy,
-            when(task.state){"QUEUED","DOWNLOADING"->"暂停";"PAUSED"->"继续";"FAILED"->"重试";else->null},
+            when (task.state) {
+                "QUEUED", "DOWNLOADING", "VERIFYING" -> "暂停下载"
+                "PAUSED", "FAILED" -> downloadResumeLabel(task.state, task.errorCode)
+                else -> null
+            },
             run={model.online.taskAction(task.id,if(task.state in runningStates)"pause" else "resume")}))
     }
     val shown=rows.filter {when(filter){"active"->it.state in runningStates;"attention"->it.state in setOf("FAILED","PAUSED");"done"->it.state=="COMPLETED";else->true}}

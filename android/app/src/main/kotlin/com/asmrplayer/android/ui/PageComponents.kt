@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,14 +30,15 @@ internal object PageSpace {
 internal fun PageSearch(value: String, change: (String) -> Unit, placeholder: String,
     modifier: Modifier = Modifier, search: (() -> Unit)? = null) {
     val colors = MaterialTheme.colorScheme
+    val fieldColor = if (colors.surface.luminance() > .5f) colors.surfaceContainerHigh else colors.surfaceContainerLow
     TextField(value, change, modifier.fillMaxWidth(), singleLine = true,
         textStyle=MaterialTheme.typography.bodyMedium,
         placeholder = { Text(placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis,style=MaterialTheme.typography.bodyMedium) },
         leadingIcon = { if (search == null) AppGlyph(Glyph.Search) else GlyphButton(Glyph.Search, "提交搜索", search) },
         trailingIcon = if (value.isNotEmpty()) ({ GlyphButton(Glyph.Close, "清空搜索", { change("") }) }) else null,
         shape = RoundedCornerShape(14.dp),
-        colors = TextFieldDefaults.colors(focusedContainerColor = colors.surfaceContainerLow,
-            unfocusedContainerColor = colors.surfaceContainerLow,
+        colors = TextFieldDefaults.colors(focusedContainerColor = fieldColor,
+            unfocusedContainerColor = fieldColor,
             focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
             unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -48,10 +50,11 @@ internal fun PageSearch(value: String, change: (String) -> Unit, placeholder: St
 internal fun HomeSearch(value: String, change: (String) -> Unit, hint: String, modifier: Modifier = Modifier,
                         submit: (() -> Unit)? = null) {
     val colors = MaterialTheme.colorScheme
+    val fieldColor = if (colors.surface.luminance() > .5f) colors.surfaceContainerHigh else colors.surfaceContainerLow
     val keyboard = LocalSoftwareKeyboardController.current
     val style = MaterialTheme.typography.bodyMedium
     BasicTextField(value, change, modifier.fillMaxWidth().heightIn(min = 48.dp)
-        .background(colors.surfaceContainerLow, RoundedCornerShape(14.dp)).semantics { contentDescription = hint },
+        .background(fieldColor, RoundedCornerShape(14.dp)).semantics { contentDescription = hint },
         singleLine = true, textStyle = style.copy(color = colors.onSurface), cursorBrush = SolidColor(colors.primary),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
         keyboardActions = KeyboardActions(onSearch = { submit?.invoke(); keyboard?.hide() }),

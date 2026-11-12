@@ -21,6 +21,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import com.asmrplayer.android.data.CatalogMetadata
 import com.asmrplayer.android.data.AndroidBackend
+import com.asmrplayer.android.ui.ColorPreset
+import com.asmrplayer.android.ui.DEFAULT_APPEARANCE_MODE
+import com.asmrplayer.android.ui.DEFAULT_COLOR_PRESET
 import com.asmrplayer.android.ui.LibraryAudio
 import java.util.UUID
 import kotlin.coroutines.resume
@@ -47,7 +50,7 @@ data class PlayerScreenState(
     val error: String? = null, val opening: Boolean = false,
     val lookup: com.asmrplayer.android.ui.LibraryLookup = com.asmrplayer.android.ui.LibraryLookup(), val libraryReady: Boolean = false,
     val showNsfw: Boolean = false, val includeUnrated: Boolean = true,
-    val theme: String = "dark", val colorPreset: String = "berry", val lowEffects: Boolean = false,
+    val theme: String = DEFAULT_APPEARANCE_MODE, val colorPreset: String = DEFAULT_COLOR_PRESET, val lowEffects: Boolean = false,
     val metadata: Map<String, CatalogMetadata> = emptyMap(),
     val session: PlaybackToolsState = PlaybackToolsState(),
     val headphones: HeadphoneState = HeadphoneState(), val headphonesReady: Boolean = false,
@@ -167,8 +170,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                 .map { rows -> rows.associateBy { it.workId } }.flowOn(Dispatchers.Default)
                 .collect { metadata -> mutable.update { it.copy(metadata = metadata) } }
         }
-        mutable.update { it.copy(theme = appearance.getString("theme", "dark") ?: "dark",
-            colorPreset = appearance.getString("colorPreset", "berry")?.takeIf { key -> key in setOf("ink_blue", "wisteria", "berry", "amber") } ?: "berry",
+        mutable.update { it.copy(theme = appearance.getString("theme", DEFAULT_APPEARANCE_MODE) ?: DEFAULT_APPEARANCE_MODE,
+            colorPreset = ColorPreset.from(appearance.getString("colorPreset", DEFAULT_COLOR_PRESET) ?: DEFAULT_COLOR_PRESET).key,
             lowEffects = appearance.getBoolean("lowEffects", false)) }
         viewModelScope.launch {
             screenState.map { current ->

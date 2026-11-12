@@ -26,7 +26,7 @@ internal fun rememberArtwork(uri: String?, highResolution: Boolean = false, work
     val width = LocalConfiguration.current.screenWidthDp * LocalDensity.current.density
     val edge = when {
         fullscreen -> 3072
-        highResolution -> if (width <= 768) 768 else if (width <= 1536) 1536 else 2048
+        highResolution -> if (width <= 1536) 1536 else 2048
         else -> thumbnailEdge
     }
     if (uri == null && workId == null) return ArtworkState()

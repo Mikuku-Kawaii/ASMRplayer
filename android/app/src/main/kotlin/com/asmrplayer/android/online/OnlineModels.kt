@@ -56,6 +56,7 @@ object AsmrJson {
                 if (o.optString("type") == "folder") { walk(o.getJSONArray("children"), path, depth + 1); continue }
                 val ext = title.substringAfterLast('.', "bin").lowercase()
                 val kind = when {
+                    LibraryIndex.isVideoFormat(ext) -> "other"
                     o.optString("type") == "audio" || ext in LibraryIndex.audioExtensions -> "audio"
                     ext in LibraryIndex.subtitleExtensions -> "subtitle"
                     ext in LibraryIndex.imageExtensions -> "image"

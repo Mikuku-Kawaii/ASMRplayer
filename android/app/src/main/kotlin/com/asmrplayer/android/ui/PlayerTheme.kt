@@ -15,39 +15,42 @@ import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.sp
 import com.asmrplayer.android.R
 
+internal const val DEFAULT_APPEARANCE_MODE = "light"
+internal const val DEFAULT_COLOR_PRESET = "wisteria"
+
 /** Surface colors are authored for each mode so large areas stay softly tinted. */
 internal enum class ColorPreset(
     val key: String, val label: String,
     val background: Color, val panel: Color, val lightBackground: Color, val lightPanel: Color,
     val lightField: Color, val accent: Color, val ink: Color, val muted: Color, val lightAccent: Color
 ) {
-    InkBlue("ink_blue", "墨蓝", Color(0xFF252C36), Color(0xFF303945), Color(0xFFE7EBF0), Color(0xFFF2F4F7),
+    InkBlue("ink_blue", "墨蓝", Color(0xFF252C36), Color(0xFF303945), Color(0xFFE7EBF0), Color(0xFFF1F5FA),
         Color(0xFFDEE4EB), Color(0xFFB4D5FD), Color(0xFFDEE3EB), Color(0xFFAAB3C2), Color(0xFF28558A)),
-    Wisteria("wisteria", "藤紫", Color(0xFF282532), Color(0xFF34303E), Color(0xFFEBE8F0), Color(0xFFF6F2F9),
-        Color(0xFFE2DDEB), Color(0xFFB5A0FF), Color(0xFFF0EDFF), Color(0xFFBBB5D1), Color(0xFF6947B5)),
-    Berry("berry", "莓粉", Color(0xFF29232C), Color(0xFF322A35), Color(0xFFEEE8EC), Color(0xFFF7F2F5),
+    Wisteria(DEFAULT_COLOR_PRESET, "藤紫", Color(0xFF282532), Color(0xFF34303E), Color(0xFFEEE8F7), Color(0xFFF7F1FA),
+        Color(0xFFE6DDF1), Color(0xFFB5A0FF), Color(0xFFF0EDFF), Color(0xFFBBB5D1), Color(0xFF6947B5)),
+    Berry("berry", "莓粉", Color(0xFF29232C), Color(0xFF322A35), Color(0xFFEEE8EC), Color(0xFFF8F0F5),
         Color(0xFFE5DDE3), Color(0xFFF18BB5), Color(0xFFF7EDF4), Color(0xFFCBB7C6), Color(0xFF9A3965)),
-    Amber("amber", "琥珀烛光", Color(0xFF2C2723), Color(0xFF38312A), Color(0xFFEEE9E3), Color(0xFFF7F3EE),
+    Amber("amber", "琥珀烛光", Color(0xFF2C2723), Color(0xFF38312A), Color(0xFFEEE9E3), Color(0xFFF8F1E8),
         Color(0xFFE5DFD7), Color(0xFFE5B887), Color(0xFFF5ECE3), Color(0xFFB8ABA0), Color(0xFF825321));
 
-    companion object { fun from(key: String) = entries.firstOrNull { it.key == key } ?: Berry }
+    companion object { fun from(key: String) = entries.firstOrNull { it.key == key } ?: Wisteria }
 }
 
-internal fun playerColors(dark: Boolean, preset: String = "berry"): ColorScheme {
+internal fun playerColors(dark: Boolean, preset: String = DEFAULT_COLOR_PRESET): ColorScheme {
     val p = ColorPreset.from(preset)
     val base = wisteriaColors(dark)
     val page = if (dark) p.background else p.lightBackground
     val panel = if (dark) p.panel else p.lightPanel
     val ink = if (dark) p.ink else p.panel
-    val muted = if (dark) p.muted else lerp(ink, p.lightAccent, .30f)
+    val muted = if (dark) p.muted else lerp(ink, p.lightAccent, .20f)
     val accent = if (dark) p.accent else p.lightAccent
-    val selected = lerp(panel, p.accent, if (dark) .20f else .23f)
-    val raised = if (dark) lerp(panel, p.ink, .055f) else lerp(panel, p.lightField, .55f)
+    val selected = lerp(panel, accent, if (dark) .20f else .24f)
+    val raised = if (dark) lerp(panel, p.ink, .055f) else p.lightField
     val colors = if (p == ColorPreset.Wisteria) base else base.copy(
         primary = accent, onPrimary = if (dark) page else Color.White,
         primaryContainer = selected, onPrimaryContainer = if (dark) p.ink else p.panel,
         secondary = muted, onSecondary = if (dark) page else Color.White,
-        secondaryContainer = panel, onSecondaryContainer = ink,
+        secondaryContainer = if (dark) panel else lerp(panel, accent, .14f), onSecondaryContainer = ink,
         tertiary = accent, onTertiary = if (dark) page else Color.White,
         tertiaryContainer = selected, onTertiaryContainer = ink,
         inverseSurface = ink, inverseOnSurface = page,
@@ -55,14 +58,15 @@ internal fun playerColors(dark: Boolean, preset: String = "berry"): ColorScheme 
         surfaceTint = accent
     )
     return colors.copy(
-        background = page, onBackground = ink, surface = page, onSurface = ink,
-        surfaceVariant = panel, onSurfaceVariant = muted,
-        surfaceContainerLowest = if (dark) lerp(page, Color.Black, .08f) else panel,
-        surfaceContainerLow = if (dark) lerp(page, panel, .65f) else p.lightField,
-        surfaceContainer = panel, surfaceContainerHigh = raised,
-        surfaceContainerHighest = if (dark) lerp(panel, p.ink, .11f) else p.lightField,
+        background = page, onBackground = ink, surface = if (dark) page else panel, onSurface = ink,
+        surfaceVariant = if (dark) panel else p.lightField, onSurfaceVariant = muted,
+        surfaceContainerLowest = if (dark) lerp(page, Color.Black, .08f) else Color.White,
+        surfaceContainerLow = if (dark) lerp(page, panel, .65f) else panel,
+        surfaceContainer = if (dark) panel else lerp(panel, page, .36f), surfaceContainerHigh = raised,
+        surfaceContainerHighest = if (dark) lerp(panel, p.ink, .11f) else lerp(p.lightField, accent, .14f),
         surfaceDim = if (dark) page else p.lightField, surfaceBright = if (dark) raised else panel,
-        outline = lerp(page, muted, .85f), outlineVariant = lerp(panel, muted, if (dark) .17f else .23f)
+        outline = if (dark) lerp(page, muted, .85f) else lerp(page, ink, .62f),
+        outlineVariant = if (dark) lerp(panel, muted, .17f) else lerp(page, ink, .30f)
     )
 }
 
@@ -85,9 +89,9 @@ private fun wisteriaColors(dark: Boolean): ColorScheme = if (dark) darkColorSche
     errorContainer = Color(0xFF7D2929), onErrorContainer = Color(0xFFFFDAD6), scrim = Color.Black,
 ) else lightColorScheme(
     primary = Color(0xFF6947B5), onPrimary = Color.White,
-    primaryContainer = Color(0xFFECE3FF), onPrimaryContainer = Color(0xFF38215F),
+    primaryContainer = Color(0xFFDFCEF8), onPrimaryContainer = Color(0xFF38215F),
     secondary = Color(0xFF625673), onSecondary = Color.White,
-    secondaryContainer = Color(0xFFECE6F5), onSecondaryContainer = Color(0xFF3F344E),
+    secondaryContainer = Color(0xFFE9DFF4), onSecondaryContainer = Color(0xFF3F344E),
     tertiary = Color(0xFF825063), onTertiary = Color.White,
     tertiaryContainer = Color(0xFFFFD9E7), onTertiaryContainer = Color(0xFF63394A),
     background = Color(0xFFF8F7FC), onBackground = Color(0xFF272333),

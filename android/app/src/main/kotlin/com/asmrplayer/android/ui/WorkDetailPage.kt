@@ -45,33 +45,50 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
         }
     }
     val local=state.lookup.byId[workId]
-    val remote=online.detail?.takeIf {origin!=null&&online.detailOrigin==origin&&online.detailId==sourceId}
+    val isOnline = origin != null && sourceId != null
+    val requestedDetail = isOnline && online.detailOrigin == origin && online.detailId == sourceId
+    val remote = online.detail.takeIf { requestedDetail }
+    val onlineError = online.detailError.takeIf { requestedDetail }
+    val waitingForTracks = isOnline && remote == null && onlineError == null
+    val localTracks = if (waitingForTracks) emptyList() else local?.versions.orEmpty()
+    fun retryDetail() {
+        if (origin != null && sourceId != null) model.online.loadDetail(origin, sourceId, force = true)
+    }
     val meta=state.metadata[workId]
     // The browse card already has the hero metadata. Show it during the network request so
     // the cover has a destination on the first navigation frame.
     val preview = online.page?.items?.firstOrNull { origin == online.account.apiBase && it.sourceId == sourceId }
     val presentedWork = remote?.work ?: preview
     val title=presentedWork?.title?:local?.title
-    val audio=remote?.files.orEmpty().filter{it.kind=="audio"}
-    val groups=if(remote!=null)audio.map{it.path.substringBeforeLast('/',"") to it.format}.distinct() else local?.versions.orEmpty().map{it.groupPath to it.format}.distinct()
+    val audioGroups = remember(remote?.files) {
+        remote?.files.orEmpty().filter { it.kind == "audio" }
+            .groupBy { it.path.substringBeforeLast('/', "") to it.format }
+    }
+    val localGroups = remember(localTracks) { localTracks.groupBy { it.groupPath to it.format } }
+    val groups = if (remote != null) audioGroups.keys.toList() else localGroups.keys.toList()
     var group by rememberSaveable(workId){mutableStateOf("")}
     var format by rememberSaveable(workId){mutableStateOf("")}
     LaunchedEffect(detailState.notice) { detailState.notice?.let { model.feedback(it); model.details.clearNotice() } }
-    val positions=detailState.positions.associateBy { it.versionId }
-    val groupsByVersion = if(remote!=null) audio.associate {
-        it.versionId(workId) to (it.path.substringBeforeLast('/', "") to it.format)
-    } else local?.versions.orEmpty().filter { it.available }.associate { it.id to (it.groupPath to it.format) }
+    val positions = remember(detailState.positions) { detailState.positions.associateBy { it.versionId } }
+    val groupsByVersion = remember(remote != null, audioGroups, localGroups, workId) {
+        buildMap {
+            if (remote != null) {
+                audioGroups.forEach { (groupKey, tracks) -> tracks.forEach { put(it.versionId(workId), groupKey) } }
+            } else {
+                localGroups.forEach { (groupKey, tracks) -> tracks.forEach { if (it.available) put(it.id, groupKey) } }
+            }
+        }
+    }
     val lastInWork=groupsByVersion.keys.mapNotNull(positions::get).latestUnfinished()
     val selected=groups.firstOrNull { it.first==group && it.second==format }
         ?: groupsByVersion[lastInWork?.versionId] ?: groups.firstOrNull()
-    LaunchedEffect(workId, detailState.ready, selected) {
-        if (detailState.ready && format.isBlank() && selected!=null) {
-            group=selected.first
-            format=selected.second
-        }
+    val versions = localGroups[selected].orEmpty()
+    val files = audioGroups[selected].orEmpty()
+    val versionsById = remember(localTracks) { localTracks.associateBy { it.id } }
+    val tasksByVersion = remember(online.tasks) {
+        buildMap { online.tasks.forEach { task -> task.versionId?.let { putIfAbsent(it, task) } } }
     }
-    val versions=local?.versions.orEmpty().filter{it.groupPath==selected?.first&&it.format==selected?.second}
-    val files=audio.filter{it.path.substringBeforeLast('/',"")==selected?.first&&it.format==selected?.second}
+    val favoriteIds = remember(collection.favorites) { collection.favorites.mapTo(HashSet()) { it.versionId } }
     val listState = rememberLazyListState()
     var page by rememberSaveable(workId){mutableStateOf("tracks")}
     var image by remember {mutableStateOf<String?>(null)}
@@ -107,12 +124,12 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
         model.online.search("",conditions=BrowseFilters(tags=listOfNotNull(tag),voices=listOfNotNull(voice)));open("discover")
     }
     val workActions: CardMenu = {close->
-        CardAction("加入歌单", close, !busy) {
+        CardAction("加入歌单", close, !busy && !waitingForTracks) {
             if (remote != null && origin != null) model.online.cardAction(origin, remote.work.sourceId, com.asmrplayer.android.OnlineTools.CardAction.Playlist)
             else model.choosePlaylist(com.asmrplayer.android.data.preferredPlaylistVersions(local?.versions.orEmpty()))
         }
         if(remote!=null||detailState.remoteId!=null) DropdownMenuItem(text={Text("下载作品")},enabled=!busy,onClick={close();download()})
-        DropdownMenuItem(text={Text("加入队列")},enabled=!busy,onClick={close();act("enqueue")})
+        DropdownMenuItem(text={Text("加入队列")},enabled=!busy && !waitingForTracks,onClick={close();act("enqueue")})
         if(remote!=null)DropdownMenuItem(text={Text(if(local?.inLibrary!=true)"加入音频库" else "刷新作品信息")},onClick={close();if(local?.inLibrary==true&&origin!=null)model.details.refresh(remote.work.sourceId,origin) { model.online.loadDetail(origin, remote.work.sourceId) } else model.online.act("save")})
         else if(detailState.remoteId!=null&&detailState.remoteOrigin!=null)DropdownMenuItem(text={Text("刷新作品信息")},onClick={close();model.details.refresh(detailState.remoteId!!,detailState.remoteOrigin!!)})
         if(local!=null)DropdownMenuItem(text={Text(if(local.nsfw)"取消 NSFW 标记" else "标记为 NSFW")},onClick={close();model.setNsfw(workId,!local.nsfw)})
@@ -124,8 +141,8 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
         }
         if(title==null) {
             Column(Modifier.padding(24.dp)) {
-                if(online.detailLoading)LoadingRing()
-                online.detailError?.let {Text(it);MotionTextButton({if(origin!=null&&sourceId!=null)model.online.loadDetail(origin,sourceId, force=true)}){Text("重新加载")}}
+                if (waitingForTracks) LoadingRing("正在加载音轨目录")
+                onlineError?.let { Text(it); MotionTextButton(::retryDetail) { Text("重新加载") } }
             };return@Column
         }
         if(local!=null&&!visibleRating(local.rating,state)){EmptyContent("内容已隐藏","可在内容显示设置中调整。",Glyph.Eye);return@Column}
@@ -139,7 +156,9 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                 FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
                     val playable = state.connected && !busy && groupVersions.isNotEmpty()
                     MotionButton({act("play")},enabled=playable && (detailState.ready || detailState.error!=null)) {
-                        AppGlyph(Glyph.Play);Spacer(Modifier.width(6.dp));Text("播放全部")
+                        AppGlyph(Glyph.Play)
+                        Spacer(Modifier.width(6.dp))
+                        Text(latest?.let { "继续收听 · ${time(it.positionMs)}" } ?: "播放当前目录")
                     }
                     MotionOutlinedButton({act("restart")},enabled=playable) {Text("从头播放")}
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -156,7 +175,7 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                     }
                 
                 }
-                if(busy || (online.detailLoading && remote == null))LoadingRing()
+                if (busy) LoadingRing()
                 detailState.error?.let {Text(it,color=MaterialTheme.colorScheme.error)}
             }
             if (voices.isNotEmpty()) item(key = "detail-cast") {
@@ -169,7 +188,8 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                 Surface(color=MaterialTheme.colorScheme.background) {
                     Column {
                         if(listState.firstVisibleItemIndex>0)Text(title,Modifier.padding(vertical=6.dp),maxLines=1,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.labelMedium)
-                        PageTabs(page,listOf("tracks" to "音轨 ${if (remote != null) files.size else versions.size}","info" to "介绍","assets" to "附件")){page=it}
+                        val trackLabel = if (waitingForTracks) "音轨" else "音轨 ${if (remote != null) files.size else versions.size}"
+                        PageTabs(page,listOf("tracks" to trackLabel,"info" to "介绍","assets" to "附件")){page=it}
                     }
                 }
             }
@@ -183,14 +203,19 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                     if(tags.isEmpty())Text("暂无标签",style=MaterialTheme.typography.bodyMedium)
                 }
             } else if(page=="tracks") {
+                if (waitingForTracks) item { LoadingRing("正在加载音轨目录") }
+                if (onlineError != null) item {
+                    Text(onlineError, color = MaterialTheme.colorScheme.error)
+                    MotionTextButton(::retryDetail) { Text("重新加载") }
+                }
                 if (groups.isNotEmpty()) item {
                     GroupPicker(groups,selected){group=it.first;format=it.second}
                 }
                 if(remote!=null) itemsIndexed(files,key={_,it->it.path}) {index,file ->
                     val id=file.versionId(workId)
-                    val version=local?.versions?.firstOrNull { it.id==id }
-                    val task=online.tasks.firstOrNull {version!=null&&it.versionId==version.id}
-                    val liked=collection.favorites.any{it.versionId==version?.id}
+                    val version = versionsById[id]
+                    val task = version?.let { tasksByVersion[it.id] }
+                    val liked = id in favoriteIds
                     DetailTrackRow(file.title,listOfNotNull(progressLabel(positions[id]),file.durationMs?.let { time(it) },byteSize(file.bytes),task?.let{downloadLabel(it.state)}).joinToString(" · "),
                         { model.online.act("play", files.map { it.path }, startPath = file.path) { open("player") } },!busy,index,version!=null && version.id==current,liked,
                         {if(version!=null)model.collections.favorite(version.id,!liked) else act("favorite-track",paths=listOf(file.path))}) { close ->
@@ -202,8 +227,8 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                     }
                 } else itemsIndexed(versions,key={_,it->it.id}) {index,version ->
                     val p=positions[version.id]
-                    val task=online.tasks.firstOrNull {it.versionId==version.id}
-                    val favorite=collection.favorites.any{it.versionId==version.id}
+                    val task = tasksByVersion[version.id]
+                    val favorite = version.id in favoriteIds
                     DetailTrackRow(version.title,listOfNotNull(progressLabel(p),p?.durationMs?.takeIf{it>0}?.let{time(it)},if(!version.available)"文件不可用" else task?.let{downloadLabel(it.state)}).joinToString(" · "),
                         { model.playGroup(available, startVersion = version.id); open("player") },version.available,index,version.id==current,favorite,{model.collections.favorite(version.id,!favorite)}) { close ->
                         DropdownMenuItem(text={Text("下一首播放")},enabled=version.available,onClick={close();model.enqueue(listOf(version.id),true)})
@@ -247,6 +272,7 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                         Column {
                             Text(file.title,style=MaterialTheme.typography.titleSmall)
                             Text("${file.format.uppercase()} · ${byteSize(file.bytes)}",style=MaterialTheme.typography.bodySmall)
+                            VideoAttachmentHint(file.format)
                             Row {
                                 if(asset==null) {
                                     if(file.kind=="image"&&(file.downloadUrl?:file.streamUrl)!=null)MotionTextButton({image=file.downloadUrl?:file.streamUrl}){Text("查看图片")}
@@ -269,6 +295,7 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                             Text(asset.relativePath.substringAfterLast('/'),style=MaterialTheme.typography.titleSmall)
                             val task=online.tasks.firstOrNull{it.assetId==asset.id}
                             Text("${asset.format.uppercase()} · ${task?.let{downloadLabel(it.state)}?:"未下载"}",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                            VideoAttachmentHint(asset.format)
                             Row {
                                 if(asset.kind=="image")MotionTextButton({model.details.previewImage(asset){image=it}},enabled=!busy){Text("查看图片")}
                                 MotionTextButton({download(ids=setOf(asset.id))},enabled=!busy&&task?.state !in setOf("QUEUED","DOWNLOADING","VERIFYING")){Text("下载附件")}
@@ -282,15 +309,20 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                         CardAction("文件信息", close) { fileInfo = asset.relativePath }
                         if (asset.available) LocalAssetMenu(asset, close, { image = it }, model.details::preview, { binding = it })
                     }) {
-                        Column {Text(asset.relativePath.substringAfterLast('/'),style=MaterialTheme.typography.titleSmall)
-                            Row {if(asset.available)AssetActions(asset,{image=it},{model.details.preview(it)},{binding=it}) else Text("文件不可用")}
+                        Column {
+                            Text(asset.relativePath.substringAfterLast('/'),style=MaterialTheme.typography.titleSmall)
+                            VideoAttachmentHint(asset.format)
+                            if (!asset.available) Text("文件不可用")
+                            else if (!LibraryIndex.isVideoFormat(asset.format)) Row {
+                                AssetActions(asset,{image=it},{model.details.preview(it)},{binding=it})
+                            }
                             HorizontalDivider()
                         }
                     }
                 }
             }
         }
-        image?.let {uri->FullscreenArtwork(uri) { image=null }}
+        image?.let { uri -> FullscreenArtwork(uri, label = "附件图片") { image = null } }
         fileInfo?.let {text->PlayerSheet("文件信息",{fileInfo=null}){Text(text)}}
         detailState.preview?.let {text->PlayerSheet("字幕预览",model.details::closePreview,contentScrolls=true){LazyColumn(Modifier.fillMaxWidth().padding(horizontal=20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){items(text.split("\n\n")){Text(it)}}}}
         binding?.let {asset->
@@ -362,6 +394,11 @@ private fun DetailChipRows(label: String, values: List<String>, isCast: Boolean,
             }
         }
     }
+}
+
+@Composable
+private fun VideoAttachmentHint(format: String) {
+    if (LibraryIndex.isVideoFormat(format)) MaintenanceHint("暂不支持预览")
 }
 
 @Composable

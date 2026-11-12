@@ -1,6 +1,8 @@
 # 签名更新与发布
 
-应用从 `https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest/download/latest.json` 检查正式版本。版本按 SemVer 比较，排除预发布、草稿、相同版本和降级。网络失败或缺少元数据会显示错误。
+从 26.11.12 起，Windows 读取 `releases/latest/download/latest-windows.json`，Android 读取 `releases/latest/download/latest-android.json`。版本按 SemVer 比较，排除预发布、草稿、相同版本和降级。网络失败或缺少元数据会显示错误。
+
+26.11.11 及更早版本仍读取 `releases/latest/download/latest.json`。每个后续正式 Release 都必须原样携带 **26.11.12 的双端 `latest.json`**，其下载地址固定指向 `v26.11.12` 的签名安装包。旧版先更新到 26.11.12；如果相应平台已有更新，再检查并安装一次。26.11.12 以后各端独立检查自己的清单，更新另一端不会改变本端的版本或签名。
 
 更新由 Rust UpdateService 管理，设置页和导航提醒订阅同一快照。下载、取消、签名验证与安装互斥。用户点击“安装并重启”后才暂停播放、保存会话、检查点数据库并运行安装器；验证失败不执行安装包。
 
@@ -9,9 +11,9 @@
 1. 同步修改 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 的版本，并更新 Cargo.lock；添加 `docs/releases/v版本.md`。
 2. 发布者私钥保存在本机 `.release-signing/updater.key`（已被 Git 忽略），公钥写入 Tauri 配置。后续版本必须沿用相同密钥。私钥及该目录不得上传到源码仓库或 Release。
 3. 运行 `powershell -ExecutionPolicy Bypass -File scripts/prepare-release.ps1`。也支持从环境变量 `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 提供密钥。
-4. 将 `output/release/v版本/` 中的 EXE、MSI 和 `latest.json` 上传到对应正式 Release。许可声明保留在仓库；无需额外上传校验表、许可 ZIP 或独立通知附件。
+4. 双端准备完成后执行 `node scripts/assemble-update-channels.mjs output/release/v版本`，再将所需安装包和三个 `latest*.json` 上传到同一个正式 Release。许可声明保留在仓库；无需额外上传校验表、许可 ZIP 或独立通知附件。
 
-`latest.json` 包含 Windows x64 的 NSIS/MSI 平台映射和签名，不需要另外上传 `.sig`。不要手写签名或混用不同版本的安装包。
+三个清单都包含对应签名，不需要另外上传 `.sig`。不要手写签名或将旧安装包伪装为新版本。构建器先生成当次的中间 `latest.json`；发布前必须运行上面的组装命令，它会恢复固定过渡清单并生成平台清单。
 
 生成清单前会使用 Tauri 配置中的更新公钥验证每个安装包的 Minisign 签名、受签名保护的注释与版本。安装包被修改、密钥不匹配或签名版本与发布版本不同都会中止清单生成。
 
@@ -53,7 +55,7 @@ pwsh -NoProfile -File scripts/test-startup-responsiveness.ps1 -Executable <隔�
 
 ## Android 与 PC 共用更新清单
 
-Android 和 Windows 读取同一个 `releases/latest/download/latest.json`。保留原 `windows-x86_64` / NSIS / MSI 条目，增加 `platforms.android-universal`：
+Android 平台清单中的 `platforms.android-universal` 包含：
 
 ```json
 {
@@ -73,7 +75,9 @@ Android 和 Windows 读取同一个 `releases/latest/download/latest.json`。保
 1. 按既有流程准备 Windows 发行包。设置 `ANDROID_HOME`、`JAVA_HOME`，以及 `ANDROID_KEYSTORE_FILE`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`。keystore 和密码保存在私有位置，不进入源码或日志。
 2. 设置已有更新签名的 `TAURI_SIGNING_PRIVATE_KEY_PATH`（或 `TAURI_SIGNING_PRIVATE_KEY`）及必要的 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。脚本不生成/替换现有正式密钥。
 3. 执行 `pwsh -File scripts/prepare-android-release.ps1 -VersionCode <递增整数>`。脚本构建签名 release APK，以 apksigner 验证，读取实际包名、版本和 minSdk，拒绝 debuggable 包，再调用 `tauri signer sign --app-version`；验签后合并到同版本 `output/release/v版本/latest.json`，保留 Windows 条目，并刷新 SHA256SUMS。
-4. PC 与 Android 的本地构建顺序可以互换：PC 清单生成器会重新验证同目录 android-release.json 对应的 APK 后保留 Android 条目。该文件是本地构建元数据，不必上传。准备两端同版本产物后一起上传 EXE/MSI/APK 和唯一的 latest.json 到同一 Release，确认后发布。
+4. PC 与 Android 的本地构建顺序可以互换。PC 清单生成器会重新验证同目录 android-release.json 对应的 APK；该文件是本地元数据，不必上传。运行 `node scripts/assemble-update-channels.mjs output/release/v版本` 后，上传本次安装包和三个清单到同一 Release。
+
+以后单独发布一端时，先按相应构建流程生成当次中间清单，再运行同一组装命令。它从固定的 `v26.11.12/latest.json` 取得过渡清单，并从上一正式 Release 取得未更新平台的清单；获取或检查失败时停止发布。未更新平台的清单保留其原版本、签名和原 Release 下载地址。三份清单都要上传到新的 latest Release；保留旧 Release 及其安装包，避免已有下载地址失效。
 
 GitHub Actions 保留默认 Windows 构建，并支持可选联合发行：手动运行勾选 `build_android`，填写递增的 `android_version_code`（或仓库变量 `ANDROID_VERSION_CODE`）；标签构建使用仓库变量 `ANDROID_SIGNED_RELEASE_CI=true` 启用 Android，同时保留原 `SIGNED_RELEASE_CI` 总开关。
 

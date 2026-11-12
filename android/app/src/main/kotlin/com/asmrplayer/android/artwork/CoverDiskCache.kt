@@ -32,7 +32,8 @@ internal object CoverDiskCache {
         removed to (files.size - removed)
     }
 
-    suspend fun read(context: Context, identity: String, edge: Int, address: suspend () -> String): Bitmap? {
+    suspend fun read(context: Context, identity: String, edge: Int, cachedOnly: Boolean = false,
+        address: suspend () -> String): Bitmap? {
         val key = LibraryIndex.id(identity)
         return locks[(key.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
             val dir = File(context.cacheDir, "artwork-v1").apply { mkdirs() }
@@ -44,6 +45,7 @@ internal object CoverDiskCache {
                 }
                 file.delete()
             }
+            if (cachedOnly) return@withLock if (file.isFile) decode(file, edge) else null
             val temp = File.createTempFile("cover-", ".part", dir)
             try {
                 CacheMetrics.imageFetches.incrementAndGet()

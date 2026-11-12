@@ -154,7 +154,8 @@ internal fun DownloadPage(data: OnlineScreenState, state: PlayerScreenState, mod
                         }
                         when (task.state) {
                             "QUEUED", "DOWNLOADING", "VERIFYING" -> GlyphButton(Glyph.Pause, "暂停下载 $fileTitle", { model.online.taskAction(task.id, "pause") }, !busy)
-                            "PAUSED", "FAILED" -> GlyphButton(Glyph.Play, "继续下载 $fileTitle", { model.online.taskAction(task.id, "resume") }, !busy)
+                            "PAUSED", "FAILED" -> GlyphButton(Glyph.Play, "${downloadResumeLabel(task.state, task.errorCode)} $fileTitle",
+                                { model.online.taskAction(task.id, "resume") }, !busy)
                             "COMPLETED" -> if (task.versionId != null) GlyphButton(Glyph.Play, "播放离线音频 $fileTitle", { model.playVersion(task.versionId); open("player") }, state.connected && !busy)
                         }
                         MoreActions("下载选项 $fileTitle", content = actions)
@@ -194,6 +195,12 @@ internal fun downloadLabel(state: String) = when (state) {
     "QUEUED" -> "等待下载"; "DOWNLOADING" -> "正在下载"; "VERIFYING" -> "正在校验"
     "PAUSED" -> "已暂停"; "FAILED" -> "下载失败"; "COMPLETED" -> "已完成"; else -> "正在核对状态"
 }
+internal fun downloadResumeLabel(state: String, errorCode: String?) = when {
+    state == "PAUSED" -> "继续下载"
+    errorCode in setOf("MISSING_FILE", "INTEGRITY", "INVALID_CONTENT") -> "重新下载"
+    else -> "重试下载"
+}
+
 internal fun downloadError(code: String) = when (code) {
     "AUTH_REQUIRED" -> "访问权限不足，请检查来源 Token 后继续。"
     "NOT_FOUND" -> "文件不存在，请刷新来源作品。"

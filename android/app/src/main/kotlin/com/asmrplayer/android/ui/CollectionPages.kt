@@ -102,6 +102,7 @@ internal fun CollectionPage(favorites: Boolean, state: PlayerScreenState, model:
     val catalog = if (data.query == requested) data else CollectionScreenState(query = requested)
     val works = remember(catalog.works, state.showNsfw, state.includeUnrated) { catalog.works.filter { visibleRating(it.work.rating, state) } }
     val libraryIsEmpty = remember(state.lookup) { state.library.none { it.inLibrary } }
+    val favoritesAreEmpty = remember(state.lookup) { state.library.none { it.favorite } }
     val showWelcome = !favorites && catalog.ready && catalog.error == null &&
         works.isEmpty() && state.libraryReady && libraryIsEmpty && query.isBlank() && condition.conditionCount == 0
     Column {
@@ -177,8 +178,20 @@ internal fun CollectionPage(favorites: Boolean, state: PlayerScreenState, model:
                     LibraryWelcome(importAudio, browseOnline)
                 } else if (catalog.ready && catalog.error == null && works.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
                     Column {
-                        EmptyContent("没有匹配的作品", "可更换搜索与筛选条件，或检查内容显示设置。", Glyph.Library)
-                        if (!favorites) MotionButton(importAudio) { Text("导入作品") }
+                        if (favorites && state.libraryReady && favoritesAreEmpty && effectiveQuery.isBlank() && !showSummary) {
+                            EmptyContent("还没有喜欢的作品", "点作品旁的爱心，就能在这里找到它。", Glyph.Heart)
+                            MotionButton(browseOnline) { Text("去发现") }
+                        } else {
+                            EmptyContent("没有匹配的作品", "可更换搜索与筛选条件，或检查内容显示设置。", Glyph.Library)
+                            if (!favorites) MotionButton(importAudio) { Text("导入作品") }
+                            else if (effectiveQuery.isNotBlank() || showSummary) {
+                                MotionTextButton({
+                                    updateSearch("")
+                                    searching = false
+                                    applyFilter(condition.clearConditions())
+                                }) { Text("清空搜索与筛选") }
+                            }
+                        }
                     }
                 }
                 items(works, key = { it.work.id }, contentType = { "work" }) { summary ->

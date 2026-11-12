@@ -164,7 +164,7 @@ class OnlineRepository(private val db: LibraryDatabase, val provider: AsmrOnePro
                 throw e
             }
             if (account.state.value != key.account) throw CancellationException("来源已切换")
-            detailCache.put(key, DetailEntry(fresh, now, System.currentTimeMillis()))
+            detailCache.put(key, DetailEntry(fresh, android.os.SystemClock.elapsedRealtime(), System.currentTimeMillis()))
             fresh
         }
     }

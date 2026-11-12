@@ -32,6 +32,8 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
     val state = mutable.asStateFlow()
     private var browseJob: Job? = null
     private var detailJob: Job? = null
+    private var prefetchJob: Job? = null
+    private var prefetchTarget: Pair<String, String>? = null
     private var actionJob: Job? = null
     private var tasksJob: Job? = null
     private var browseGeneration = 0L
@@ -46,7 +48,7 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
                     val changed = account != mutable.value.account || prefs != filters
                     mutable.update { it.copy(account = account, tagOptions=if(it.account.apiBase==account.apiBase)it.tagOptions else emptyList(),tagCounts=if(it.account.apiBase==account.apiBase)it.tagCounts else emptyMap(),tagsError=null) }; filters = prefs
                     if (changed) {
-                        ++browseGeneration; browseJob?.cancel()
+                        ++browseGeneration; browseJob?.cancel(); prefetchJob?.cancel()
                         mutable.update { it.copy(page = null, requestedPage = 1, loading = false, error = null, loadingMore = false, moreError = null, feedRevision = it.feedRevision + 1) }
                         if (browsing) search()
                         val current = mutable.value
@@ -135,6 +137,7 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
         if (query.length > 1024 || page !in 1..100_000) return
         val generation = ++browseGeneration
         browseJob?.cancel()
+        prefetchJob?.cancel()
         val old = mutable.value
         val identityChanged = old.query != query.trim() || old.order != order || old.ascending != ascending || old.filters != conditions
         mutable.update { it.copy(filters=conditions, query = query.trim(), order = order, ascending = ascending, requestedPage = page,
@@ -182,8 +185,26 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
         }
     }
 
+    /** Warm only a settled viewport. Opening the same work can join its existing cache fill. */
+    internal fun prefetchDetails(origin: String, ids: List<String>) {
+        val account = mutable.value.account
+        if (!browsing || account.apiBase != origin || ids.isEmpty()) return
+        if (prefetchJob?.isActive == true && prefetchTarget?.let { it.first == origin && it.second in ids } == true) return
+        prefetchJob?.cancel()
+        prefetchJob = scope.launch {
+            for (id in ids.take(2)) {
+                if (!browsing || mutable.value.detailId != null || backend.online.account.state.value != account) break
+                prefetchTarget = origin to id
+                try { withTimeoutOrNull(6_000) { backend.online.detail(id) } }
+                catch (e: CancellationException) { throw e }
+                catch (_: Exception) { break }
+            }
+        }
+    }
+
     fun loadDetail(origin: String, id: String, force: Boolean = false) {
         val generation = ++detailGeneration
+        if (force || prefetchTarget != (origin to id)) prefetchJob?.cancel()
         detailJob?.cancel(); actionJob?.cancel()
         val cached = backend.online.cachedDetail(origin, id)?.takeIf { allowed(it.work.rating) }
         mutable.update { it.copy(detailId = id, detailOrigin = origin, detail = cached, detailLoading = cached == null,

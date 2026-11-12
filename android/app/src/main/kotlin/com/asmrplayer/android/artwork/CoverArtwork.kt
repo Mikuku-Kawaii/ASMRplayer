@@ -7,6 +7,8 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.LruCache
 import com.asmrplayer.android.data.AndroidBackend
+import com.asmrplayer.android.library.LibraryIndex
+import com.asmrplayer.android.online.ProviderAccountState
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Semaphore
@@ -19,8 +21,10 @@ internal object CoverArtwork {
     private val slots = Semaphore(3)
     data class Key(val reference: String?, val workId: String?, val revision: Long, val edge: Int, val scope: String)
     data class Request(val address: String?, val key: Key)
-    private val cache = object : LruCache<Key, Bitmap>(32 * 1024 * 1024) {
-        override fun sizeOf(key: Key, value: Bitmap) = value.allocationByteCount
+    private data class CachedCover(val bitmap: Bitmap, val validUntil: Long = Long.MAX_VALUE)
+    private data class Selection(val bitmap: Bitmap?, val retryUpgrade: Boolean = false)
+    private val cache = object : LruCache<Key, CachedCover>(32 * 1024 * 1024) {
+        override fun sizeOf(key: Key, value: CachedCover) = value.bitmap.allocationByteCount
     }
     private val failures = LruCache<Key, Long>(256)
     private val largeImageSlot = Mutex()
@@ -43,8 +47,9 @@ internal object CoverArtwork {
     fun trimMemory() { cache.trimToSize(cache.maxSize() / 4) }
 
     fun peek(request: Request): Bitmap? = cache.get(request.key)
-    fun preview(request: Request): Bitmap? = listOf(768, 384, 1536, 3072).firstNotNullOfOrNull {
-        cache.get(request.key.copy(edge = it))
+        ?.takeIf { it.validUntil > android.os.SystemClock.elapsedRealtime() }?.bitmap
+    fun preview(request: Request): Bitmap? = listOf(request.key.edge, 768, 384, 1536, 2048, 3072).firstNotNullOfOrNull {
+        cache.get(request.key.copy(edge = it))?.bitmap
     }
     fun recentlyFailed(request: Request) =
         (failures.get(request.key) ?: 0L) > android.os.SystemClock.elapsedRealtime()
@@ -69,37 +74,37 @@ internal object CoverArtwork {
         locks[(key.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
             peek(request)?.let { return@withLock it }
             if (recentlyFailed(request)) return@withLock null
-            val bitmap = try {
+            val result = try {
                 if (key.edge > 1024) largeImageSlot.withLock { slots.withPermit { select(context, request) } }
                 else slots.withPermit { select(context, request) }
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { null }
+            catch (_: Exception) { Selection(null) }
+            val bitmap = result.bitmap
             if (bitmap == null) failures.put(key, android.os.SystemClock.elapsedRealtime() + 20_000)
-            else if (bitmap.allocationByteCount <= cache.maxSize()) cache.put(key, bitmap)
+            else if (bitmap.allocationByteCount <= cache.maxSize()) {
+                val validUntil = if (result.retryUpgrade) android.os.SystemClock.elapsedRealtime() + 30_000 else Long.MAX_VALUE
+                cache.put(key, CachedCover(bitmap, validUntil))
+            }
             bitmap
         }
     }
 
-    private suspend fun select(context: Context, request: Request): Bitmap? {
+    private suspend fun select(context: Context, request: Request): Selection {
         val key = request.key
         val owner = key.workId?.let {
             val epoch = context.getSharedPreferences("artwork-revisions", Context.MODE_PRIVATE).getLong(it, 0)
             "$it:${key.scope}:$epoch"
         }
-        val original = key.workId?.let {
-            try { loadOriginal(context, it, key.edge, request.address, key.revision, requireNotNull(owner)) }
-            catch (e: CancellationException) { throw e }
-            catch (_: Exception) { null }
-        }
-        if (original != null) return original
-        if (request.address != null) return readUri(context, request.address, key.edge, owner)
-        // A sync-created work has a provider identity even before its full metadata is available.
         val backend = AndroidBackend.get(context)
-        val meta = key.workId?.let { backend.database.metadata().forWork(it) } ?: return null
+        val meta = key.workId?.let { backend.database.metadata().forWork(it) }
         val account = backend.online.account.state.value
-        if (meta.origin != account.apiBase || "${account.apiBase}:${account.cacheScope}" != key.scope ||
-            !meta.sourceId.matches(Regex("[0-9]{1,12}"))) return null
-        return readUri(context, "${meta.origin}/api/cover/${meta.sourceId}.jpg?type=main", key.edge, owner)
+        val source = meta?.takeIf { it.origin == account.apiBase &&
+            "${account.apiBase}:${account.cacheScope}" == key.scope && it.sourceId.matches(Regex("[0-9]{1,12}")) }
+        val reference = request.address ?: source?.let { "${it.origin}/api/cover/${it.sourceId}.jpg?type=main" }
+        val workId = key.workId ?: return Selection(reference?.let { readUri(context, it, key.edge, null) })
+        val onlineWork = source?.takeIf { workId == LibraryIndex.id("asmr_one", it.origin, it.sourceId) }
+        return loadOriginal(context, workId, key.edge, reference, key.revision, requireNotNull(owner),
+            onlineWork?.sourceId, account)
     }
 
     fun refresh(context: Context, workId: String) {
@@ -129,51 +134,88 @@ internal object CoverArtwork {
         }
         return matchingCoverSamples(pixels(reference),pixels(candidate),reference.width.toFloat()/reference.height,candidate.width.toFloat()/candidate.height)
     }
+    private data class Candidate(val path: String, val bytes: Long?, val read: suspend () -> Bitmap?) {
+        val priority = originalCoverPriority(path)
+    }
+
     /** Resolve attachment identities on demand; do not persist expiring media URLs. */
-    private suspend fun loadOriginal(context: Context, workId: String, maxEdge:Int, referenceUri:String?, revision:Long, owner: String): Bitmap? = withContext(Dispatchers.IO) {
+    private suspend fun loadOriginal(context: Context, workId: String, maxEdge: Int, referenceUri: String?,
+        revision: Long, owner: String, sourceId: String?, account: ProviderAccountState): Selection {
         val backend=AndroidBackend.get(context)
         val dao=backend.database.library()
         val local=dao.observeAssets(workId).first().filter { it.available && coverComparisonCandidate(it.relativePath) }
         val remote=dao.observeRemoteAssets(workId).first().filter { it.available && it.kind=="image" && coverComparisonCandidate(it.relativePath) }
-        val all=(local.map{it.relativePath}+remote.map{it.relativePath}).distinct()
-        val named=all.filter{originalCoverPriority(it)>0}.sortedWith(compareByDescending<String>(::originalCoverPriority).thenBy{it})
         val matchKey="$workId:$revision:$referenceUri"
-        val previous=matchedPaths.get(matchKey)?.takeIf{it in all}
-        // Bound discovery of unnamed bonus images instead of downloading an entire illustration collection.
-        val paths=(listOfNotNull(previous)+named+all.filter{it !in named}.sorted().take(4)).distinct()
-        var reference:Bitmap?=null;var referenceLoaded=false
-        var best:Bitmap?=null
-        for(path in paths) {
-            currentCoroutineContext().ensureActive()
-            val localAsset=local.firstOrNull{it.relativePath==path}
-            val remoteAsset=remote.firstOrNull{it.relativePath==path}
-            var bitmap = localAsset?.let {
-                try { readUri(context, it.uri, maxEdge) }
-                catch (e: CancellationException) { throw e }
-                catch (_: Exception) { null }
+        val previous = matchedPaths.get(matchKey)
+        val highResolution = maxEdge >= 1024
+        var retryUpgrade = false
+        suspend fun attempt(read: suspend () -> Bitmap?): Bitmap? = try { read() }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { retryUpgrade = true; null }
+
+        var referenceBitmap: Bitmap? = null
+        var referenceLoaded = false
+        suspend fun referenceCover(): Bitmap? {
+            if (!referenceLoaded) {
+                referenceLoaded = true
+                referenceBitmap = referenceUri?.let { attempt { readUri(context, it, maxEdge, owner) } }
             }
-            if (bitmap == null && remoteAsset != null) {
-                try {
-                    bitmap = CoverDiskCache.read(context, "$owner:${backend.online.account.cacheScope(remoteAsset.origin)}:${remoteAsset.id}:${remoteAsset.byteSize}", maxEdge) {
-                        backend.online.provider.resolve(remoteAsset).url
-                    }
-                } catch (e: CancellationException) { throw e }
-                catch (_: Exception) { /* Continue with the remaining candidates. */ }
-            }
-            bitmap?.let {
-                if(originalCoverPriority(path)==0&&path!=previous) {
-                    if(!referenceLoaded) {
-                        referenceLoaded=true
-                        reference=referenceUri?.let{address->try{readUri(context,address,768,owner)}catch(e:CancellationException){throw e}catch(_:Exception){null}}
-                    }
-                    if(reference==null||!sameCover(reference!!,it))return@let
-                    matchedPaths.put(matchKey,path)
-                }
-                if(maxOf(it.width,it.height)>=minOf(maxEdge,1024))return@withContext it
-                if(best==null||it.width.toLong()*it.height>best!!.width.toLong()*best!!.height)best=it
+            return referenceBitmap
+        }
+        fun edge(bitmap: Bitmap?) = bitmap?.let { maxOf(it.width, it.height) } ?: 0
+        var best: Bitmap? = null
+        fun consider(bitmap: Bitmap?) {
+            if (edge(bitmap) > edge(best)) best = bitmap
+        }
+        suspend fun scan(candidates: List<Candidate>) {
+            val ordered = candidates.sortedWith(compareByDescending<Candidate> { it.path == previous }
+                .thenByDescending { it.priority }.thenByDescending { it.bytes ?: 0 }.thenBy { it.path })
+            val (named, unnamed) = ordered.partition { it.path == previous || it.priority > 0 }
+            for (candidate in named.take(4) + unnamed.take(if (highResolution) 6 else 4)) {
+                currentCoroutineContext().ensureActive()
+                val bitmap = attempt(candidate.read) ?: continue
+                if (candidate in unnamed && referenceCover()?.let { sameCover(it, bitmap) } != true) continue
+                if (candidate in unnamed) matchedPaths.put(matchKey, candidate.path)
+                consider(bitmap)
+                if (edge(best) >= maxEdge) break
             }
         }
-        best
+        val downloadedPaths = mutableSetOf<String>()
+        scan(local.map { asset -> Candidate(asset.relativePath, null) {
+            readUri(context, asset.uri, maxEdge)?.also { downloadedPaths += asset.relativePath }
+        } })
+        if (highResolution && edge(best) < maxEdge) consider(referenceCover())
+        if (edge(best) < maxEdge) {
+            val detail = if (highResolution && sourceId != null) try {
+                withTimeoutOrNull(8_000) {
+                    if (backend.online.account.state.value != account) null
+                    else backend.online.detail(sourceId).takeIf { backend.online.account.state.value == account }
+                }.also { if (it == null) retryUpgrade = true }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { retryUpgrade = true; null }
+            else null
+            if (detail != null) {
+                consider(detail.work.coverUrl?.takeUnless { it == referenceUri }?.let { attempt { readUri(context, it, maxEdge, owner) } })
+                if (edge(best) < maxEdge) scan(detail.files.asSequence()
+                    .filter { it.kind == "image" && it.path !in downloadedPaths && coverComparisonCandidate(it.path) }
+                    .mapNotNull { file ->
+                        val url = file.downloadUrl ?: file.streamUrl ?: return@mapNotNull null
+                        val id = LibraryIndex.id(workId, "asset", file.id, file.path)
+                        Candidate(file.path, file.bytes) {
+                            CoverDiskCache.read(context, "$owner:${account.cacheScope}:$id:${file.bytes}", maxEdge) { url }
+                        }
+                    }.toList())
+            } else {
+                val cachedOnly = highResolution && sourceId != null
+                scan(remote.filterNot { it.relativePath in downloadedPaths }.map { asset -> Candidate(asset.relativePath, asset.byteSize) {
+                    CoverDiskCache.read(context, "$owner:${backend.online.account.cacheScope(asset.origin)}:${asset.id}:${asset.byteSize}", maxEdge, cachedOnly) {
+                        backend.online.provider.resolve(asset).url
+                    }
+                } })
+            }
+        }
+        if (highResolution || best == null) consider(referenceCover())
+        return Selection(best, highResolution && retryUpgrade && edge(best) < maxEdge)
     }
 
 }

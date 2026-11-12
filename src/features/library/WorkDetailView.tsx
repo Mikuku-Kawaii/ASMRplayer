@@ -27,6 +27,7 @@ import {
   ChevronDown,
   ChevronRight,
   X,
+  LoaderCircle,
 } from "lucide-react";
 import {
   WorkDetailDto,
@@ -185,6 +186,7 @@ export function pickBestDefaultDirectoryGroup(
 interface WorkDetailViewProps {
   focusVersionId?: string;
   workId: string;
+  online?: boolean;
   onBack: () => void;
   onSnapshotChange: (snap: PlaybackSnapshot) => void;
   onOpenDownloads: () => void;
@@ -192,8 +194,45 @@ interface WorkDetailViewProps {
   onError: (err: AppError) => void;
 }
 
-export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
+export function WorkDetailView(props: WorkDetailViewProps) {
+  return <WorkDetailLoader key={`${props.online ? "online" : "local"}:${props.workId}`} {...props} />;
+}
+
+function WorkDetailLoader(props: WorkDetailViewProps) {
+  const [detail, setDetail] = useState<WorkDetailDto | null>(null);
+  const [error, setError] = useState<AppError | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const { workId, online, onBack } = props;
+  useEffect(() => {
+    let disposed = false;
+    setError(null);
+    const request = online
+      ? callCommand<WorkDetailDto>("open_online_work", { workIdOrRj: workId, forDetail: true })
+      : callCommand<WorkDetailDto>("get_work_detail", { workId });
+    void request.then(next => { if (!disposed) setDetail(next); })
+      .catch(reason => { if (!disposed) setError(normalizeAppError(reason)); });
+    return () => { disposed = true; };
+  }, [workId, online, attempt]);
+
+  if (detail) return <WorkDetailContent {...props} workId={detail.id} initialDetail={detail} />;
+  return <div className="page-container" aria-busy={!error}>
+    <div className="detail-top-bar">
+      <button type="button" className="btn btn-ghost btn-sm" onClick={onBack}><ArrowLeft size={16} />返回</button>
+    </div>
+    <div className="empty-state-box">
+      <h2>作品详情</h2>
+      {error ? <>
+        <p>作品详情加载失败</p>
+        <ErrorNotice message={[error.message, error.hint].filter(Boolean).join(" ")} />
+        <button type="button" className="btn btn-secondary" onClick={() => setAttempt(value => value + 1)}>重新加载</button>
+      </> : <div className="task-loading" role="status"><LoaderCircle size={20} aria-hidden="true" />正在加载作品与音轨…</div>}
+    </div>
+  </div>;
+}
+
+const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDetailDto }> = ({
   workId,
+  initialDetail,
   focusVersionId,
   onBack,
   onSnapshotChange,
@@ -201,7 +240,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
   onSearchKeyword,
   onError,
 }) => {
-  const [detail, setDetail] = useState<WorkDetailDto | null>(null);
+  const [detail, setDetail] = useState<WorkDetailDto | null>(initialDetail);
   const [loading, setLoading] = useState(false);
   const subtitleActions = useSubtitleActions(detail?.tracks.flatMap(track => track.versions.map(version => version.id)) ?? []);
   const [syncVersions, setSyncVersions] = useState<string[] | null>(null);
@@ -241,10 +280,7 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
   const [mergeSourceVer, setMergeSourceVer] = useState("");
   const [assocHistory, setAssocHistory] = useState<AssociationHistoryDto[]>([]);
 
-  const loadDetail = useCallback(async () => {
-    setLoading(true);
-    try {
-      const d = await callCommand<WorkDetailDto>("get_work_detail", { workId });
+  const applyDetail = useCallback((d: WorkDetailDto) => {
       setDetail(d);
       setOvTitle(d.title);
       setOvCircle(d.circleName);
@@ -275,16 +311,22 @@ export const WorkDetailView: React.FC<WorkDetailViewProps> = ({
         setSelectedGroupPath("");
         setIsDirCollapsed(true);
       }
+  }, [workId]);
+
+  const loadDetail = useCallback(async () => {
+    setLoading(true);
+    try {
+      applyDetail(await callCommand<WorkDetailDto>("get_work_detail", { workId }));
     } catch (e) {
       onError(normalizeAppError(e));
     } finally {
       setLoading(false);
     }
-  }, [workId, onError]);
+  }, [workId, onError, applyDetail]);
 
   useEffect(() => {
-    void loadDetail();
-  }, [loadDetail]);
+    applyDetail(initialDetail);
+  }, [initialDetail, applyDetail]);
   useEffect(() => {
     let disposed = false; let stop: (() => void) | undefined;
     let revision = 0;

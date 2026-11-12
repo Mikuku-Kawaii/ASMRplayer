@@ -91,7 +91,7 @@ AN007.R14 将作品 `inLibrary` 与 `favorite` 分开：普通音频库只列主
 
 播放顺序：`val imported = backend.online.importWork(id, addToLibrary=false)`，再 `LibraryPlayback.play(controller, selectedVersionIds)`；选择同一目录与目标格式，避免不同格式重复连播。音频库列表经 `library.collections.catalog()` 过滤 `inLibrary`；`library.works` 仍提供所有缓存记录，供当前队列、详情及历史解析。`library.setMembership(workId, value)` 只变更入库标记，不删除媒体、喜欢、进度、书签或队列。来源作品 ID + origin、远端文件 ID + 相对路径构成稳定身份；不按相似标题强行合并。
 
-在线详情按来源、账号范围和作品 ID 暂存在进程内，五分钟内复用，过期时页面可先显示已有详情并异步刷新；显式刷新重新获取。详情的播放和入库操作可复用同批作品目录。切换内容分级后重新检查展示权限。
+在线详情按来源、账号范围和作品 ID 暂存在进程内，五分钟内复用，过期时页面可先显示已有详情并异步刷新；显式刷新重新获取。发现页停稳后最多顺序预取两部可见作品的完整详情，点开正在预取的作品时复用同一请求。详情的播放和入库操作可复用同批作品目录。在线作品的部分本地记录仅在目录加载失败后作为回退显示。切换内容分级后重新检查展示权限。
 
 导入的在线版本以 `asmr://version/{versionId}` 进入 Media3。`VersionDataSource` 在加载线程依次选择本地原件、已完成下载和在线来源。在线音轨先按稳定版本、账号范围和来源修订读取 Media3 磁盘片段，仅在缺少字节时使用临时地址；401/403 刷新并重试一次。片段在应用私有缓存目录按最近使用淘汰，预算最多 512 MiB。临时文件不登记为下载任务。下载完成后下次打开/seek 重新解析即可使用离线来源，不改变进度/书签的版本 ID，不强制打断正在播放的流。队列恢复不提前解析全队列网络地址；签名 URL 不写入 Room 的来源身份或会话。
 
@@ -210,7 +210,7 @@ Room/KSP 固定为 2.8.4 / 2.2.20-2.0.4，沿用 FluxManga 已验证的版本组
 - `suspend prepareInstall(controller)`：只能接到用户“安装”操作。先重新校验包；Android 8+ 未获安装来源授权时返回 `UpdateInstallAction.PermissionRequired(intent)`，UI 打开授权页，回来后让用户重试安装。已有授权时，通过当前 MediaController 的 `LibraryPlayback.prepareUpdate` 等待播放服务暂停、队列/位置入库和 WAL checkpoint 成功，再返回 `UpdateInstallAction.Installer(intent)`。UI 用 Activity 启动返回的 Intent，系统仍要求用户确认。接口本身不启动 Activity、不退出进程、不静默安装。捕获异常并显示错误；授权失败不会暂停播放，保存失败不返回安装 Intent。
 - 系统安装器取消后 READY 包仍可重试；不把“返回了 Intent”作为安装成功。安装成功由新进程读取当前包版本确认，Room 使用既有增量迁移与会话恢复，保留本地库和凭据。安装准备失败进入 ERROR，先重新检查/下载再试。
 
-共用 PC 的 GitHub `latest.json` 与 Tauri 公钥；Android 读取 `platforms.android-universal`，版本名与顶层 version 一致，versionCode 必须递增。依次校验 HTTPS 发布地址、长度、SHA-256、Minisign ED（BLAKE2b-512 + Ed25519）、受签名保护的版本、APK 包名/版本/最低系统及当前安装证书。APK 的 Android 安装签名与 Tauri 文件签名是两层不同签名；不接受证书轮换或调试/正式包互换。APK 安装证书沿用首个正式发行版的 keystore。
+使用 GitHub `latest-android.json` 与共用 Tauri 公钥；Android 读取 `platforms.android-universal`，版本名与顶层 version 一致，versionCode 必须递增。依次校验 HTTPS 发布地址、长度、SHA-256、Minisign ED（BLAKE2b-512 + Ed25519）、受签名保护的版本、APK 包名/版本/最低系统及当前安装证书。APK 的 Android 安装签名与 Tauri 文件签名是两层不同签名；不接受证书轮换或调试/正式包互换。APK 安装证书沿用首个正式发行版的 keystore。
 
 发布操作见 [统一更新清单与 Android 签名发布](../docs/releases/UPDATING.md#android-与-pc-共用更新清单)。设置 → 应用更新已接入检查、首页提示、等待调度/下载进度、错误、自动检查与忽略版本、安装来源授权跳转和用户确认安装。系统授权返回后需再次点击安装；取消安装不伪报成功。
 

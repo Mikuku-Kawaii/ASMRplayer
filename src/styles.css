@@ -594,7 +594,7 @@ dialog.import-dialog {
   color: var(--text-primary); background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 16px;
 }
 dialog.import-dialog:not([open]) { display: none; }
-dialog.import-dialog[open] { animation: m3BackdropFade 180ms ease both; }
+dialog.import-dialog[open] { animation: m3ModalSpringIn 260ms var(--md-sys-motion-easing-decelerate) backwards; }
 dialog.import-dialog::backdrop { background: color-mix(in srgb, var(--bg-root) 72%, transparent); }
 .import-dialog .modal-header { position: sticky; top: -16px; z-index: 1; background: var(--bg-surface); padding-block: 4px; }
 .import-dialog .modal-path-row { display: flex; gap: 8px; }
@@ -4045,18 +4045,41 @@ button { font-family: inherit; }
 
 /* 1. Keyframes Definitions */
 @keyframes m3PageEnter {
-  from {
-    opacity: 0.85;
-  }
-  to {
-    opacity: 1;
-  }
+  from { opacity: 0; transform: translate3d(0, 10px, 0) scale(.994); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes m3StageRestore {
+  from { opacity: .78; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes m3CardAppear {
+  from { opacity: 0; translate: 0 14px; }
+  to { opacity: 1; translate: 0 0; }
+}
+@keyframes m3HeroSectionRise {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes m3IconSpringPop {
+  from { transform: scale(.78); }
+  55% { transform: scale(1.12); }
+  to { transform: none; }
+}
+@keyframes m3HeartBookmarkPop {
+  from { transform: scale(.7); }
+  45% { transform: scale(1.22) rotate(-4deg); }
+  75% { transform: scale(.96) rotate(2deg); }
+  to { transform: none; }
+}
+@keyframes m3AuroraDrift {
+  from { transform: scale(1.04) translate(-1%, -1%); }
+  to { transform: scale(1.08) translate(1%, 1%); }
 }
 
 @keyframes m3DrawerSlideIn {
   from {
     opacity: 0;
-    transform: translate3d(8px, 0, 0);
+    transform: translate3d(24px, 0, 0);
   }
   to {
     opacity: 1;
@@ -4067,7 +4090,7 @@ button { font-family: inherit; }
 @keyframes m3ContextPop {
   from {
     opacity: 0;
-    transform: translate3d(0, -4px, 0);
+    transform: translate3d(0, -6px, 0) scale(.96);
   }
   to {
     opacity: 1;
@@ -4078,7 +4101,7 @@ button { font-family: inherit; }
 @keyframes m3ModalSpringIn {
   from {
     opacity: 0;
-    transform: translate3d(0, 6px, 0);
+    transform: translate3d(0, 12px, 0) scale(.97);
   }
   to {
     opacity: 1;
@@ -4104,10 +4127,12 @@ button { font-family: inherit; }
   }
 }
 
-/* 2. Page changes use one brief fade, with content already in place. */
-.page-container {
-  animation: m3PageEnter 120ms ease-out;
-}
+/* Entry motion ends with no transform, so fixed overlays keep their viewport. */
+.page-container { animation: m3PageEnter 280ms var(--md-sys-motion-easing-decelerate) backwards; }
+.view-switch-stage.is-foreground { animation: m3StageRestore 220ms var(--md-sys-motion-easing-standard) backwards; }
+.detail-hero-card { animation: m3HeroSectionRise 280ms var(--md-sys-motion-easing-decelerate) backwards; }
+.directory-groups-section { animation: m3HeroSectionRise 300ms var(--md-sys-motion-easing-decelerate) 35ms backwards; }
+.tracks-section { animation: m3HeroSectionRise 320ms var(--md-sys-motion-easing-decelerate) 65ms backwards; }
 
 /* 3. Left Navigation Sidebar & Brand Motion */
 .brand-icon-wrap {
@@ -4139,7 +4164,7 @@ button { font-family: inherit; }
     inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
-/* 4. Repeated cards stay still while their surface indicates interaction. */
+/* 4. Card entry and hover motion share timing across library and discovery. */
 .work-card {
   transition: border-color 160ms ease, background-color 160ms ease,
     box-shadow 160ms ease;
@@ -4216,7 +4241,7 @@ button { font-family: inherit; }
 
 /* 6. Right Drawer, Context Menu & Modals Entrance Motion */
 .right-drawer {
-  animation: m3DrawerSlideIn 160ms ease-out both;
+  animation: m3DrawerSlideIn 260ms var(--md-sys-motion-easing-decelerate) backwards;
 }
 
 .right-drawer.immersion-drawer { animation: none; }
@@ -4228,7 +4253,7 @@ button { font-family: inherit; }
 
 .modal-card,
 .dl-task-modal {
-  animation: m3ModalSpringIn 180ms ease-out both;
+  animation: m3ModalSpringIn 260ms var(--md-sys-motion-easing-decelerate) backwards;
 }
 
 .dl-modal-backdrop {
@@ -4316,6 +4341,7 @@ button { font-family: inherit; }
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
@@ -5698,10 +5724,10 @@ svg.lucide-play, svg.lucide-pause { fill: currentColor; stroke-width: 0; }
 /* PC action and dialog system — one geometry and footer contract across features. */
 .btn, .btn-icon, .btn-icon-sm {
   box-sizing: border-box;
-  transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease;
+  transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms var(--md-sys-motion-easing-spring);
 }
 .btn:is(:hover, :active):not(:disabled),
-:is(.btn-icon, .btn-icon-sm):is(:hover, :active):not(:disabled) { transform: none; box-shadow: none; }
+:is(.btn-icon, .btn-icon-sm):is(:hover, :active):not(:disabled) { box-shadow: none; }
 :is(.btn-icon, .btn-icon-sm):active:not(:disabled) { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
 :is(.btn, .btn-icon, .btn-icon-sm):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .btn:disabled { opacity: 1; background: var(--action-disabled-bg); color: var(--action-disabled-text); border-color: transparent; box-shadow: none; }
@@ -5777,3 +5803,41 @@ dialog.backup-dialog, .modal-card.update-dialog { width: min(560px, calc(100vw -
 .download-dialog .dl-tree-checkbox.is-checked { border-color: var(--accent); }
 .download-dialog :is(.dl-tree-row, .dl-tree-caret-btn):hover { background: var(--bg-hover); }
 .download-dialog .dl-tree-file-size { color: var(--text-secondary); }
+
+/* Restore interaction motion independently of the shared color/geometry system. */
+@media (prefers-reduced-motion: no-preference) {
+  .btn:hover:not(:disabled) { transform: translateY(-1px); }
+  .btn:active:not(:disabled) { transform: scale(.98); }
+  :is(.btn-icon, .btn-icon-sm):hover:not(:disabled) { transform: scale(1.06); }
+  :is(.btn-icon, .btn-icon-sm):active:not(:disabled) { transform: scale(.94); }
+  /* Segments and split-button seams stay aligned while their colors transition. */
+  :is(.task-sections, .settings-segmented-control, .library-filter-tabs, .btn-split) > .btn:is(:hover, :active):not(:disabled) { transform: none; }
+  .btn-split { transition: transform 180ms var(--md-sys-motion-easing-spring); }
+  .btn-split:has(.btn:not(:disabled)):hover { transform: translateY(-1px); }
+  .btn-split:has(.btn:active:not(:disabled)) { transform: scale(.98); }
+  .nav-btn { transition: background-color 200ms ease, color 200ms ease, transform 200ms var(--md-sys-motion-easing-standard); }
+  .nav-btn:hover:not(.active) { transform: translateX(3px); }
+  .nav-btn:active { transform: scale(.97); }
+  .nav-btn.active > svg { animation: m3IconSpringPop 300ms var(--md-sys-motion-easing-standard); }
+  .work-card { animation: m3CardAppear 300ms var(--md-sys-motion-easing-decelerate) backwards; transition: transform 240ms var(--md-sys-motion-easing-standard), background-color 180ms ease, border-color 180ms ease, box-shadow 200ms ease; }
+  .work-grid > .work-card:nth-child(2) { animation-delay: 20ms; }
+  .work-grid > .work-card:nth-child(3) { animation-delay: 40ms; }
+  .work-grid > .work-card:nth-child(4) { animation-delay: 60ms; }
+  .work-grid > .work-card:nth-child(5) { animation-delay: 80ms; }
+  .work-grid > .work-card:nth-child(6) { animation-delay: 100ms; }
+  .work-grid > .work-card:nth-child(n+7) { animation-delay: 120ms; }
+  .work-card:hover { transform: translateY(-4px); }
+  .work-card:active { transform: translateY(-1px) scale(.992); }
+  .work-card-cover, .detail-cover-img { transition: transform 400ms var(--md-sys-motion-easing-standard); }
+  .work-card:hover .work-card-cover, .detail-cover-wrap:hover .detail-cover-img { transform: scale(1.045); }
+  .btn-fav.active > svg, .player-library-actions .active > svg { animation: m3HeartBookmarkPop 340ms var(--md-sys-motion-easing-standard); }
+  .app-context-menu { animation: m3ContextPop 200ms var(--md-sys-motion-easing-decelerate) backwards; }
+  dialog.storage-dialog[open] { animation: m3ModalSpringIn 260ms var(--md-sys-motion-easing-decelerate) backwards; }
+  .track-main-name { transition: color 180ms ease, transform 180ms var(--md-sys-motion-easing-standard); }
+  .track-row:hover .track-main-name { transform: translateX(2px); }
+  .queue-item, .bookmark-item { transition: background-color 180ms ease, border-color 180ms ease, transform 180ms var(--md-sys-motion-easing-standard); }
+  .queue-item:hover, .bookmark-item:hover { transform: translateX(2px); }
+  .immersive-stage-overlay { animation: m3ModalSpringIn 300ms var(--md-sys-motion-easing-decelerate) backwards; }
+  .immersive-backdrop-blur { animation: m3AuroraDrift 18s ease-in-out infinite alternate; }
+  .mini-player-shell { animation: m3PageEnter 240ms var(--md-sys-motion-easing-decelerate) backwards; }
+}

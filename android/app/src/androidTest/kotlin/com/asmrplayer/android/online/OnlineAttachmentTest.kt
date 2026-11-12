@@ -57,6 +57,15 @@ class OnlineAttachmentTest {
         assertTrue(ids.all { db.library().download(it)?.state == "COMPLETED" })
         return ids
     }
+    @Test fun videoExtensionOverridesProviderAudioClassification() {
+        val files = AsmrJson.tree(
+            """[{"title":"bonus.MP4","type":"audio"},{"title":"track.m4a","type":"audio"}]""",
+            "123456",
+        )
+        assertEquals("other", files[0].kind)
+        assertEquals("audio", files[1].kind)
+    }
+
     @Test fun offlineAttachmentsAndCoverKeepStableIdsAcrossMetadataRefresh() = runBlocking {
         val ids = downloadAll()
         assertEquals(3, ids.size)

@@ -16,18 +16,27 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+private val cardInfoGap = 4.dp
+
+@Composable
+private fun cardTagStyle() = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold)
 
 @Composable
 internal fun WorkBadge(text: String, accent: Boolean = false) {
@@ -44,33 +53,35 @@ internal fun WorkCard(title: String, cover: String?, code: String?, badges: List
     onTag:((String)->Unit)?=null, onMetadata:(()->Unit)?=null, voices:List<String> = emptyList(),
     onVoice:((String)->Unit)?=null, inLibrary:Boolean?=null, save:(()->Unit)?=null,saving:Boolean=false,workId:String?=null,
     score:Double?=null,nsfw:Boolean=false,hasSubtitle:Boolean=false) {
-    val density = LocalDensity.current
     val status = badges.filter { it != "正在播放" }
     val hasActionLine = save != null || like != null || status.isNotEmpty()
+    val metadataHeight = cardTextHeight(MaterialTheme.typography.bodySmall, padding = 0.dp)
+    val tagHeight = cardTextHeight(cardTagStyle(), padding = 4.dp)
     Surface(shape=RoundedCornerShape(16.dp),color=MaterialTheme.colorScheme.surfaceContainerLow) {
         Column {
             Box {
                 CardArtwork(cover,Modifier.fillMaxWidth().sharedWorkArtwork(workId).aspectRatio(4f/3f).clickable(onClick=open).semantics{contentDescription="打开 $title"},workId,hasSubtitle,nsfw)
                 if("正在播放" in badges)Box(Modifier.align(Alignment.BottomStart).padding(6.dp)){WorkBadge("正在播放",true)}
             }
-            Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = if (hasActionLine) 3.dp else 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 9.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Column {
-                        CardTitle(title, Modifier.clickable(onClick = open))
-                        Box(Modifier.fillMaxWidth().height(with(density) { 18.sp.toDp() }), contentAlignment = Alignment.CenterStart) {
-                            if (voices.isNotEmpty()) CardVoices(voices, onVoice)
-                            else if (metadata.isNotBlank()) CardMetadata(metadata, onMetadata)
-                        }
+            Column(
+                Modifier.fillMaxWidth().padding(top = cardInfoGap, bottom = if (hasActionLine) 0.dp else cardInfoGap),
+                verticalArrangement = Arrangement.spacedBy(cardInfoGap),
+            ) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 9.dp), verticalArrangement = Arrangement.spacedBy(cardInfoGap)) {
+                    CardTitle(title, Modifier.clickable(onClick = open))
+                    Box(Modifier.fillMaxWidth().heightIn(min = metadataHeight).testTag("work-card-metadata"),
+                        contentAlignment = Alignment.CenterStart) {
+                        if (voices.isNotEmpty()) CardVoices(voices, onVoice)
+                        else if (metadata.isNotBlank()) CardMetadata(metadata, onMetadata)
                     }
-                    Box(Modifier.fillMaxWidth().height(with(density) { 16.sp.toDp() } + 4.dp), contentAlignment = Alignment.CenterStart) {
+                    Box(Modifier.fillMaxWidth().heightIn(min = tagHeight).testTag("work-card-tags"),
+                        contentAlignment = Alignment.CenterStart) {
                         if (tags.isNotEmpty()) CardFooter(tags, onTag)
                     }
-                    if (!hasActionLine) Box(Modifier.fillMaxWidth().height(with(density) { 16.sp.toDp() }), contentAlignment = Alignment.CenterStart) {
-                        CardCodeScore(code, score)
-                    }
+                    if (!hasActionLine) CardCodeScore(code, score)
                 }
                 if (hasActionLine) WorkCardActionLine(title, inLibrary, save, saving, favorite, like) {
-                    Column {
+                    Column(verticalArrangement = Arrangement.spacedBy(cardInfoGap)) {
                         Text(code.orEmpty(), Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                             maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -86,7 +97,7 @@ internal fun WorkCard(title: String, cover: String?, code: String?, badges: List
 internal fun CardVoices(voices:List<String>, choose:((String)->Unit)?,accent:Boolean=false) {
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(6.dp)) {
         Text("CV",Modifier.alignByBaseline(),style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-        voices.forEach { voice -> Text(voice,Modifier.alignByBaseline().then(if(choose!=null)Modifier.clickable{choose(voice)}else Modifier).padding(vertical=1.dp),style=MaterialTheme.typography.bodySmall,color=if(accent)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1) }
+        voices.forEach { voice -> Text(voice,Modifier.alignByBaseline().then(if(choose!=null)Modifier.clickable{choose(voice)}else Modifier),style=MaterialTheme.typography.bodySmall,color=if(accent)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1) }
     }
 }
 
@@ -128,7 +139,13 @@ internal fun CardMetadata(metadata: String, onClick: (() -> Unit)? = null) {
 @Composable
 internal fun CardFooter(tags: List<String>, onTag: ((String) -> Unit)? = null) {
     var expanded by rememberSaveable(tags){mutableStateOf(false)}
-    val style=MaterialTheme.typography.labelSmall
+    val style = cardTagStyle()
+    val colors = MaterialTheme.colorScheme
+    val light = colors.surface.luminance() > .5f
+    val shape = RoundedCornerShape(6.dp)
+    val fill = if (light) lerp(colors.surfaceContainerLow, colors.primary, .14f) else colors.surfaceContainerHighest
+    val pill = Modifier.clip(shape).background(fill)
+        .then(if (light) Modifier.border(1.dp, colors.outline.copy(alpha = .35f), shape) else Modifier)
     val measurer=cardMeasurer();val density=LocalDensity.current
     Column {
         CardWidth(Modifier.fillMaxWidth(), inset = 18.dp) { maxWidth, _ ->
@@ -140,7 +157,7 @@ internal fun CardFooter(tags: List<String>, onTag: ((String) -> Unit)? = null) {
                 for ((i, tag) in tags.withIndex()) {
                     val tagWidth = measurer.measure(AnnotatedString(tag), style).size.width + pillPadding
                     val reserve = if (i < tags.lastIndex)
-                        measurer.measure(AnnotatedString("＋${tags.size-i-1}"), style).size.width + gap + pillPadding else 0f
+                        measurer.measure(AnnotatedString("+${tags.size-i-1}"), style).size.width + gap + pillPadding else 0f
                     if (used + tagWidth + reserve > width) break
                     used += tagWidth + gap
                     fit++
@@ -155,13 +172,13 @@ internal fun CardFooter(tags: List<String>, onTag: ((String) -> Unit)? = null) {
                 Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp),verticalAlignment=Alignment.CenterVertically) {
                     tags.take(visibleCount).forEach { tag ->
                         Text(tag,Modifier.widthIn(max=maxTagWidth)
-                            .background(MaterialTheme.colorScheme.surfaceContainerHighest,RoundedCornerShape(6.dp))
+                            .then(pill)
                             .then(if(onTag!=null)Modifier.clickable{onTag(tag)}else Modifier).padding(horizontal=6.dp,vertical=2.dp),
-                            maxLines=1,overflow=TextOverflow.Ellipsis,style=style,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                            maxLines=1,overflow=TextOverflow.Ellipsis,style=style,color=colors.onSurface)
                     }
-                    if(hidden>0)Text("+$hidden",Modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest,RoundedCornerShape(6.dp))
+                    if(hidden>0)Text("+$hidden",pill
                         .clickable { expanded = true }.padding(horizontal=6.dp,vertical=2.dp).semantics{contentDescription="展开其余 $hidden 个标签"},
-                        maxLines=1,style=style,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                        maxLines=1,style=style,color=colors.onSurface)
                 }
             }
         }
@@ -207,14 +224,15 @@ internal fun WorkHero(title: String, cover: String?, code: String?, summary: Str
     var overflow by remember(title) { mutableStateOf(false) }
     var copied by remember(code) { mutableStateOf(false) }
     val context = LocalContext.current
+    val viewportHeight = LocalConfiguration.current.screenHeightDp.dp
     LaunchedEffect(copied) { if(copied) { delay(1200); copied=false } }
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val colors=MaterialTheme.colorScheme
         val typography=MaterialTheme.typography
         val informationHeight=cardTextHeight(typography.titleMedium,3) +
             cardTextHeight(typography.bodySmall) + cardTextHeight(typography.labelSmall)
-        val coverWidth=minOf(maxWidth*.46f, informationHeight * (4f/3f))
-        val stacked = maxWidth < 300.dp || androidx.compose.ui.platform.LocalDensity.current.fontScale >= 1.5f
+        val coverWidth = minOf(maxWidth * .46f, informationHeight * (4f / 3f), viewportHeight / 3)
+        val stacked = maxWidth < 300.dp || LocalDensity.current.fontScale >= 1.5f
         val artwork: @Composable (Modifier) -> Unit = { modifier ->
             AudioArtwork(modifier.sharedWorkArtwork(workId, hero = true).aspectRatio(4f/3f)
                 .clickable { showCover=true }.semantics { contentDescription="查看作品封面" },
@@ -240,7 +258,8 @@ internal fun WorkHero(title: String, cover: String?, code: String?, summary: Str
         }
         if (stacked) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                artwork(Modifier.widthIn(max = 300.dp).fillMaxWidth())
+                val compactCoverWidth = minOf(116.dp, viewportHeight * .18f) * (4f / 3f)
+                artwork(Modifier.widthIn(max = compactCoverWidth).fillMaxWidth())
                 info(Modifier.fillMaxWidth())
             }
         } else Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
@@ -312,6 +331,21 @@ internal fun GroupPicker(groups: List<Pair<String, String>>, selected: Pair<Stri
     var expanded by rememberSaveable { mutableStateOf(false) }
     val current = selected?.takeIf { it in groups } ?: groups.first()
     fun name(group: Pair<String, String>) = group.first.ifBlank { "根目录" }
+    if (groups.size == 1) {
+        val format = current.second.uppercase()
+        val directory = name(current)
+        val summary = if (format.isBlank() || directory.equals(format, ignoreCase = true)) directory else "$directory · $format"
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            AppGlyph(Glyph.Folder, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("目录 · $summary", maxLines = 1, overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        return
+    }
     fun label(group: Pair<String, String>) = if (groups.count { it.first == group.first } > 1)
         "${name(group)} · ${group.second.uppercase()}" else name(group)
     MotionOutlinedButton({ expanded = true }, Modifier.fillMaxWidth().heightIn(min = 48.dp)

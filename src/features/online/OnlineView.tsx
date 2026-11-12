@@ -64,7 +64,7 @@ interface OnlineViewProps {
   onExternalSearchHandled?: (seq: number) => void;
   canReturnToDetail?: boolean;
   onReturnToDetail?: () => void;
-  onOpenWorkDetail: (workId: string) => void;
+  onOpenWorkDetail: (workId: string, online?: boolean) => void;
   onOpenDownloads?: () => void;
   onError: (err: AppError) => void;
 }
@@ -122,7 +122,6 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
   const [loading, setLoading] = useState(false);
   const [queryError, setQueryError] = useState<AppError | null>(null);
 
-  const [openingId, setOpeningId] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const affinityPending = useRef(false);
   const [addingTo, setAddingTo] = useState<"collected" | "favorite" | null>(null);
@@ -255,20 +254,10 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
     }
   };
 
-  const handleOpenOnlineWork = async (idOrRj: string) => {
-    if (!idOrRj.trim() || openingId) return;
+  const handleOpenOnlineWork = (idOrRj: string) => {
+    if (!idOrRj.trim()) return;
     setContextMenu(null);
-    setOpeningId(idOrRj);
-    try {
-      const detail = await callCommand<WorkDetailDto>("open_online_work", {
-        workIdOrRj: idOrRj.trim(),
-      });
-      onOpenWorkDetail(detail.id);
-    } catch (e) {
-      onError(normalizeAppError(e));
-    } finally {
-      setOpeningId(null);
-    }
+    onOpenWorkDetail(idOrRj.trim(), true);
   };
 
   const handleAddWork = async (work: ProviderWork, destination: "collected" | "favorite") => {

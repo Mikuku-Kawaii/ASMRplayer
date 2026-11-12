@@ -141,8 +141,10 @@ pub async fn undo_library_batch(state: State<'_, AppState>, id: String) -> AppRe
 pub fn latest_library_batch(state: State<'_, AppState>) -> AppResult<Option<BulkReport>> { state.db.latest_library_batch() }
 
 #[tauri::command]
-pub fn get_work_detail(state: State<'_, AppState>, work_id: String) -> AppResult<WorkDetailDto> {
-    state.db.get_work_detail(&work_id)
+pub async fn get_work_detail(state: State<'_, AppState>, work_id: String) -> AppResult<WorkDetailDto> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.get_work_detail(&work_id))
+        .await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
 }
 
 #[tauri::command]
@@ -297,7 +299,11 @@ pub fn relocate_library_root(
 pub async fn open_online_work(
     state: State<'_, AppState>,
     work_id_or_rj: String,
+    for_detail: Option<bool>,
 ) -> AppResult<WorkDetailDto> {
+    if for_detail.unwrap_or(false) {
+        return state.provider.open_online_work_for_detail(&work_id_or_rj).await;
+    }
     state.provider.open_online_work(&work_id_or_rj).await
 }
 

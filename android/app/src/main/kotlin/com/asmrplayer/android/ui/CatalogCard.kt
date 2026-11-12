@@ -29,7 +29,7 @@ internal fun WorkCardStatus(badges: List<String>) {
 internal fun WorkCardActionLine(title: String, inLibrary: Boolean?, save: (() -> Unit)?, saving: Boolean,
     favorite: Boolean?, like: (() -> Unit)?, leading: @Composable () -> Unit) {
     Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.weight(1f).padding(end = 9.dp)) { leading() }
+        Box(Modifier.weight(1f).align(Alignment.Top).padding(end = 9.dp)) { leading() }
         if (save != null) CardToggle(Glyph.Collection, inLibrary == true,
             if (inLibrary == true) "移出音频库 $title" else "加入音频库 $title", save, saving, 15)
         if (like != null) CardToggle(Glyph.Heart, favorite == true,

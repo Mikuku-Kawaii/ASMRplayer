@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "asmr-player"
-version = "26.11.11"
+version = "26.11.12"
 dependencies = [
  "base64 0.22.1",
  "cc",

@@ -52,6 +52,7 @@ import androidx.media3.common.util.UnstableApi
 import com.asmrplayer.android.PlayerViewModel
 import com.asmrplayer.android.UiFeedback
 import com.asmrplayer.android.R
+import com.asmrplayer.android.update.UpdatePhase
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -182,7 +183,7 @@ fun PlayerApp(model: PlayerViewModel, playerRequest: Int = 0, refraction: Boolea
         val dockState = remember { androidx.compose.animation.core.MutableTransitionState(dockVisible || detailMini) }
         dockState.targetState = dockVisible || detailMini
         fun routeTitle(route: String?): String = when {route=="queue-current"->"当前队列";route?.startsWith("queue-group:")==true->"歌单详情";route=="player"->"正在播放";route=="settings"->"设置";route=="appearance"->"外观";route=="content-settings"->"内容显示";route=="effects"->"音效与均衡器";route=="downloads"->"任务中心";route=="tasks"->"任务中心";
-            route=="sync"->"跨设备同步";route=="history"->"收听记录";route=="backup"->"资料备份与恢复";route=="storage"->"存储管理";route=="updates"->"应用更新";
+            route=="sync"->"跨设备同步";route=="history"->"收听记录";route=="backup"->"资料备份与恢复";route=="storage"->"存储管理";route in setOf("updates", "updates/install")->"应用更新";
             route=="headphones"->"耳机音效偏好";route=="system-media"->"系统媒体与灵动岛";
             route=="online-source"->"在线来源";route?.startsWith("online:")==true->"作品详情";
             route=="directories"->"作品目录";route=="subtitles"->"字幕";route=="subtitle-settings"->"字幕设置";route=="bookmarks"->"标记";route=="ab"->"A–B 循环";route=="sleep"->"睡眠定时";
@@ -267,7 +268,7 @@ fun PlayerApp(model: PlayerViewModel, playerRequest: Int = 0, refraction: Boolea
                         route=="sync" -> SyncPage(model)
                         route=="tasks" -> TaskCenterPage(state,model,::open)
                         route=="storage" -> StoragePage(model.maintenance,{open("downloads")})
-                        route=="updates" -> UpdatePage(model)
+                        route in setOf("updates", "updates/install") -> UpdatePage(model, confirmInstallOnOpen = route == "updates/install")
                         route=="online-source" -> OnlineSourcePage(onlineState,model.online)
                         route?.startsWith("online:")==true -> {
                             val origin=Uri.decode(route.removePrefix("online:").substringBeforeLast(':'))
@@ -286,7 +287,11 @@ fun PlayerApp(model: PlayerViewModel, playerRequest: Int = 0, refraction: Boolea
                         route in setOf("player","player-queue") -> FullPlayer(state,model,::open,::back, { version,translation -> subtitleTarget=version;subtitleTranslation=translation;subtitlePicker.launch(arrayOf("*/*")) })
                         route?.startsWith("audio:")==true -> {
                             val workId=route.removePrefix("audio:")
-                            val online=state.metadata[workId]?.takeIf { it.sourceId.isNotBlank() && it.origin.isNotBlank() && state.lookup.byId[workId]?.versions.isNullOrEmpty() }
+                            val online = state.metadata[workId]?.takeIf {
+                                it.sourceId.isNotBlank() && it.origin.isNotBlank() &&
+                                    (workId == com.asmrplayer.android.library.LibraryIndex.id("asmr_one", it.origin, it.sourceId) ||
+                                        state.lookup.byId[workId]?.versions.isNullOrEmpty())
+                            }
                             WorkDetailPage(state,model,workId,::open,::back,online?.origin,online?.sourceId,bottom)
                         }
                     } }
@@ -324,7 +329,11 @@ fun PlayerApp(model: PlayerViewModel, playerRequest: Int = 0, refraction: Boolea
             canShow = lifecycleState == Lifecycle.State.RESUMED && dockVisible &&
                 filterPage == null && !pager.isScrollInProgress && !importDialog && !streamDialog &&
                 !incoming.visible && !downloadPlan.visible && playlistTarget == null,
-            openUpdates = { open("updates") },
+            startUpdate = {
+                val phase = model.maintenance.update.value.phase
+                if (phase == UpdatePhase.AVAILABLE) model.maintenance.downloadUpdate()
+                open(if (phase == UpdatePhase.READY) "updates/install" else "updates")
+            },
         )
         DownloadSelectionDialog(downloadPlan, model.downloadPlan::toggle, model.downloadPlan::close, model.downloadPlan::retry) {
             model.downloadPlan.confirm { open("downloads") }

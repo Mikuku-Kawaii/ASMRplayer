@@ -36,6 +36,12 @@ object LibraryIndex {
     val audioExtensions = setOf("wav", "mp3", "flac", "m4a", "aac", "ogg", "opus", "aif", "aiff", "alac", "wma")
     val subtitleExtensions = setOf("srt", "vtt", "lrc", "ass", "ssa")
     val imageExtensions = setOf("jpg", "jpeg", "png", "webp")
+    private val videoExtensions = setOf(
+        "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv",
+        "mpeg", "mpg", "ogv", "3gp", "3g2", "mts", "m2ts", "vob", "rmvb",
+    )
+    fun isVideoFormat(format: String): Boolean = format.lowercase(Locale.ROOT) in videoExtensions
+
     private val code = Regex("(?i)(RJ|BJ|VJ)[0-9]{6,8}")
     private val structural = Regex("(?i)(wav|mp3|flac|aac|ogg|opus|hi-res|[0-9]+khz|无损|高音质|seあり|seなし|有音效|无音效|本編|本篇|特典|おまけ|bonus|extra|freetalk|disc.*|cd.*|track.*|音声|audio|字幕|subtitles|subs|images|cover)")
     fun id(vararg parts: String): String = UUID.nameUUIDFromBytes(parts.joinToString("") { "${it.length}:$it" }.toByteArray(Charsets.UTF_8)).toString()

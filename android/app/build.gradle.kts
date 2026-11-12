@@ -10,14 +10,21 @@ plugins {
 android {
     namespace = "com.asmrplayer.android"
     compileSdk = 36
+    val releaseOneDriveClient = providers.environmentVariable("ASMR_ONEDRIVE_CLIENT_ID").orNull.orEmpty().trim()
+        .ifEmpty { rootProject.file("../config/onedrive-oauth-client-id.txt").readText().trim() }
+        .lowercase()
+    val debugOneDriveClient = providers.environmentVariable("ASMR_ANDROID_DEBUG_ONEDRIVE_CLIENT_ID").orNull.orEmpty().trim().lowercase()
+    require(releaseOneDriveClient.isEmpty() || UUID.fromString(releaseOneDriveClient).toString() == releaseOneDriveClient)
+    require(debugOneDriveClient.isEmpty() ||
+        (UUID.fromString(debugOneDriveClient).toString() == debugOneDriveClient && debugOneDriveClient != releaseOneDriveClient)) {
+        "Use a separate OneDrive client ID for Android debug builds."
+    }
     defaultConfig {
         applicationId = "com.asmrplayer.android"
-        val microsoft = providers.environmentVariable("ASMR_ONEDRIVE_CLIENT_ID").orNull.orEmpty().trim()
-            .ifEmpty { rootProject.file("../config/onedrive-oauth-client-id.txt").readText().trim() }
-            .lowercase()
-        require(microsoft.isEmpty() || UUID.fromString(microsoft).toString().equals(microsoft, true))
-        val msScheme = if (microsoft.isEmpty()) "com.asmrplayer.onedrive.unconfigured" else "msal$microsoft"
-        buildConfigField("String", "ONEDRIVE_CLIENT_ID", "\"$microsoft\"")
+        manifestPlaceholders["appDisplayName"] = "ASMR Player"
+        manifestPlaceholders["appIcon"] = "@mipmap/ic_launcher"
+        val msScheme = if (releaseOneDriveClient.isEmpty()) "com.asmrplayer.onedrive.unconfigured" else "msal$releaseOneDriveClient"
+        buildConfigField("String", "ONEDRIVE_CLIENT_ID", "\"$releaseOneDriveClient\"")
         buildConfigField("String", "ONEDRIVE_REDIRECT_URI", "\"$msScheme://auth\"")
         manifestPlaceholders["oneDriveScheme"] = msScheme
         manifestPlaceholders["appAuthRedirectScheme"] = msScheme
@@ -41,9 +48,16 @@ android {
             keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
         }
     }
-    // Opt-in separate sandbox for instrumented tests on a connected phone.
     buildTypes.getByName("debug") {
-        if (providers.gradleProperty("androidUiTestBuild").orNull == "true") applicationIdSuffix = providers.gradleProperty("androidUiTestSuffix").orElse(".uitest").get()
+        val instrumented = providers.gradleProperty("androidUiTestBuild").orNull == "true"
+        applicationIdSuffix = if (instrumented) providers.gradleProperty("androidUiTestSuffix").orElse(".uitest").get() else ".debug"
+        manifestPlaceholders["appDisplayName"] = if (instrumented) "ASMR Player 测试版" else "ASMR Player 调试版"
+        manifestPlaceholders["appIcon"] = "@drawable/ic_launcher_debug"
+        val msScheme = if (debugOneDriveClient.isEmpty()) "com.asmrplayer.onedrive.debug.unconfigured" else "msal$debugOneDriveClient"
+        manifestPlaceholders["oneDriveScheme"] = msScheme
+        manifestPlaceholders["appAuthRedirectScheme"] = msScheme
+        buildConfigField("String", "ONEDRIVE_CLIENT_ID", "\"$debugOneDriveClient\"")
+        buildConfigField("String", "ONEDRIVE_REDIRECT_URI", "\"$msScheme://auth\"")
     }
     buildTypes.getByName("release") { signingConfig = signingConfigs.findByName("distribution") }
     sourceSets.getByName("androidTest").assets.srcDir("schemas")

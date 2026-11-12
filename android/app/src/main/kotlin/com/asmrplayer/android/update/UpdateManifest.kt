@@ -9,7 +9,7 @@ data class UpdateRelease(
 )
 
 internal object UpdateManifest {
-    const val ENDPOINT = "https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest/download/latest.json"
+    const val ENDPOINT = "https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest/download/latest-android.json"
     const val MAX_APK_BYTES = 512L * 1024 * 1024
     private val stable = Regex("(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)")
 
