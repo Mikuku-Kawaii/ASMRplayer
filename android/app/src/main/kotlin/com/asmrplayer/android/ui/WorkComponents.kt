@@ -6,9 +6,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
-import kotlinx.coroutines.delay
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -18,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
@@ -218,60 +217,29 @@ internal fun CardCodeScore(code:String?,score:Double?) {
 }
 
 @Composable
-internal fun WorkHero(title: String, cover: String?, code: String?, summary: String, workId:String?=null) {
+internal fun WorkHero(title: String, cover: String?, workId: String? = null) {
     var fullTitle by rememberSaveable(title) { mutableStateOf(false) }
     var showCover by remember { mutableStateOf(false) }
-    var overflow by remember(title) { mutableStateOf(false) }
-    var copied by remember(code) { mutableStateOf(false) }
-    val context = LocalContext.current
-    val viewportHeight = LocalConfiguration.current.screenHeightDp.dp
-    LaunchedEffect(copied) { if(copied) { delay(1200); copied=false } }
-    BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val colors=MaterialTheme.colorScheme
-        val typography=MaterialTheme.typography
-        val informationHeight=cardTextHeight(typography.titleMedium,3) +
-            cardTextHeight(typography.bodySmall) + cardTextHeight(typography.labelSmall)
-        val coverWidth = minOf(maxWidth * .46f, informationHeight * (4f / 3f), viewportHeight / 3)
-        val stacked = maxWidth < 300.dp || LocalDensity.current.fontScale >= 1.5f
-        val artwork: @Composable (Modifier) -> Unit = { modifier ->
-            AudioArtwork(modifier.sharedWorkArtwork(workId, hero = true).aspectRatio(4f/3f)
-                .clickable { showCover=true }.semantics { contentDescription="查看作品封面" },
-                cover,ContentScale.Fit,highResolution=true,workId=workId)
-        }
-        val info: @Composable (Modifier) -> Unit = { modifier ->
-            Column(modifier,verticalArrangement=Arrangement.spacedBy(3.dp)) {
-                Text(title,Modifier.then(if(overflow) Modifier.clickable(onClickLabel="查看完整标题"){fullTitle=true} else Modifier),
-                    maxLines=3,overflow=TextOverflow.Ellipsis,style=typography.titleMedium,
-                    onTextLayout={overflow=it.hasVisualOverflow})
-                if(summary.isNotBlank())Text(summary,style=typography.bodySmall,color=colors.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
-                if(!code.isNullOrBlank()) {
-                    Row(Modifier.clickable(onClickLabel="复制 RJ 号") {
-                        val clipboard=context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("RJ",code))
-                        copied=true
-                    }.padding(vertical=3.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(5.dp)) {
-                        Text(code,style=typography.labelSmall,color=colors.primary)
-                        AppGlyph(if(copied)Glyph.Check else Glyph.Copy,Modifier.size(15.dp),tint=colors.primary)
-                    }
-                }
-            }
-        }
-        if (stacked) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                val compactCoverWidth = minOf(116.dp, viewportHeight * .18f) * (4f / 3f)
-                artwork(Modifier.widthIn(max = compactCoverWidth).fillMaxWidth())
-                info(Modifier.fillMaxWidth())
-            }
-        } else Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
-            artwork(Modifier.width(coverWidth))
-            info(Modifier.weight(1f))
-        }
+    Box(Modifier.fillMaxWidth().sharedWorkArtwork(workId, hero = true).aspectRatio(4f / 3f).clip(RoundedCornerShape(20.dp))) {
+        AudioArtwork(Modifier.matchParentSize()
+            .clickable { showCover = true }.semantics { contentDescription = "查看作品封面" },
+            cover, ContentScale.Fit, highResolution = true, workId = workId, shape = RoundedCornerShape(20.dp))
+        // The scrim follows the actual title height, leaving short-title covers mostly visible.
+        Text(title, Modifier.align(Alignment.BottomStart).fillMaxWidth().heroTitleMotion()
+            .background(Brush.verticalGradient(0f to Color.Transparent,
+                .30f to Color.Black.copy(alpha = .65f), 1f to Color.Black.copy(alpha = .86f)))
+            .clickable(onClickLabel = "查看完整标题") { fullTitle = true }
+            .padding(start = 14.dp, end = 14.dp, top = 36.dp, bottom = 14.dp),
+            maxLines = 3, overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.titleMedium, color = Color.White)
     }
-    if(fullTitle)PlayerAlertDialog(onDismissRequest={fullTitle=false},text={
-        SelectionContainer { Text(title,Modifier.heightIn(max=320.dp).verticalScroll(rememberScrollState()),style=MaterialTheme.typography.titleMedium) }
-    },confirmButton={TextButton(onClick={fullTitle=false}){Text("关闭")}})
-    if (showCover) FullscreenArtwork(cover,workId=workId) { showCover = false }
-
+    if (fullTitle) PlayerAlertDialog(onDismissRequest = { fullTitle = false }, text = {
+        SelectionContainer {
+            Text(title, Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState()),
+                style = MaterialTheme.typography.titleMedium)
+        }
+    }, confirmButton = { TextButton(onClick = { fullTitle = false }) { Text("关闭") } })
+    if (showCover) FullscreenArtwork(cover, workId = workId) { showCover = false }
 }
 
 @Composable

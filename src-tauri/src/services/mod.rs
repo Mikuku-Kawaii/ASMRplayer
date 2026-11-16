@@ -21,6 +21,7 @@ pub mod release_history;
 
 pub mod desktop_lyrics;
 pub mod interface_scale;
+pub mod file_preferences;
 pub mod theme;
 pub mod window_placement;
 pub mod recognition;

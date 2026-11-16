@@ -377,6 +377,8 @@ pub fn run() {
             commands::recognition::import_translation_gguf,
             commands::recognition::cancel_model_download,
             commands::get_interface_scale,
+            commands::get_file_preferences,
+            commands::set_file_preferences,
             commands::set_interface_scale,
             commands::get_window_maximized,
             commands::get_desktop_lyrics_settings,

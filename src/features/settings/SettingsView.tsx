@@ -10,6 +10,7 @@ import { DesktopLyricsSettings } from "./DesktopLyricsSettings";
 import { usePageScroll } from "../../app/usePageScroll";
 import { InterfaceScaleSettings } from "./InterfaceScaleSettings";
 import { ThemeSettings } from "./ThemeSettings";
+import { FilePreferencesSettings } from "./FilePreferencesSettings";
 import { TypographySettings } from "./TypographySettings";
 import { EngineMaintenanceSettings } from "./EngineMaintenanceSettings";
 import { Select } from "../../components/Select";
@@ -467,6 +468,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
       {/* Load on first visit, then retain drafts and disclosure state across categories. */}
       <div hidden={!recognitionVisible}>{(recognitionVisible || recognitionVisited) && <RecognitionSettings page={section === "translation" ? "translation" : "recognition"} onOpenGlossary={() => navigate("recognition", "subtitle-glossary")} />}</div>
 
+      <div data-settings-group="file-preferences" hidden={!visible("file-preferences")}><FilePreferencesSettings /></div>
+
       {/* 模块化设置表单 — 功能相近聚合为同一分组卡片，功能相异拆分为独立分组卡片 */}
       <form
         id="app-settings-form"
@@ -478,18 +481,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
         hidden={!settings || !["appearance","privacy","desktop-island","audio-engine","network-online","storage-library","desktop-lyrics"].some(visible)}
       >
         {saveState === "error" && <ErrorNotice message={saveError}><button type="button" className="btn btn-secondary btn-sm" onClick={() => void persistSettings()}>重试保存</button></ErrorNotice>}
-        {/* 分组 1：外观与窗口 */}
+        {/* 分组 1：通用 */}
         <section
           className="settings-card settings-group-card"
           data-settings-group="appearance" hidden={!visible("appearance")}
-          aria-label="外观与窗口"
+          aria-label="通用"
         >
           <div className="settings-group-header">
             <div className="settings-group-title-wrap">
               <span className="settings-group-icon">
                 <Palette size={16} />
               </span>
-              <div className="setting-label-help"><h3>外观与窗口</h3><HelpHint label={"外观与窗口"} text={<>
+              <div className="setting-label-help"><h3>通用</h3><HelpHint label={"通用"} text={<>
                   设置主题、字体、界面缩放与关闭窗口后的行为
                 </>} /></div>
             </div>

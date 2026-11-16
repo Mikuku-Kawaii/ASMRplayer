@@ -17,6 +17,8 @@ import androidx.compose.ui.unit.dp
 import androidx.media3.common.util.UnstableApi
 import com.asmrplayer.android.PlayerScreenState
 import com.asmrplayer.android.PlayerViewModel
+import com.asmrplayer.android.data.EffectPreference
+import com.asmrplayer.android.data.AudioFormatPreference
 
 private data class SettingEntry(
     val group: String, val title: String, val summary: String, val route: String, val keywords: String = "",
@@ -33,6 +35,7 @@ private val settingsEntries=listOf(
     SettingEntry("下载与存储","下载存储与缓存","占用统计与封面缓存","storage","清理缓存 空间不足"),
     SettingEntry("播放与字幕","音效与均衡器","预设、PEQ、AutoEQ、声道与响度","effects","EQ 左右声道 响度均衡"),
     SettingEntry("播放与字幕","耳机音效偏好","保存方案、输出设备与自动切换","headphones","蓝牙 有线耳机"),
+    SettingEntry("播放与字幕","文件偏好","优先展示的效果音版本与音频格式","file-preferences","有效果音 无效果音 有音效 无音效 SE MP3 WAV"),
     SettingEntry("播放与字幕","字幕设置","原文、译文、导入与时间偏移","subtitle-settings","台本 时间对齐"),
     SettingEntry("界面与系统","外观","颜色预设、明暗与低效果模式","appearance",
         "主题 配色 浅色 深色 跟随系统 关闭动效 " + ColorPreset.entries.joinToString(" ") { it.label }),
@@ -54,6 +57,7 @@ internal fun SettingsPage(state:PlayerScreenState,open:(String)->Unit) {
                 "appearance"->"${ColorPreset.from(state.colorPreset).label} · ${when(state.theme){"light"->"浅色";"dark"->"深色";else->"跟随系统"}}"
                 "content-settings"->if(state.showNsfw)"包含 NSFW 内容" else "隐藏 NSFW 内容"
                 "effects"->if(state.dsp.bypass)"正在原声对比" else "音效已开启"
+                "file-preferences"->state.filePreferences.summary
                 "headphones"->state.headphones.profiles.firstOrNull{it.id==state.headphones.activeId}?.name?:"通用音效"
                 "system-media"->if(state.privateMetadata)"已隐藏系统媒体标题与封面" else "显示作品信息"
                 else->entry.summary
@@ -61,6 +65,42 @@ internal fun SettingsPage(state:PlayerScreenState,open:(String)->Unit) {
             if(index<rows.lastIndex)HorizontalDivider(Modifier.padding(horizontal=16.dp),color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.3f))
         }}}}
         if(groups.isEmpty())item{EmptyContent("没有匹配的设置","试试“字幕”“下载”或“颜色”等关键词。",Glyph.Search)}
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@UnstableApi
+@Composable
+internal fun FilePreferencesPage(state: PlayerScreenState, model: PlayerViewModel) {
+    val preferences = state.filePreferences
+    LazyColumn(Modifier.navigationBarsPadding(), contentPadding = PageSpace.padding,
+        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { SettingsGroup("效果音版本") {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    EffectPreference.entries.forEach { option ->
+                        ChoiceChip(preferences.effects == option, { model.setFilePreferences(preferences.copy(effects = option)) }, { Text(option.label) })
+                    }
+                }
+                MaintenanceHint("按目录名称识别 SEあり、SEなし、含音效、無SE音效等版本。")
+            }
+        } }
+        item { SettingsGroup("音频格式") {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AudioFormatPreference.entries.forEach { option ->
+                        ChoiceChip(preferences.format == option, { model.setFilePreferences(preferences.copy(format = option)) }, { Text(option.label) })
+                    }
+                }
+                MaintenanceHint("与效果音偏好组合使用，例如“无效果音 · MP3”。")
+            }
+        } }
+        item { MaintenanceCard {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("优先展示 · ${preferences.summary}", style = MaterialTheme.typography.titleSmall)
+                MaintenanceHint("自动保存。正片优先于试听与附赠内容，再匹配效果音版本和格式；同等匹配优先继续上次目录。其他目录仍可手动选择，当前播放与下载不受影响。")
+            }
+        } }
     }
 }
 

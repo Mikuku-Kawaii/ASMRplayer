@@ -13,6 +13,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -49,6 +51,7 @@ internal fun BackupPage(tools: MaintenanceTools, chooseDirectory: (String?) -> U
     var allowMissing by remember(state.rootPreview) { mutableStateOf(false) }
     var pendingFile by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingKind by rememberSaveable { mutableStateOf("") }
+    var backupHelpExpanded by rememberSaveable { mutableStateOf(false) }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri -> uri?.let(tools::export) }
     val importPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) { policy = ImportPolicy.KEEP_EXISTING; tools.prepare(uri) } }
     val relink = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -72,9 +75,6 @@ internal fun BackupPage(tools: MaintenanceTools, chooseDirectory: (String?) -> U
             MaintenanceRow("恢复资料包", "选择文件后预览，确认前不写入。") {
                 MotionOutlinedButton({ importPicker.launch(arrayOf("application/json", "application/octet-stream", "text/plain")) }, enabled = !state.busy) { Text("选择文件") }
             }
-            }
-            DetailDisclosure("备份范围与换机说明", "资料包不包含媒体文件") {
-                MaintenanceHint("明文 JSON 包含作品名称和收听记录，不含音频、图片、账号凭据和系统授权。换机时另行复制媒体文件，再重新授权。")
             }
         }
         if (state.preview != null) item {
@@ -123,12 +123,33 @@ internal fun BackupPage(tools: MaintenanceTools, chooseDirectory: (String?) -> U
             }
         } }
         if (state.preview == null) item {
-            HorizontalDivider()
-            MaintenanceRow("媒体授权", when {
-                !state.relinksReady -> "尚未读取授权状态"
-                state.relinks.isEmpty() -> "所有媒体授权正常"
-                else -> "${state.relinks.size} 项需要重新选择位置"
-            }) { MotionTextButton(tools::refreshRelinks, enabled = !state.busy) { Text("检查") } }
+            MaintenanceCard {
+                if (state.rootPreview == null) {
+                    Column {
+                        MaintenanceRow("备份范围与换机说明", "资料包不包含媒体文件") {
+                            MotionOutlinedButton(
+                                { backupHelpExpanded = !backupHelpExpanded },
+                                modifier = Modifier.widthIn(min = 96.dp).semantics {
+                                    stateDescription = if (backupHelpExpanded) "已展开" else "已收起"
+                                },
+                            ) { Text(if (backupHelpExpanded) "收起" else "展开") }
+                        }
+                        MotionReveal(backupHelpExpanded) {
+                            Box(Modifier.padding(top = 8.dp)) {
+                                MaintenanceHint("明文 JSON 包含作品名称和收听记录，不含音频、图片、账号凭据和系统授权。换机时另行复制媒体文件，再重新授权。")
+                            }
+                        }
+                    }
+                    HorizontalDivider()
+                }
+                MaintenanceRow("媒体授权", when {
+                    !state.relinksReady -> "尚未读取授权状态"
+                    state.relinks.isEmpty() -> "所有媒体授权正常"
+                    else -> "${state.relinks.size} 项需要重新选择位置"
+                }) {
+                    MotionOutlinedButton(tools::refreshRelinks, modifier = Modifier.widthIn(min = 96.dp), enabled = !state.busy) { Text("检查") }
+                }
+            }
         }
         items(if (state.preview == null) state.relinks else emptyList(), key = { "${it.kind}:${it.id}" }) { item ->
             MaintenanceCard {

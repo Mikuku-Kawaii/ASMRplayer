@@ -50,6 +50,18 @@ class DetailTools(context:Context,private val scope:CoroutineScope) {
     }
     fun closePreview(){mutable.update{it.copy(preview=null)}}
     fun previewImage(asset:RemoteAsset,done:(String)->Unit)=run {done(backend.online.provider.resolve(asset).url)}
+    /** Visible attachment thumbnails share the repository's in-flight detail request and cache. */
+    internal suspend fun attachmentImageUrl(asset: RemoteAsset): String {
+        if (asset.origin != backend.online.account.state.value.apiBase)
+            return backend.online.provider.resolve(asset).url
+        val file = backend.online.detail(asset.sourceWorkId).files.firstOrNull {
+            it.id == asset.remoteFileId && it.path == asset.relativePath &&
+                it.kind == asset.kind && it.format == asset.format
+        } ?: error("附件已变化，请刷新作品")
+        val url = file.downloadUrl ?: file.streamUrl ?: error("来源没有附件地址")
+        backend.online.provider.http.validate(url)
+        return url
+    }
     fun downloadAsset(asset:RemoteAsset)=run {backend.downloads.enqueueAssets(listOf(asset.id));backend.library.setMembership(asset.workId,true)}
     fun bind(asset:WorkAsset,versionId:String,translation:Boolean)=run {
         val source=if(backend.database.library().remoteAsset(asset.id)!=null)backend.subtitles.attachDownloaded(versionId,asset.id)

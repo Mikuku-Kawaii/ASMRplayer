@@ -11,6 +11,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
@@ -89,14 +90,30 @@ internal fun Modifier.sharedWorkArtwork(workId: String?, hero: Boolean = false):
     val shared = LocalSharedScope.current
     val page = LocalPageScope.current
     if (workId == null || shared == null || page == null || !LocalUiMotion.current || !LocalSharedArtworkEnabled.current) return this
-    val radius = page.transition.animateDp(transitionSpec = { tween(300, easing = MotionEase) }, label = "cover corners") {
-        if ((it == EnterExitState.Visible) == hero) 18.dp else 16.dp
+    val radius = page.transition.animateDp(transitionSpec = { tween(340, easing = MotionEase) }, label = "cover corners") {
+        if ((it == EnterExitState.Visible) == hero) 20.dp else 16.dp
     }
     return with(shared) {
         sharedBounds(rememberSharedContentState("work-cover:$workId"), page,
-            boundsTransform = { _, _ -> tween(300, easing = MotionEase) },
+            boundsTransform = { _, _ -> tween(340, easing = MotionEase) },
             enter = fadeIn(tween(180)), exit = fadeOut(tween(180)),
             clipInOverlayDuringTransition = OverlayClip(RoundedCornerShape(radius.value)))
+    }
+}
+
+/** Join the route transition so a quick reversal continues from the current text opacity. */
+@Composable
+internal fun Modifier.heroTitleMotion(): Modifier {
+    val page = LocalPageScope.current
+    if (page == null || !LocalUiMotion.current) return this
+    val opacity = page.transition.animateFloat(transitionSpec = {
+        if (targetState == EnterExitState.Visible) tween(260, delayMillis = 60, easing = MotionEase)
+        else tween(140, easing = MotionEase)
+    }, label = "cover title visibility") { if (it == EnterExitState.Visible) 1f else 0f }
+    val distance = with(LocalDensity.current) { 8.dp.toPx() }
+    return graphicsLayer {
+        alpha = opacity.value
+        translationY = (1f - opacity.value) * distance
     }
 }
 

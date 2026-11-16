@@ -1,7 +1,7 @@
 import { AppWindow, Cpu, FolderOpen, Globe, Languages, Palette, RefreshCw, ShieldAlert, Volume2 } from "lucide-react";
 
 export const settingsSections = [
-  { id: "appearance", members: ["appearance"], title: "外观与窗口", group: "使用偏好", icon: Palette },
+  { id: "appearance", members: ["appearance", "file-preferences"], title: "通用", group: "使用偏好", icon: Palette },
   { id: "playback", members: ["audio-engine", "shortcuts"], title: "播放与快捷键", group: "使用偏好", icon: Volume2 },
   { id: "desktop", members: ["desktop-island", "desktop-lyrics"], title: "桌面显示", group: "使用偏好", icon: AppWindow },
   { id: "recognition", members: ["recognition"], title: "字幕识别", group: "使用偏好", icon: Cpu },

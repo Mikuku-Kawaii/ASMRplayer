@@ -5,7 +5,7 @@
   <p><strong>为音声收听而设计的 Windows &amp; Android 播放器</strong></p>
   <p>在电脑上整理作品，在手机上继续收听。<br />
   本地音频、在线作品、双语台本与收听记录，都有自己的位置。</p>
-  <p><a href="https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest">下载最新版本</a> · <a href="docs/releases/v26.11.12.md">更新说明</a> · <a href="https://github.com/Mikuku-Kawaii/ASMRplayer/issues">反馈问题</a></p>
+  <p><a href="https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest">下载最新版本</a> · <a href="docs/releases/v26.11.16.md">更新说明</a> · <a href="https://github.com/Mikuku-Kawaii/ASMRplayer/issues">反馈问题</a></p>
 </div>
 
 ---
@@ -38,6 +38,10 @@
 - **建立自己的音频库**：导入本地文件夹，也可以在线浏览作品并下载。用作品喜欢、音轨收藏、歌单和时间标记整理想听的内容。
 - **跟着台本一起听**：关联原文与译文，调整时间偏移。手机上点封面展开台本、点句子跳转；Windows 还提供独立桌面歌词，并支持配置语音识别与翻译。
 - **让播放融入日常**：Windows 提供桌面灵动岛、快捷键和系统媒体控制；Android 支持后台播放、锁屏与通知控制、桌面小组件。两端均支持睡眠定时。
+
+## 文件偏好
+
+Windows 在「设置 → 通用 → 文件偏好」，Android 在「设置 → 播放与字幕 → 文件偏好」中，可分别选择有／无效果音和 MP3／WAV，也可以不指定。偏好在各端本机自动保存。双端优先展示正片，再匹配效果音和格式；同等匹配优先上次未听完的目录，其他目录仍可手动选择。支持中文、繁体中文及 SEあり／SEなし 等目录名称；不会将「无背景音乐」误判为「无效果音」。
 
 ## 台本、字幕识别与翻译
 

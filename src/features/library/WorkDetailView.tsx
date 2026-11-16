@@ -31,8 +31,6 @@ import {
 } from "lucide-react";
 import {
   WorkDetailDto,
-  DirectoryGroupOption,
-  TrackItemDto,
   DownloadPreviewDto,
   DownloadTaskDto,
   PlaybackSnapshot,
@@ -46,142 +44,7 @@ import {
 } from "../../lib/api";
 import { DownloadTaskModal } from "../../components/DownloadTaskModal";
 import { CopyRjBadge } from "./CopyRjBadge";
-
-function isNoSeText(text: string): boolean {
-  const lower = text.toLowerCase();
-  return [
-    "seなし",
-    "se無し",
-    "seナシ",
-    "无音效",
-    "無効果音",
-    "効果音なし",
-    "効果音無し",
-    "nose",
-    "no_se",
-    "no-se",
-    "without se",
-    "without_se",
-    "なし版",
-    "無し版",
-  ].some((kw) => lower.includes(kw));
-}
-
-function hasPositiveSeText(text: string): boolean {
-  const lower = text.toLowerCase();
-  return [
-    "seあり",
-    "se有り",
-    "seアリ",
-    "有音效",
-    "効果音あり",
-    "効果音有り",
-    "with se",
-    "with_se",
-    "あり版",
-    "有り版",
-  ].some((kw) => lower.includes(kw));
-}
-
-function isBonusGroupText(text: string): boolean {
-  const lower = text.toLowerCase();
-  return [
-    "特典",
-    "おまけ",
-    "ボーナストラック",
-    "bonus",
-    "extra",
-    "フリートーク",
-    "free talk",
-    "試聴",
-    "体験版",
-    "予告",
-    "trailer",
-  ].some((kw) => lower.includes(kw));
-}
-
-function scoreGroupFormat(group: DirectoryGroupOption): number {
-  const upperFormats = group.formats.map((f) => f.trim().toUpperCase());
-  const pathLower = `${group.groupPath} ${group.label}`.toLowerCase();
-  if (upperFormats.includes("WAV") || /\bwav\b/.test(pathLower)) {
-    return 3;
-  }
-  if (upperFormats.includes("FLAC") || /\bflac\b/.test(pathLower)) {
-    return 2;
-  }
-  if (
-    upperFormats.some((f) =>
-      ["MP3", "M4A", "OGG", "OPUS", "AAC"].includes(f)
-    ) ||
-    /\b(mp3|m4a|ogg|opus|aac)\b/.test(pathLower)
-  ) {
-    return 1;
-  }
-  return 0;
-}
-
-/**
- * Selects the best default directory group for a work:
- * 1. With sound effects (`有音效` / `SEあり`, excluding `SEなし` / `无音效`)
- * 2. WAV format (`WAV > FLAC > MP3/M4A/OGG/OPUS`)
- * 3. Non-bonus main tracks (`!isBonus`)
- * 4. Maximum track count (`音轨最多`)
- * 5. Explicit positive SE marker (`SEあり` / `有音效`)
- */
-export function pickBestDefaultDirectoryGroup(
-  groups: DirectoryGroupOption[],
-  tracks?: TrackItemDto[]
-): string {
-  if (groups.length === 0) return "";
-
-  const scoreTuple = (g: DirectoryGroupOption): number[] => {
-    const groupText = `${g.groupPath} ${g.label}`;
-    const gTracks = tracks
-      ? tracks.filter((t) => t.logicalDirPath === g.groupPath)
-      : [];
-    const noSe =
-      isNoSeText(groupText) ||
-      (gTracks.length > 0 &&
-        gTracks.every(
-          (t) => isNoSeText(t.title) || isNoSeText(t.groupLabel)
-        ));
-    const posSe =
-      hasPositiveSeText(groupText) ||
-      gTracks.some(
-        (t) => hasPositiveSeText(t.title) || hasPositiveSeText(t.groupLabel)
-      );
-    const isBonus = isBonusGroupText(groupText);
-    const fmt = scoreGroupFormat(g);
-
-    return [
-      noSe ? 0 : 1,
-      fmt,
-      isBonus ? 0 : 1,
-      g.trackCount,
-      posSe ? 1 : 0,
-    ];
-  };
-
-  let best = groups[0]!;
-  let bestScore = scoreTuple(best);
-
-  for (let i = 1; i < groups.length; i++) {
-    const candidate = groups[i]!;
-    const candScore = scoreTuple(candidate);
-    for (let k = 0; k < candScore.length; k++) {
-      if (candScore[k]! > bestScore[k]!) {
-        best = candidate;
-        bestScore = candScore;
-        break;
-      }
-      if (candScore[k]! < bestScore[k]!) {
-        break;
-      }
-    }
-  }
-
-  return best.groupPath;
-}
+import { defaultFilePreferences, normalizeFilePreferences, preferredDirectory, preferredDirectoryOrder, resumeDirectory, type FilePreferences } from "./filePreferences";
 
 interface WorkDetailViewProps {
   focusVersionId?: string;
@@ -200,6 +63,7 @@ export function WorkDetailView(props: WorkDetailViewProps) {
 
 function WorkDetailLoader(props: WorkDetailViewProps) {
   const [detail, setDetail] = useState<WorkDetailDto | null>(null);
+  const [filePreferences, setFilePreferences] = useState(defaultFilePreferences);
   const [error, setError] = useState<AppError | null>(null);
   const [attempt, setAttempt] = useState(0);
   const { workId, online, onBack } = props;
@@ -209,12 +73,14 @@ function WorkDetailLoader(props: WorkDetailViewProps) {
     const request = online
       ? callCommand<WorkDetailDto>("open_online_work", { workIdOrRj: workId, forDetail: true })
       : callCommand<WorkDetailDto>("get_work_detail", { workId });
-    void request.then(next => { if (!disposed) setDetail(next); })
+    void Promise.all([request, callCommand<FilePreferences>("get_file_preferences")]).then(([next, preferences]) => {
+      if (!disposed) { setFilePreferences(normalizeFilePreferences(preferences)); setDetail(next); }
+    })
       .catch(reason => { if (!disposed) setError(normalizeAppError(reason)); });
     return () => { disposed = true; };
   }, [workId, online, attempt]);
 
-  if (detail) return <WorkDetailContent {...props} workId={detail.id} initialDetail={detail} />;
+  if (detail) return <WorkDetailContent {...props} workId={detail.id} initialDetail={detail} filePreferences={filePreferences} />;
   return <div className="page-container" aria-busy={!error}>
     <div className="detail-top-bar">
       <button type="button" className="btn btn-ghost btn-sm" onClick={onBack}><ArrowLeft size={16} />返回</button>
@@ -230,9 +96,10 @@ function WorkDetailLoader(props: WorkDetailViewProps) {
   </div>;
 }
 
-const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDetailDto }> = ({
+const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDetailDto; filePreferences: FilePreferences }> = ({
   workId,
   initialDetail,
+  filePreferences,
   focusVersionId,
   onBack,
   onSnapshotChange,
@@ -246,7 +113,7 @@ const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDet
   const [syncVersions, setSyncVersions] = useState<string[] | null>(null);
   const [trackMenu, setTrackMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   useEffect(() => { setTrackMenu(null); setSyncVersions(null); }, [workId]);
-  const [selectedGroupPath, setSelectedGroupPath] = useState<string>("");
+  const [selectedGroupPath, setSelectedGroupPath] = useState(() => preferredDirectory(initialDetail.directoryGroups, filePreferences, resumeDirectory(initialDetail.tracks, initialDetail.lastVersionId)));
   const [startingPlayback, setStartingPlayback] = useState(false);
   const [isDirCollapsed, setIsDirCollapsed] = useState<boolean>(true);
   const [visibleTrackLimit, setVisibleTrackLimit] = useState<number>(100);
@@ -291,10 +158,7 @@ const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDet
         setSyncRjInput(d.rjCode);
       }
       if (d.directoryGroups.length > 0) {
-        const bestGroup = pickBestDefaultDirectoryGroup(
-          d.directoryGroups,
-          d.tracks
-        );
+        const bestGroup = preferredDirectory(d.directoryGroups, filePreferences, resumeDirectory(d.tracks, d.lastVersionId));
         if (lastInitWorkIdRef.current !== workId) {
           lastInitWorkIdRef.current = workId;
           setSelectedGroupPath(bestGroup);
@@ -311,7 +175,7 @@ const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDet
         setSelectedGroupPath("");
         setIsDirCollapsed(true);
       }
-  }, [workId]);
+  }, [workId, filePreferences]);
 
   const loadDetail = useCallback(async () => {
     setLoading(true);
@@ -1214,7 +1078,7 @@ const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDet
           </div>
           {!isDirCollapsed && (
               <div className="group-tabs">
-                {detail.directoryGroups.map((g) => (
+                {preferredDirectoryOrder(detail.directoryGroups, filePreferences).map((g) => (
                   <button
                     key={g.groupPath}
                     type="button"

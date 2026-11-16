@@ -901,6 +901,16 @@ pub fn get_app_settings(state: State<'_, AppState>) -> AppResult<AppSettingsDto>
 }
 
 #[tauri::command]
+pub fn get_file_preferences(state: State<'_, AppState>) -> AppResult<crate::services::file_preferences::FilePreferences> {
+    crate::services::file_preferences::read(&state.db)
+}
+
+#[tauri::command]
+pub fn set_file_preferences(state: State<'_, AppState>, preferences: crate::services::file_preferences::FilePreferences) -> AppResult<crate::services::file_preferences::FilePreferences> {
+    crate::services::file_preferences::save(&state.db, preferences)
+}
+
+#[tauri::command]
 pub fn get_theme_preset(state: State<'_, AppState>) -> AppResult<crate::services::theme::ThemePreset> {
     crate::services::theme::read(&state.db)
 }

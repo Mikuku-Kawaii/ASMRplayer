@@ -182,7 +182,7 @@ fun PlayerApp(model: PlayerViewModel, playerRequest: Int = 0, refraction: Boolea
         val detailMini=detailRoute&&state.queue.isNotEmpty()&&WindowInsets.ime.getBottom(density)==0
         val dockState = remember { androidx.compose.animation.core.MutableTransitionState(dockVisible || detailMini) }
         dockState.targetState = dockVisible || detailMini
-        fun routeTitle(route: String?): String = when {route=="queue-current"->"当前队列";route?.startsWith("queue-group:")==true->"歌单详情";route=="player"->"正在播放";route=="settings"->"设置";route=="appearance"->"外观";route=="content-settings"->"内容显示";route=="effects"->"音效与均衡器";route=="downloads"->"任务中心";route=="tasks"->"任务中心";
+        fun routeTitle(route: String?): String = when {route=="queue-current"->"当前队列";route?.startsWith("queue-group:")==true->"歌单详情";route=="player"->"正在播放";route=="settings"->"设置";route=="appearance"->"外观";route=="file-preferences"->"文件偏好";route=="content-settings"->"内容显示";route=="effects"->"音效与均衡器";route=="downloads"->"任务中心";route=="tasks"->"任务中心";
             route=="sync"->"跨设备同步";route=="history"->"收听记录";route=="backup"->"资料备份与恢复";route=="storage"->"存储管理";route in setOf("updates", "updates/install")->"应用更新";
             route=="headphones"->"耳机音效偏好";route=="system-media"->"系统媒体与灵动岛";
             route=="online-source"->"在线来源";route?.startsWith("online:")==true->"作品详情";
@@ -260,6 +260,7 @@ fun PlayerApp(model: PlayerViewModel, playerRequest: Int = 0, refraction: Boolea
                         route=="system-media" -> SystemMediaPage(state,model)
                         route=="settings" -> SettingsPage(state,::open)
                         route=="appearance" -> AppearancePage(state,model)
+                        route=="file-preferences" -> FilePreferencesPage(state,model)
                         route=="content-settings" -> ContentPreferencesPage(state,model)
                         route=="queue-current" -> QueuePage(state,model,24.dp,locateCurrent=true,directControls=true)
                         route?.startsWith("queue-group:")==true -> SavedQueuePage(route.substringAfter(":"),state,model,24.dp,::back)

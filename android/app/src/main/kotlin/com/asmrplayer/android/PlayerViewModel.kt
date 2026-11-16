@@ -51,6 +51,7 @@ data class PlayerScreenState(
     val lookup: com.asmrplayer.android.ui.LibraryLookup = com.asmrplayer.android.ui.LibraryLookup(), val libraryReady: Boolean = false,
     val showNsfw: Boolean = false, val includeUnrated: Boolean = true,
     val theme: String = DEFAULT_APPEARANCE_MODE, val colorPreset: String = DEFAULT_COLOR_PRESET, val lowEffects: Boolean = false,
+    val filePreferences: com.asmrplayer.android.data.FilePreferences = com.asmrplayer.android.data.FilePreferences(),
     val metadata: Map<String, CatalogMetadata> = emptyMap(),
     val session: PlaybackToolsState = PlaybackToolsState(),
     val headphones: HeadphoneState = HeadphoneState(), val headphonesReady: Boolean = false,
@@ -126,6 +127,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private val libraryStore = AndroidBackend.get(application).library
     private val libraryMutex = Mutex()
     private val appearance = application.getSharedPreferences("appearance", Application.MODE_PRIVATE)
+    private val filePreferencesStore = application.getSharedPreferences("file-preferences", Application.MODE_PRIVATE)
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
             val queueChanged = events.containsAny(Player.EVENT_TIMELINE_CHANGED, Player.EVENT_MEDIA_METADATA_CHANGED)
@@ -172,7 +174,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
         mutable.update { it.copy(theme = appearance.getString("theme", DEFAULT_APPEARANCE_MODE) ?: DEFAULT_APPEARANCE_MODE,
             colorPreset = ColorPreset.from(appearance.getString("colorPreset", DEFAULT_COLOR_PRESET) ?: DEFAULT_COLOR_PRESET).key,
-            lowEffects = appearance.getBoolean("lowEffects", false)) }
+            lowEffects = appearance.getBoolean("lowEffects", false),
+            filePreferences = com.asmrplayer.android.data.FilePreferences(
+                com.asmrplayer.android.data.EffectPreference.from(filePreferencesStore.getString("effects", null)),
+                com.asmrplayer.android.data.AudioFormatPreference.from(filePreferencesStore.getString("format", null)),
+            )) }
         viewModelScope.launch {
             screenState.map { current ->
                 val id = current.queue.getOrNull(current.index)?.id
@@ -417,6 +423,13 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         feedback("已加入音频库", "撤销") { editLibrary { libraryStore.setMembership(id, false) } }
     }
     fun setLibraryMembership(id:String,member:Boolean) = editLibrary { libraryStore.setMembership(id,member) }
+    fun toggleLibraryMembership(id: String) = editLibrary {
+        val old = requireNotNull(libraryStore.work(id)).inLibrary
+        libraryStore.setMembership(id, !old)
+        feedback(if (old) "已取消收藏，文件与收听记录保留" else "已收藏到音频库", "撤销") {
+            editLibrary { libraryStore.setMembership(id, old) }
+        }
+    }
     fun downloadCurrent() {
         val work = mutable.value.library.firstOrNull { it.containsVersion(mutable.value.queue.getOrNull(mutable.value.index)?.id) }
         val id = mutable.value.queue.getOrNull(mutable.value.index)?.id ?: return
@@ -470,6 +483,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
     suspend fun prepareUpdate() = AndroidBackend.get(getApplication()).updates.prepareInstall(controller ?: connection.awaitResult())
     fun setTheme(value: String) { appearance.edit().putString("theme", value).apply(); mutable.update { it.copy(theme = value) } }
+    fun setFilePreferences(value: com.asmrplayer.android.data.FilePreferences) {
+        filePreferencesStore.edit().putString("effects", value.effects.key).putString("format", value.format.key).apply()
+        mutable.update { it.copy(filePreferences = value) }
+    }
     fun setLowEffects(value: Boolean) { appearance.edit().putBoolean("lowEffects", value).apply(); mutable.update { it.copy(lowEffects = value) } }
     fun setColorPreset(value: String) {
         if(value !in setOf("ink_blue", "wisteria", "berry", "amber")) return
