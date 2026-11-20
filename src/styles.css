@@ -190,6 +190,8 @@ article:focus-visible {
   flex-direction: column;
   height: 100vh;
   width: 100vw;
+  /* Keep animated children outside the window from extending the root's scrollable area. */
+  overflow: clip;
   background-color: var(--bg-root);
   border: 1px solid var(--border-subtle);
 }

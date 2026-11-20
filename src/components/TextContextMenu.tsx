@@ -4,10 +4,38 @@ import { ContextMenu } from "./ContextMenu";
 import { Toast } from "./Toast";
 
 type TextField = HTMLInputElement | HTMLTextAreaElement;
-type SelectionTarget = { element: HTMLElement; value: string; start: number; end: number; range: Range | null; selected: string; readOnly: boolean; x: number; y: number };
+type SelectionTarget = { element: HTMLElement; value: string; start: number; end: number; range: Range | null; selected: string; copyText: string; readOnly: boolean; x: number; y: number };
 function isField(element: HTMLElement): element is TextField {
   return element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement;
 }
+
+function menuHost(element: HTMLElement) {
+  return element.closest("dialog, [role='dialog']") ?? document.body;
+}
+
+async function writeClipboard(text: string, element: HTMLElement) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (failure) {
+    // Some WebViews block the async API. Use the captured text and keep the
+    // temporary selection inside the active modal so it can receive focus.
+    const source = document.createElement("textarea");
+    source.value = text;
+    source.readOnly = true;
+    source.style.cssText = "position: fixed; top: 0; left: 0; opacity: 0; user-select: text;";
+    const focused = document.activeElement;
+    menuHost(element).append(source);
+    try {
+      source.focus({ preventScroll: true });
+      source.select();
+      if (!document.execCommand?.("copy")) throw failure;
+    } finally {
+      source.remove();
+      if (focused instanceof HTMLElement) focused.focus({ preventScroll: true });
+    }
+  }
+}
+
 function restore(target: SelectionTarget) {
   const { element } = target;
   if (!element.isConnected) return false;
@@ -31,18 +59,22 @@ export function TextContextMenu() {
     const editable = (event: MouseEvent) => {
       const element = event.target instanceof Element ? event.target.closest<HTMLElement>("input, textarea, [contenteditable]") : null;
       if (!element) return;
-      if (element instanceof HTMLInputElement && !["text", "search", "url", "tel", "email", "password"].includes(element.type)) return;
-      if (!isField(element) && !element.isContentEditable) return;
+      if (element instanceof HTMLInputElement && !["text", "search", "url", "tel", "email", "password", "number"].includes(element.type)) return;
+      const field = isField(element) ? element : null;
+      if (!field && !element.isContentEditable) return;
       event.preventDefault(); event.stopPropagation();
-      if (isField(element) && element.disabled) { setTarget(null); return; }
+      if (element.matches(":disabled")) { setTarget(null); return; }
       const selection = window.getSelection();
-      const start = isField(element) ? element.selectionStart ?? element.value.length : 0;
-      const end = isField(element) ? element.selectionEnd ?? start : 0;
-      const range = !isField(element) && selection?.rangeCount && element.contains(selection.anchorNode) ? selection.getRangeAt(0).cloneRange() : null;
+      const value = field?.value ?? element.textContent ?? "";
+      const selectionStart = field?.selectionStart ?? null;
+      const start = selectionStart ?? value.length;
+      const end = field?.selectionEnd ?? start;
+      const range = !field && selection?.rangeCount && element.contains(selection.anchorNode) ? selection.getRangeAt(0).cloneRange() : null;
+      const selected = field ? value.slice(start, end) : range?.toString() ?? "";
+      const readOnly = field?.readOnly || (element instanceof HTMLInputElement && element.type === "number");
+      const copyText = selected || (field && (readOnly || selectionStart === null) ? value : "");
       const rect = element.getBoundingClientRect();
-      setTarget({ element, start, end, range, value: isField(element) ? element.value : element.textContent ?? "",
-        selected: isField(element) ? element.value.slice(start, end) : range?.toString() ?? "",
-        readOnly: isField(element) && element.readOnly,
+      setTarget({ element, start, end, range, value, selected, copyText, readOnly,
         x: event.clientX || rect.left + 12, y: event.clientY || rect.bottom });
     };
     const suppress = (event: MouseEvent) => { event.preventDefault(); };
@@ -54,7 +86,7 @@ export function TextContextMenu() {
     if (!target || busy) return;
     setBusy(true);
     try {
-      if (action !== "paste") await navigator.clipboard.writeText(target.selected);
+      if (action !== "paste") await writeClipboard(action === "copy" ? target.copyText : target.selected, target.element);
       if (action !== "copy") {
         const text = action === "paste" ? await navigator.clipboard.readText() : "";
         if (!restore(target)) throw new Error("文字已变化，请重新打开菜单");
@@ -76,12 +108,12 @@ export function TextContextMenu() {
     } finally { setBusy(false); }
   }
   return <>
-    {target && <ContextMenu x={target.x} y={target.y} host={target.element.closest("dialog, [role='dialog']") ?? document.body}
+    {target && <ContextMenu x={target.x} y={target.y} host={menuHost(target.element)}
       label="文字编辑菜单" onClose={() => setTarget(null)}>
       <button type="button" role="menuitem" className="m3-menu-item" disabled={busy || target.readOnly || !target.selected} onClick={() => void perform("cut")}><Scissors size={15} /><span className="ui-icon-label">剪切</span></button>
-      <button type="button" role="menuitem" className="m3-menu-item" disabled={busy || !target.selected} onClick={() => void perform("copy")}><Copy size={15} /><span className="ui-icon-label">复制</span></button>
+      <button type="button" role="menuitem" className="m3-menu-item" disabled={busy || !target.copyText} onClick={() => void perform("copy")}><Copy size={15} /><span className="ui-icon-label">复制</span></button>
       <button type="button" role="menuitem" className="m3-menu-item" disabled={busy || target.readOnly} onClick={() => void perform("paste")}><ClipboardPaste size={15} /><span className="ui-icon-label">粘贴</span></button>
     </ContextMenu>}
-    {error && <Toast key={error.id} message={error.message} onClose={() => setError(null)} />}
+    {error && <Toast key={error.id} tone="error" message={error.message} onClose={() => setError(null)} />}
   </>;
 }

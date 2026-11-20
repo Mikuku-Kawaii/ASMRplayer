@@ -35,6 +35,15 @@ class ProviderAccount(context: Context, private val transport: HttpTransport) {
         if (mutable.value.apiBase == base) mutable.value = accountState(base)
     }
     internal fun cacheScope(base: String): String = prefs.getString("scope:" + tokenKey(base), "").orEmpty()
+    internal suspend fun guestRecommenderUuid(base: String): String = withContext(Dispatchers.IO) {
+        val key = "guest-recommender:$base"
+        synchronized(prefs) {
+            prefs.getString(key, null) ?: java.util.UUID.randomUUID().toString().also { id ->
+                check(prefs.edit().putString(key, id).commit())
+            }
+        }
+    }
+
     private fun accountState(base: String) = ProviderAccountState(base, prefs.contains(tokenKey(base)), cacheScope(base))
 
     internal fun headers(base: String): Map<String, String> {

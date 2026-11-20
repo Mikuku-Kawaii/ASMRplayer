@@ -39,7 +39,8 @@ internal fun DiscoverPage(data: OnlineScreenState, tools: OnlineTools, bottom: D
     var query by rememberSaveable { mutableStateOf(data.query) }
     LaunchedEffect(data.query) { query=data.query }
     val grid = rememberLazyGridState()
-    val categories = listOf(Triple("popular", "热门作品", Glyph.Flame), Triple("dl_count", "销量榜", Glyph.Sales),
+    val categories = listOf(Triple("popular", "热门作品", Glyph.Flame), Triple("recommend", "推荐作品", Glyph.Discover),
+        Triple("dl_count", "销量榜", Glyph.Sales),
         Triple("rate_average_2dp", "好评榜", Glyph.Star), Triple("create_date", "最新收录", Glyph.NewArrival),
         Triple("release", "最新发售", Glyph.Release), Triple("review_count", "热议榜", Glyph.Discussion))
     val categoryScroll=rememberLazyListState()

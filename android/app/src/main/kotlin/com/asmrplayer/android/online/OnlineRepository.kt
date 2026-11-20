@@ -15,24 +15,30 @@ class AsmrOneProvider(val account: ProviderAccount, val http: HttpTransport,
     suspend fun browse(query: String = "", page: Int = 1, order: String = "release", ascending: Boolean = false,
         includeNsfw: Boolean = false, includeUnrated: Boolean = true, filters:BrowseFilters=BrowseFilters()): OnlinePage {
         require(page in 1..100_000 && query.length <= 1024)
-        require(order in setOf("popular", "release", "dl_count", "rate_average_2dp", "id", "create_date", "review_count"))
-        val base = account.state.value.apiBase
+        require(order in setOf("popular", "recommend", "release", "dl_count", "rate_average_2dp", "id", "create_date", "review_count"))
+        val source = account.state.value
+        val base = source.apiBase
         if(!includeNsfw&&filters.rating=="adult") return OnlinePage(emptyList(),page,20,0)
         val terms=filters.query(query)
         val effective = if (includeNsfw || filters.rating == "general") terms else "${terms} \$age:general\$".trim()
-        val route = if (effective.isEmpty()) "/api/works" else "/api/search/${Uri.encode(effective)}"
         val sub=if(filters.subtitleOnly)1 else 0
-        val body=if(order=="popular" && query.isBlank()) {
+        val body = if (order == "recommend" || (order == "popular" && query.isBlank())) {
+            val headers = withContext(Dispatchers.IO) { account.headers(base) }
             val payload=JSONObject().put("keyword",effective.ifBlank { " " }).put("page",page).put("subtitle",sub)
                 .put("localSubtitledWorks",org.json.JSONArray()).put("withPlaylistStatus",org.json.JSONArray())
-            request(base, "/api/recommender/popular", payload.toString())
+            val feed = if (order == "recommend") {
+                payload.put("recommenderUuid", recommenderUuid(base, headers)).put("pageSize", 20)
+                "recommend-for-user"
+            } else "popular"
+            request(base, "/api/recommender/$feed", payload.toString(), headers)
         } else {
             // A free-text search uses the source's search index. Only an explicitly selected ranking sets the order.
+            val route = if (effective.isEmpty()) "/api/works" else "/api/search/${Uri.encode(effective)}"
             val orderParam = if (order == "popular") "" else "order=$order&"
             request(base, "$route?${orderParam}sort=${if (ascending) "asc" else "desc"}&page=$page&subtitle=$sub")
         }
         val result = parse { AsmrJson.page(body, page).also { p -> p.items.forEach { it.coverUrl?.let(http::validate) } } }
-        if (account.state.value.apiBase != base) throw CancellationException("来源已切换")
+        if (account.state.value != source) throw CancellationException("来源账号已切换")
         return result.copy(items = result.items.filter { work ->
             (includeNsfw || work.rating != "NSFW") && (includeUnrated || work.rating != "UNRATED") &&
                 when(filters.rating) {
@@ -42,6 +48,21 @@ class AsmrOneProvider(val account: ProviderAccount, val http: HttpTransport,
                 }
         })
     }
+
+    private suspend fun recommenderUuid(base: String, headers: Map<String, String>): String {
+        if (headers.isNotEmpty()) {
+            val profile = request(base, "/api/auth/me", accountHeaders = headers)
+            val id = parse {
+                val user = JSONObject(profile).getJSONObject("user")
+                if (user.getBoolean("loggedIn") && user.optString("name") != "guest") {
+                    (user.get("recommenderUuid") as String).also { require(it.isNotBlank()) }
+                } else null
+            }
+            if (id != null) return id
+        }
+        return account.guestRecommenderUuid(base)
+    }
+
     suspend fun detail(rawId: String, base: String = account.state.value.apiBase): OnlineDetail = coroutineScope {
         val id = AsmrJson.workId(rawId)
         val work = async { work(id,base) }
@@ -66,7 +87,7 @@ class AsmrOneProvider(val account: ProviderAccount, val http: HttpTransport,
         }
     }
     private suspend fun metadataRequest(base:String,route:String,useAccount:Boolean):String = try {
-        withTimeout(12_000) { request(base,route,useAccount=useAccount) }
+        withTimeout(12_000) { request(base, route, accountHeaders = if (useAccount) null else emptyMap()) }
     } catch(_:TimeoutCancellationException) {
         throw OnlineException(OnlineError.NETWORK,"来源作品资料请求超时")
     }
@@ -96,12 +117,13 @@ class AsmrOneProvider(val account: ProviderAccount, val http: HttpTransport,
         http.validate(url)
         return RemoteAddress(url, file.bytes)
     }
-    private suspend fun request(base: String, route: String, jsonBody: String? = null, useAccount:Boolean=true): String {
+    private suspend fun request(base: String, route: String, jsonBody: String? = null, accountHeaders: Map<String, String>? = null): String {
         http.validate(base)
+        val headers = accountHeaders ?: withContext(Dispatchers.IO) { account.headers(base) }
         repeat(3) { attempt ->
             try { return http.text(base + route, mapOf("Accept" to "application/json, text/plain, */*",
                 "Content-Type" to "application/json","Origin" to "https://asmr.one","Referer" to "https://asmr.one/") +
-                (if(useAccount) withContext(Dispatchers.IO) { account.headers(base) } else emptyMap()), jsonBody) }
+                headers, jsonBody) }
             catch (e: CancellationException) { throw e }
             catch (e: OnlineException) { throw e }
             catch (e: Exception) {

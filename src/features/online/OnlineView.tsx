@@ -14,6 +14,7 @@ import {
   ChevronsRight,
   RefreshCw,
   Flame,
+  Compass,
   Trophy,
   Star,
   Sparkles,
@@ -334,6 +335,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
 
   const categories = [
     { key: "popular", label: "热门作品", icon: Flame },
+    { key: "recommend", label: "推荐作品", icon: Compass },
     { key: "dl_count", label: "销量榜", icon: Trophy },
     { key: "rate_average_2dp", label: "好评榜", icon: Star },
     { key: "create_date", label: "最新收录", icon: Sparkles },
@@ -345,7 +347,8 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
   const targetPage = Number(jumpPage);
   const canJump = /^\d+$/.test(jumpPage) && Number.isSafeInteger(targetPage)
     && targetPage >= 1 && targetPage <= totalPages && targetPage !== page;
-  const fixedPopularOrder = order === "popular" && !committedKeyword.trim() && filters.length === 0;
+  const fixedOrder = order === "recommend" || (order === "popular" && !committedKeyword.trim() && filters.length === 0);
+  const sortHint = fixedOrder ? "当前作品按来源提供的顺序展示" : undefined;
 
   return (
     <div className="page-container online-page">
@@ -428,7 +431,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
                 className={`btn-chip ${isActive ? "active" : ""}`}
                 onClick={() => handleSelectCategory(cat.key)}
               >
-                <IconComp size={13} />
+                <IconComp size={13} aria-hidden="true" />
                 <span>{cat.label}</span>
               </button>
             );
@@ -447,23 +450,23 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
             title={
               nsfwEnabled
                 ? "当前已开启 NSFW 模式（展示包含 R18 在内的全部作品，点击切换为全年龄过滤）"
-                : "当前为全年龄安全模式（已过滤 R18 作品并自动补齐整页，点击开启 NSFW 完整展示）"
+                : "当前为全年龄模式，点击开启 NSFW 完整展示"
             }
           >
             {nsfwEnabled ? <Eye size={13} /> : <EyeOff size={13} />}
             <span>{nsfwEnabled ? "NSFW 已开启" : "全年龄过滤"}</span>
           </button>
 
-          <span title={fixedPopularOrder ? "热门推荐采用默认顺序；切换榜单或搜索、筛选后可调整排序方向" : undefined}>
+          <span title={sortHint}>
             <Select
               size="compact"
               variant="chip"
               aria-label="排序方向"
-              disabled={fixedPopularOrder}
-              aria-description={fixedPopularOrder ? "热门推荐采用默认顺序；切换榜单或搜索、筛选后可调整排序方向" : undefined}
-              value={fixedPopularOrder ? "default" : sort}
+              disabled={fixedOrder}
+              aria-description={sortHint}
+              value={fixedOrder ? "default" : sort}
               onValueChange={setSort}
-              options={fixedPopularOrder ? [{ value: "default", label: "默认排序" }] : [{ value: "desc", label: "降序" }, { value: "asc", label: "升序" }]}
+              options={fixedOrder ? [{ value: "default", label: "默认排序" }] : [{ value: "desc", label: "降序" }, { value: "asc", label: "升序" }]}
             />
           </span>
         </div>

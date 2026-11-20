@@ -122,10 +122,11 @@ internal fun OnlineFilterSheet(value: BrowseFilters, options: List<String>, coun
     var draft by remember { mutableStateOf(value) }
     var draftOrder by rememberSaveable { mutableStateOf(order) }
     var draftAscending by rememberSaveable { mutableStateOf(ascending) }
+    val fixedOrder = draftOrder == "popular" || draftOrder == "recommend"
     var section by rememberSaveable { mutableStateOf("") }
     var excluding by rememberSaveable { mutableStateOf(false) }
     FilterPanel("发现筛选", section, { section = "" }, close, { draft = BrowseFilters() },
-        { apply(draft, draftOrder, draftOrder != "popular" && draftAscending); close() }, "应用筛选") {
+        { apply(draft, draftOrder, !fixedOrder && draftAscending); close() }, "应用筛选") {
         when (section) {
             "标签" -> {
                 notice?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
@@ -146,7 +147,7 @@ internal fun OnlineFilterSheet(value: BrowseFilters, options: List<String>, coun
             "社团" -> FilterPicker("社团", circles.map { FilterOption(it) }, listOf(draft.circle).filter { it.isNotBlank() }, { draft = draft.copy(circle = if (it == draft.circle) "" else it) }, providerTerms = true)
             "排序方式" -> FilterBody {
                 FilterChoices("排序", draftOrder, sortOptions) { draftOrder = it }
-                if (draftOrder != "popular") {
+                if (!fixedOrder) {
                     FilterChoices("方向", draftAscending, listOf(true to "升序", false to "降序")) { draftAscending = it }
                 }
             }
@@ -159,7 +160,7 @@ internal fun OnlineFilterSheet(value: BrowseFilters, options: List<String>, coun
                 FilterLink("社团", draft.circle) { section = "社团" }
                 HorizontalDivider()
                 val label = sortOptions.firstOrNull { it.first == draftOrder }?.second.orEmpty()
-                val direction = if (draftOrder == "popular") "" else if (draftAscending) " ↑" else " ↓"
+                val direction = if (fixedOrder) "" else if (draftAscending) " ↑" else " ↓"
                 FilterLink("排序方式", label + direction) { section = "排序方式" }
             }
         }

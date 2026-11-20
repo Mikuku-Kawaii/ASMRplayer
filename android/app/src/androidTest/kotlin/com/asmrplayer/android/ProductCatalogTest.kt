@@ -8,6 +8,7 @@ import com.asmrplayer.android.library.*
 import com.asmrplayer.android.online.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
+import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -64,6 +65,57 @@ class ProductCatalogTest {
             } finally{account.setApiBase(before)}
         }
     }
+    @Test fun recommendedWorksUseTheSourceFeedForGuestsAndAccounts() = runBlocking {
+        val http = HttpTransport(true)
+        val account = ProviderAccount(context, http)
+        val before = account.state.value.apiBase
+        OnlineFixtureServer().use { server ->
+            try {
+                account.setApiBase(server.base)
+                val provider = AsmrOneProvider(account, http)
+                val route = "/api/recommender/recommend-for-user"
+                val first = provider.browse(order = "recommend")
+                assertEquals(listOf("123456"), first.items.map { it.sourceId })
+                val guest = JSONObject(server.requests.single().body).getString("recommenderUuid")
+                assertEquals(guest, java.util.UUID.fromString(guest).toString())
+
+                server.browseResponse = { request ->
+                    if (request.path == "/api/auth/me") 200 to """{"user":{"loggedIn":true,"name":"test","recommenderUuid":"account-id"}}"""
+                    else 200 to feedPage(request.browsePage(), listOf(123459, 123450), total = 22, pageSize = 20)
+                }
+                val reopened = AsmrOneProvider(ProviderAccount(context, http), http)
+                val second = reopened.browse("quiet", page = 2, order = "recommend", ascending = true,
+                    filters = BrowseFilters(tags = listOf("rain"), subtitleOnly = true))
+                assertEquals(listOf("123459", "123450"), second.items.map { it.sourceId })
+                assertEquals(2, second.page)
+                assertTrue(server.requests.all { it.method == "POST" && it.path == route })
+                val body = JSONObject(server.requests.last().body)
+                assertEquals(guest, body.getString("recommenderUuid"))
+                assertEquals("quiet \$tag:rain\$ \$age:general\$", body.getString("keyword"))
+                assertEquals(2, body.getInt("page"))
+                assertEquals(20, body.getInt("pageSize"))
+                assertEquals(1, body.getInt("subtitle"))
+                assertFalse(body.has("sort"))
+
+                account.setToken("fixture")
+                provider.browse(order = "recommend", includeNsfw = true)
+                val signedIn = server.requests.last()
+                assertEquals("Bearer fixture", signedIn.headers["authorization"])
+                assertEquals("account-id", JSONObject(signedIn.body).getString("recommenderUuid"))
+                assertEquals(" ", JSONObject(signedIn.body).getString("keyword"))
+                account.setToken(null)
+                server.browseResponse = { 404 to "" }
+                val count = server.requests.size
+                val error = runCatching { provider.browse(order = "recommend") }.exceptionOrNull()
+                assertEquals(OnlineError.NOT_FOUND, (error as OnlineException).code)
+                assertEquals(listOf(route), server.requests.drop(count).map { it.path })
+            } finally {
+                account.setToken(null)
+                account.setApiBase(before)
+            }
+        }
+    }
+
     @Test fun importedMetadataIsAvailableToLocalCatalogWithoutRefetch()=runBlocking {
         val db=Room.inMemoryDatabaseBuilder(context,LibraryDatabase::class.java).build()
         val http=HttpTransport(true);val account=ProviderAccount(context,http);val before=account.state.value.apiBase

@@ -13,6 +13,7 @@ use uuid::Uuid;
 mod media_cache;
 use media_cache::MediaCache;
 mod filters;
+mod recommendations;
 pub use filters::{OnlineFilter, ProviderTag};
 use filters::build_filter_query;
 
@@ -677,12 +678,19 @@ impl AsmrOneProvider {
     }
 
     async fn get_text_with_retry_scoped(&self, url: &str, use_account: bool) -> AppResult<String> {
-        let client = self.build_client()?;
         let token = if use_account { self.auth_token_mem.read().clone() } else { None };
+        self.request_api_text(url, None, token.as_deref()).await
+    }
+
+    async fn request_api_text(&self, url: &str, json_body: Option<&Value>, token: Option<&str>) -> AppResult<String> {
+        let client = self.build_client()?;
         let mut last_err = None;
 
         for attempt in 0..3 {
-            let mut req = client.get(url);
+            let mut req = match json_body {
+                Some(body) => client.post(url).json(body),
+                None => client.get(url),
+            };
             if url.starts_with(&format!("{}/api/", self.api_base())) ||
                 OFFICIAL_API_BASES.iter().any(|base|url.starts_with(&format!("{base}/api/"))) {
                 req = req
@@ -691,8 +699,8 @@ impl AsmrOneProvider {
                     .header(header::ORIGIN, "https://asmr.one")
                     .header(header::REFERER, "https://asmr.one/");
             }
-            if let Some(ref t) = token {
-                req = req.header(header::AUTHORIZATION, format!("Bearer {}", t));
+            if let Some(token) = token {
+                req = req.bearer_auth(token);
             }
 
             match req.send().await {
@@ -1667,6 +1675,9 @@ impl AsmrOneProvider {
         sort: &str,
         subtitle_only: bool,
     ) -> AppResult<Page<ProviderWork>> {
+        if order == "recommend" {
+            return self.recommended_works("", page, subtitle_only).await;
+        }
         let safe_page = page.max(1);
         let start_global = ((safe_page - 1) as usize) * Self::ONLINE_PAGE_SIZE;
         let first_up_page = ((start_global / Self::UPSTREAM_PAGE_SIZE) + 1) as u32;
@@ -1746,6 +1757,9 @@ impl AsmrOneProvider {
         let q = keyword.trim();
         if q.is_empty() {
             return self.browse_works(page, order, sort, subtitle_only).await;
+        }
+        if order == "recommend" {
+            return self.recommended_works(q, page, subtitle_only).await;
         }
         let effective_order = if order == "popular" { "dl_count" } else { order };
         let safe_page = page.max(1);

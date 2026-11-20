@@ -64,6 +64,8 @@ class OnlineFixtureServer(durationSeconds: Int = 3, sampleRate: Int = 48000, por
                         }
                         val request = Request(target, headers, requestLine[0], requestBody.toString())
                         requests.add(request)
+                        val browse = target == "/api/recommender/popular" || target == "/api/recommender/recommend-for-user" ||
+                            target.startsWith("/api/search/") || target.startsWith("/api/works")
                         var code = 200; val responseHeaders = linkedMapOf<String, String>(); var body: ByteArray
                         val nextRedirect = redirect
                         when {
@@ -85,11 +87,11 @@ class OnlineFixtureServer(durationSeconds: Int = 3, sampleRate: Int = 48000, por
                                 val original = originalArtwork?.let { """,{"type":"image","title":"cover.png","hash":"fixture-original","size":${it.size},"mediaDownloadUrl":"$base/media/original"}""" }.orEmpty()
                                 body = """[{"type":"folder","title":"WAV","children":[{"type":"audio","title":"01.wav","hash":"fixture-01","size":${bytes.size},"mediaStreamUrl":"$base/media?signature=$number","mediaDownloadUrl":"$base/media?signature=$number"}$second$extra$document$original]}]""".toByteArray()
                             }
-                            browseResponse != null && (target.startsWith("/api/recommender/popular") || target.startsWith("/api/search/") || target.startsWith("/api/works")) -> {
+                            browseResponse != null && (browse || target == "/api/auth/me") -> {
                                 val response = browseResponse!!.invoke(request); code = response.first; body = response.second.toByteArray()
                             }
                             target.startsWith("/api/recommender/popular") && mode == "popular-unavailable" -> { code = 503; body = byteArrayOf() }
-                            target.startsWith("/api/recommender/popular") || target.startsWith("/api/search/") || target.startsWith("/api/works") -> body = """{"works":[${work()},{"id":123457,"title":"Adult fixture","age_category_string":"r18"}],"pagination":{"currentPage":1,"pageSize":20,"totalCount":2}}""".toByteArray()
+                            browse -> body = """{"works":[${work()},{"id":123457,"title":"Adult fixture","age_category_string":"r18"}],"pagination":{"currentPage":1,"pageSize":20,"totalCount":2}}""".toByteArray()
                             else -> {
                                 val count = mediaRequests.incrementAndGet()
                                 if (mode == "expired" && count == 1) { code = 403; body = byteArrayOf() }

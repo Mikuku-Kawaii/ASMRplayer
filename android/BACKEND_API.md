@@ -84,7 +84,7 @@ AN007.R14 将作品 `inLibrary` 与 `favorite` 分开：普通音频库只列主
 | `account.state` | StateFlow：`apiBase`、`hasToken`，不返回明文凭据。 |
 | `account.setApiBase(origin)` | HTTPS origin，不带路径/query/用户信息；切换来源后重新加载列表。不同 origin 分开保存 Token，旧库的来源引用仍使用原 origin。 |
 | `account.setToken(tokenOrNull)` | 当前 origin 的 Bearer Token；null/空串清除。Android Keystore AES-GCM 加密后持久化；跨 origin 重定向不转发认证头。没有用户名/密码登录接口。 |
-| `browse(query="", page=1, order="release", ascending=false)` | 返回 `OnlinePage(items, page, pageSize, total)`；order 支持 release/dl_count/rate_average_2dp/id。使用本地库同一 NSFW/未分级偏好；total 是来源总数，过滤后本页可能不足 pageSize。 |
+| `browse(query="", page=1, order="release", ascending=false)` | 返回 `OnlinePage(items, page, pageSize, total)`。order 支持 popular、recommend、release、dl_count、rate_average_2dp、id、create_date 和 review_count。使用本地库的 NSFW 及未分级偏好，total 是来源总数，过滤后本页可能不足 pageSize。 |
 | `detail(id)` | 接受数字或 RJ 编号，返回作品元数据和目录树展开后的音频/字幕/图片条目；不改本地库。返回的媒体 URL 只供当次请求使用，不能持久化。 |
 | `importWork(id, addToLibrary=true)` | 导入或刷新版本及附件引用，返回 `ImportedOnlineWork(workId, versionIds, assetIds, coverAssetId)`。临时播放/加入队列/喜欢操作传 false，只缓存播放资料；主动入库和下载传 true。false 不会移除已有入库状态。保留喜欢、分级、进度、书签和下载附件；来源消失只标记在线引用不可用。 |
 | `assets(workId)` | Flow<List<RemoteAsset>>：id/workId/relativePath/kind/format/byteSize/available；kind 为 subtitle/image/cover，available 只表示上次刷新时远端存在。不是本地下载完成状态，不能据此显示离线可用。 |
@@ -224,7 +224,7 @@ Room/KSP 固定为 2.8.4 / 2.2.20-2.0.4，沿用 FluxManga 已验证的版本组
 
 - Room schema 5 添加 `catalog_metadata`，通过 `MIGRATION_4_5` 增量迁移。在线导入/显式刷新写入社团、声优、标签、简介、发行日期和字幕标记；`PlayerScreenState.metadata` 提供生命周期内的缓存快照。该表属于可重新抓取的元数据缓存，不改变资料包 v2，不将该缓存表加入资料包；恢复旧资料后可从详情刷新。
 - `LibraryQuery` 增加 tags / voices（AND、忽略大小写）、circle、subtitleOnly、offlineOnly、rating 和 favorite（0 不限、1 已喜欢、2 未喜欢）。关键词也匹配社团和声优；offlineOnly 仅匹配当前标记可用的本地/已下载来源，点击播放仍再次验证文件。字幕包括已知远端字幕标记或本地可用字幕。收藏页同时保持 favoritesOnly，不绕过全局内容过滤。
-- `BrowseFilters` 构造来源支持的 `$tag:` / `$-tag:` / `$va:` / `$circle:` / `$age:` 查询，并独立传 subtitle 参数。热门无条件查询使用 `/api/recommender/popular` POST，网络失败回落销量排序；带条件或全年龄限制时采用来源搜索排序。标签建议来自当前来源 `/api/tags/`，失败时保留当前结果中的标签建议并允许手动输入条件。
+- `BrowseFilters` 构造来源支持的 `$tag:` / `$-tag:` / `$va:` / `$circle:` / `$age:` 查询，并独立传 subtitle 参数。热门作品在关键词为空时 POST 到 `/api/recommender/popular`，提交关键词后使用作品搜索。推荐作品始终 POST 到 `/api/recommender/recommend-for-user`，携带页码、页大小、筛选条件及 `recommenderUuid`。访客标识按站点保存在本机，已登录账号使用 `/api/auth/me` 返回的推荐标识。两种榜单请求失败时均支持重试。标签建议来自当前来源 `/api/tags/`，失败时保留当前结果中的标签建议并允许手动输入条件。
 - `LibraryPlayback.ENQUEUE` 自定义命令传 `versionIds` 与 `next`，在服务中解析稳定身份并追加，不替换当前音轨、位置或播放/暂停状态。加入前后检查队列上限 500，迟到解析不能覆盖后续请求。普通循环模式使用 MediaController.repeatMode，由服务持久化，恢复不会自动播放。
 - `PlayerViewModel.playGroup(ids, fromStart, startVersion)` 按选中分组播放，继续收听保持完整组队列并定位最近未完成的版本。`OnlineTools.act` 支持 play/restart/next/enqueue/favorite-track 及原有保存/下载操作，成功回调在导入与命令提交后触发，用于页面跳转；离开详情仍取消未提交任务。
 - `DetailTools` 管理详情附件、字幕预览、显式关联、远端信息刷新及下载反馈，不持有播放器。纯台词 UI 只消费当前稳定版本的字幕与服务位置；切换版本时不展示上一轨台词。
