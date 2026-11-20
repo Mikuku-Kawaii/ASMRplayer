@@ -5,7 +5,7 @@
   <p><strong>为音声收听而设计的 Windows &amp; Android 播放器</strong></p>
   <p>在电脑上整理作品，在手机上继续收听。<br />
   本地音频、在线作品、双语台本与收听记录，都有自己的位置。</p>
-  <p><a href="https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest">下载最新版本</a> · <a href="docs/releases/v26.11.20.md">更新说明</a> · <a href="https://github.com/Mikuku-Kawaii/ASMRplayer/issues">反馈问题</a></p>
+  <p><a href="https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest">下载最新版本</a> · <a href="docs/releases/v26.11.21.md">更新说明</a> · <a href="https://github.com/Mikuku-Kawaii/ASMRplayer/issues">反馈问题</a></p>
 </div>
 
 ---
@@ -68,6 +68,8 @@ Windows 在「设置 → 通用 → 文件偏好」，Android 在「设置 → �
 ## 在线浏览与下载管理
 
 在 Windows「在线浏览」或 Android「发现」中，点「热门作品」旁的「推荐作品」即可查看 asmr.one 推荐。可以在推荐结果中搜索和筛选，作品按站点给出的顺序展示。
+
+要查看与官网同一账号的个人推荐，点击「推荐作品」里的「登录 asmr.one」，输入官网账号名和密码。也可以在 Windows「设置与诊断 → 网络与账户」或 Android「设置 → 在线来源」中登录和退出。登录后推荐页会显示账号名，退出后显示访客推荐。
 
 从在线作品中选择需要的目录或文件，下载音频、字幕、图片等内容，在离线时继续收听或阅读。下载管理显示任务状态与进度，提供暂停、继续、重试等操作；Windows 还支持批量处理任务，Android 可按作品查看下载文件。
 

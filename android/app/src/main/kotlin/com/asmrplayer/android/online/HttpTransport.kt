@@ -16,7 +16,7 @@ class HttpTransport(private val debugLoopback: Boolean = false) {
             !uri.host.isNullOrBlank() && uri.rawUserInfo == null && uri.fragment == null) { "需要 HTTPS 地址" }
         return uri
     }
-    suspend fun <T> response(address: String, headers: Map<String, String> = emptyMap(), jsonBody: String? = null, block: suspend (HttpURLConnection) -> T): T = withContext(Dispatchers.IO) {
+    suspend fun <T> response(address: String, headers: Map<String, String> = emptyMap(), jsonBody: String? = null, followRedirects: Boolean = true, block: suspend (HttpURLConnection) -> T): T = withContext(Dispatchers.IO) {
         val initial = validate(address)
         var next = initial
         repeat(6) { redirect ->
@@ -40,7 +40,7 @@ class HttpTransport(private val debugLoopback: Boolean = false) {
                     connection.outputStream.use {it.write(jsonBody.toByteArray(Charsets.UTF_8))}
                 }
                 val code = connection.responseCode
-                if (code in setOf(301, 302, 303, 307, 308)) {
+                if (followRedirects && code in setOf(301, 302, 303, 307, 308)) {
                     require(redirect < 5)
                     next = validate(next.resolve(connection.getHeaderField("Location") ?: error("无重定向地址")).toString())
                 } else return@withContext block(connection)
@@ -48,7 +48,7 @@ class HttpTransport(private val debugLoopback: Boolean = false) {
         }
         error("重定向次数过多")
     }
-    suspend fun text(address: String, headers: Map<String, String> = emptyMap(), jsonBody:String?=null): String = response(address, headers, jsonBody) { connection ->
+    suspend fun text(address: String, headers: Map<String, String> = emptyMap(), jsonBody:String?=null, followRedirects: Boolean = true): String = response(address, headers, jsonBody, followRedirects) { connection ->
         if (connection.responseCode !in 200..299) throw HttpStatusException(connection.responseCode)
         connection.inputStream.use { stream ->
             val out = ByteArrayOutputStream(); val buffer = ByteArray(8192)

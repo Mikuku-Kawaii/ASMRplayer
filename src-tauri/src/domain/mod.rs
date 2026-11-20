@@ -170,6 +170,16 @@ pub struct Page<T> {
     pub page: u32,
     pub page_size: u32,
     pub total_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommendation_identity: Option<RecommendationIdentity>,
+}
+
+/// Identity confirmed by the source for this recommendation response.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RecommendationIdentity {
+    Guest,
+    Account { name: Option<String> },
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1397,6 +1407,8 @@ pub struct AppSettingsDto {
     #[serde(default)]
     pub island_privacy_mode: bool,
     pub has_auth_token: bool,
+    #[serde(default)]
+    pub site_account_name: Option<String>,
     pub mpv_available: bool,
     pub mpv_path: String,
 }

@@ -13,6 +13,8 @@ use uuid::Uuid;
 mod media_cache;
 use media_cache::MediaCache;
 mod filters;
+mod account;
+use account::{SiteAccount, SiteCredential};
 mod recommendations;
 pub use filters::{OnlineFilter, ProviderTag};
 use filters::build_filter_query;
@@ -476,15 +478,15 @@ pub fn parse_works_page_json(body: &str, requested_page: u32) -> AppResult<Page<
         page,
         page_size,
         total_count,
+        recommendation_identity: None,
     })
 }
 
 #[derive(Clone)]
 pub struct AsmrOneProvider {
     db: Database,
-    api_base: Arc<RwLock<String>>,
+    account: Arc<RwLock<SiteAccount>>,
     proxy_url: Arc<RwLock<Option<String>>>,
-    auth_token_mem: Arc<RwLock<Option<String>>>,
     nsfw_enabled: Arc<RwLock<bool>>,
     media_cache: Arc<RwLock<MediaCache>>,
     http_client: Arc<Mutex<Option<(Option<String>, reqwest::Client)>>>,
@@ -515,17 +517,12 @@ impl AsmrOneProvider {
             .map(|v| v == "true" || v == "1")
             .unwrap_or(false);
 
-        let token_initial = if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
-            entry.get_password().ok().filter(|s| !s.trim().is_empty())
-        } else {
-            None
-        };
+        let account = SiteAccount::open(&db, api_base);
 
         Self {
             db,
-            api_base: Arc::new(RwLock::new(api_base)),
+            account: Arc::new(RwLock::new(account)),
             proxy_url: Arc::new(RwLock::new(proxy_url)),
-            auth_token_mem: Arc::new(RwLock::new(token_initial)),
             nsfw_enabled: Arc::new(RwLock::new(nsfw_enabled)),
             media_cache: Arc::new(RwLock::new(MediaCache::default())),
             http_client: Arc::new(Mutex::new(None)),
@@ -544,7 +541,7 @@ impl AsmrOneProvider {
     }
 
     pub fn api_base(&self) -> String {
-        self.api_base.read().clone()
+        self.account.read().base.clone()
     }
 
     pub fn set_api_base(&self, url: &str) -> AppResult<()> {
@@ -555,8 +552,9 @@ impl AsmrOneProvider {
                 "API 地址必须以 http:// 或 https:// 开头",
             ));
         }
-        *self.api_base.write() = trimmed.clone();
+        let mut account = self.account.write();
         self.db.set_setting("api_base_url", &trimmed)?;
+        account.switch(trimmed);
         Ok(())
     }
 
@@ -579,24 +577,11 @@ impl AsmrOneProvider {
 
     pub fn set_auth_token(&self, token: Option<String>) -> AppResult<()> {
         let clean = token.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
-            match &clean {
-                Some(t) => {
-                    let _ = entry.set_password(t);
-                }
-                None => {
-                    let _ = entry.delete_credential();
-                }
-            }
-        }
-        *self.auth_token_mem.write() = clean.clone();
-        self.db
-            .set_setting("has_auth_token_ref", if clean.is_some() { "true" } else { "false" })?;
-        Ok(())
+        self.account.write().save(clean.map(|token| SiteCredential { token, name: None }))
     }
 
     pub fn has_auth_token(&self) -> bool {
-        self.auth_token_mem.read().is_some()
+        self.account.read().credential.is_some()
     }
 
     /// T1508: streaming downloads have no API-style total deadline. The download
@@ -620,6 +605,14 @@ impl AsmrOneProvider {
         if let Some((proxy, client)) = cached.as_ref() {
             if *proxy == proxy_url { return Ok(client.clone()); }
         }
+        let client = self.api_client_builder(proxy_url.as_deref())?.build().map_err(|e| {
+            AppError::new(ErrorCode::NetworkUnavailable, format!("创建 HTTP 客户端失败: {}", e))
+        })?;
+        *cached = Some((proxy_url, client.clone()));
+        Ok(client)
+    }
+
+    fn api_client_builder(&self, proxy_url: Option<&str>) -> AppResult<reqwest::ClientBuilder> {
         let mut builder = reqwest::Client::builder()
             .pool_max_idle_per_host(2)
             .pool_idle_timeout(Duration::from_secs(30))
@@ -627,21 +620,14 @@ impl AsmrOneProvider {
             .connect_timeout(Duration::from_secs(8))
             .user_agent("ASMRPlayer-Desktop/0.3.0 (Windows NT 10.0; Win64; x64)");
 
-        if let Some(proxy_str) = &proxy_url {
+        if let Some(proxy_str) = proxy_url {
             let proxy = reqwest::Proxy::all(proxy_str).map_err(|e| {
                 AppError::new(ErrorCode::InvalidInput, format!("代理配置无效: {}", e))
             })?;
             builder = builder.proxy(proxy);
         }
 
-        let client = builder.build().map_err(|e| {
-            AppError::new(
-                ErrorCode::NetworkUnavailable,
-                format!("创建 HTTP 客户端失败: {}", e),
-            )
-        })?;
-        *cached = Some((proxy_url, client.clone()));
-        Ok(client)
+        Ok(builder)
     }
 
     async fn work_info_body(&self, source: &str) -> AppResult<String> {
@@ -678,7 +664,7 @@ impl AsmrOneProvider {
     }
 
     async fn get_text_with_retry_scoped(&self, url: &str, use_account: bool) -> AppResult<String> {
-        let token = if use_account { self.auth_token_mem.read().clone() } else { None };
+        let token = if use_account { self.token_for_url(url) } else { None };
         self.request_api_text(url, None, token.as_deref()).await
     }
 
@@ -825,7 +811,7 @@ impl AsmrOneProvider {
             });
 
         let client = self.build_client().ok()?;
-        let token = self.auth_token_mem.read().clone();
+        let token = self.token_for_url(&target_url);
         let mut req = client.get(&target_url).timeout(Duration::from_secs(6));
         if let Some(ref t) = token {
             req = req.header(header::AUTHORIZATION, format!("Bearer {}", t));
@@ -1454,7 +1440,7 @@ impl AsmrOneProvider {
 
     pub async fn post_json_with_retry(&self, url: &str, payload: &Value) -> AppResult<String> {
         let client = self.build_client()?;
-        let token = self.auth_token_mem.read().clone();
+        let token = self.token_for_url(url);
         let mut last_err = None;
 
         for attempt in 0..2 {
@@ -1727,6 +1713,7 @@ impl AsmrOneProvider {
             page: safe_page,
             page_size: Self::ONLINE_PAGE_SIZE as u32,
             total_count,
+            recommendation_identity: None,
         })
     }
 
@@ -1741,7 +1728,7 @@ impl AsmrOneProvider {
     ) -> AppResult<Page<ProviderWork>> {
         let query = build_filter_query(keyword, filters)?;
         if !self.nsfw_enabled() && filters.iter().any(|filter| filter.kind == filters::OnlineFilterKind::Age && !filter.exclude) {
-            return Ok(Page { items: vec![], page: page.max(1), page_size: Self::ONLINE_PAGE_SIZE as u32, total_count: 0 });
+            return Ok(Page { items: vec![], page: page.max(1), page_size: Self::ONLINE_PAGE_SIZE as u32, total_count: 0, recommendation_identity: None });
         }
         self.search_works(&query, page, order, sort, subtitle_only).await
     }
@@ -1808,6 +1795,7 @@ impl AsmrOneProvider {
             page: safe_page,
             page_size: Self::ONLINE_PAGE_SIZE as u32,
             total_count,
+            recommendation_identity: None,
         })
     }
 
@@ -2152,7 +2140,7 @@ mod provider_tests {
         let db = Database::open_and_migrate(&dir.path().join("d"), &dir.path().join("c")).unwrap();
         let provider = AsmrOneProvider::new(db);
         provider.set_api_base(&server.uri()).unwrap();
-        *provider.auth_token_mem.write() = Some("fixture-primary-only".into());
+        provider.account.write().credential = Some(SiteCredential { token: "fixture-primary-only".into(), name: None });
         Mock::given(method("GET")).and(path("/api/workInfo/001234"))
             .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
             .expect(2).mount(&server).await;

@@ -14,6 +14,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.autofill.ContentType
+import androidx.compose.ui.semantics.contentType
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -27,6 +29,8 @@ import androidx.media3.common.util.UnstableApi
 import com.asmrplayer.android.*
 import com.asmrplayer.android.online.OnlineFile
 import com.asmrplayer.android.online.BrowseFilters
+import com.asmrplayer.android.online.RecommendationIdentity
+import com.asmrplayer.android.online.ProviderAccount
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import java.util.Locale
@@ -35,7 +39,7 @@ import java.util.Locale
 @Composable
 internal fun DiscoverPage(data: OnlineScreenState, tools: OnlineTools, bottom: Dp, state:PlayerScreenState,
     active: Boolean = true,
-    download: (String, String) -> Unit, open: (String, String) -> Unit) {
+    openSiteAccount: () -> Unit, download: (String, String) -> Unit, open: (String, String) -> Unit) {
     var query by rememberSaveable { mutableStateOf(data.query) }
     LaunchedEffect(data.query) { query=data.query }
     val grid = rememberLazyGridState()
@@ -123,6 +127,15 @@ internal fun DiscoverPage(data: OnlineScreenState, tools: OnlineTools, bottom: D
                             { Text(if (searchResults) "搜索结果" else label) }, glyph = if (searchResults) Glyph.Search else glyph)
                     }
                 }
+                if (data.order == "recommend") FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val label = when (val identity = data.page?.recommendationIdentity) {
+                        RecommendationIdentity.Guest -> "访客推荐"
+                        is RecommendationIdentity.Account -> identity.name?.takeIf { it.isNotBlank() }?.let { "账号推荐 · $it" } ?: "账号推荐"
+                        null -> null
+                    }
+                    label?.let { Text(it, Modifier.align(Alignment.CenterVertically), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    MotionTextButton(openSiteAccount) { Text(if (data.page?.recommendationIdentity is RecommendationIdentity.Account) "管理站点账号" else "登录 asmr.one") }
+                }
                 if (data.filters.count > 0) FilterStrip {
                     data.filters.tags.forEach {v->RemovableChip({filter(data.filters.copy(tags=data.filters.tags-v))},{Text("包含 $v")})}
                     data.filters.excludedTags.forEach {v->RemovableChip({filter(data.filters.copy(excludedTags=data.filters.excludedTags-v))},{Text("排除 $v")})}
@@ -189,22 +202,23 @@ internal fun DiscoverPage(data: OnlineScreenState, tools: OnlineTools, bottom: D
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun OnlineSourcePage(data: OnlineScreenState, tools: OnlineTools) {
+internal fun OnlineSourcePage(data: OnlineScreenState, tools: OnlineTools, openAccount: Boolean = false) {
     var origin by rememberSaveable(data.account.apiBase) { mutableStateOf(data.account.apiBase) }
     var editing by rememberSaveable(data.account.apiBase) { mutableStateOf(false) }
     var showPresets by remember { mutableStateOf(false) }
-    var tokenAction by rememberSaveable { mutableStateOf(false) }
+    var accountAction by rememberSaveable { mutableStateOf("source") }
     var token by remember(data.account.apiBase) { mutableStateOf("") }
     val idle = !data.accountSaving && !data.working
-    LazyColumn(Modifier.navigationBarsPadding(), contentPadding = PageSpace.padding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = if (openAccount) 1 else 0)
+    LazyColumn(Modifier.navigationBarsPadding(), state = listState, contentPadding = PageSpace.padding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { MaintenanceCard("当前来源") {
             if (editing) {
                 OutlinedTextField(origin, { origin = it }, label = { Text("API 来源地址") }, singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), enabled = idle, modifier = Modifier.fillMaxWidth())
-                if (!tokenAction) data.accountError?.let { MaintenanceHint(it, error = true) }
+                if (accountAction == "source") data.accountError?.let { MaintenanceHint(it, error = true) }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     MotionButton({
-                        tokenAction = false
+                        accountAction = "source"
                         tools.saveOrigin(origin) { editing = false }
                     }, enabled = idle && origin.isNotBlank() && origin.trim() != data.account.apiBase) { Text("保存来源") }
                     MotionTextButton({ editing = false; origin = data.account.apiBase; tools.dismissAccountFeedback() }, enabled = idle) { Text("取消") }
@@ -229,7 +243,7 @@ internal fun OnlineSourcePage(data: OnlineScreenState, tools: OnlineTools) {
                                 }, enabled = idle, onClick = {
                                     showPresets = false
                                     if(base != data.account.apiBase) {
-                                        tokenAction = false
+                                        accountAction = "source"
                                         tools.saveOrigin(base)
                                     }
                                 })
@@ -238,19 +252,51 @@ internal fun OnlineSourcePage(data: OnlineScreenState, tools: OnlineTools) {
                     }
                     MotionOutlinedButton({ origin = data.account.apiBase; editing = true; tools.dismissAccountFeedback() }, enabled = idle) { Text("编辑地址") }
                 }
-                if (!tokenAction) data.accountError?.let { MaintenanceHint(it, error = true) }
+                if (accountAction == "source") data.accountError?.let { MaintenanceHint(it, error = true) }
             }
+        } }
+        item { MaintenanceCard("asmr.one 账号") {
+            val base = data.account.apiBase
+            val accountName = data.account.accountName
+            var name by remember(base) { mutableStateOf("") }
+            var password by remember(base) { mutableStateOf("") }
+            var relogin by remember(base) { mutableStateOf(false) }
+            val canLogin = idle && !editing && name.isNotBlank() && password.isNotEmpty()
+            fun login() {
+                if (!canLogin) return
+                accountAction = "login"
+                tools.loginSiteAccount(base, name, password) { password = ""; name = ""; relogin = false }
+            }
+            if (accountName != null && !relogin) {
+                Text("已连接账号 · $accountName", style = MaterialTheme.typography.bodyMedium)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MotionOutlinedButton({ name = accountName; relogin = true; tools.dismissAccountFeedback() }, enabled = idle) { Text("重新登录") }
+                    MotionTextButton({ accountAction = "login"; tools.saveToken(base, null) { name = ""; password = "" } }, enabled = idle) { Text("退出登录") }
+                }
+            } else if (ProviderAccount.allowsLogin(base)) {
+                OutlinedTextField(name, { name = it }, label = { Text("账号名") }, singleLine = true, enabled = idle && !editing,
+                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Next),
+                    modifier = Modifier.fillMaxWidth().semantics { contentType = ContentType.Username })
+                OutlinedTextField(password, { password = it }, label = { Text("密码") }, singleLine = true, enabled = idle && !editing,
+                    visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { login() }), modifier = Modifier.fillMaxWidth().semantics { contentType = ContentType.Password })
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MotionButton(::login, enabled = canLogin) { Text(if (data.accountSaving && accountAction == "login") "正在登录…" else "登录 asmr.one") }
+                    if (relogin) MotionTextButton({ password = ""; relogin = false; tools.dismissAccountFeedback() }, enabled = idle) { Text("取消") }
+                }
+            } else MaintenanceHint("选择上方的 asmr.one 官方镜像即可登录。")
+            if (accountAction == "login") data.accountError?.let { MaintenanceHint(it, error = true) }
         } }
         item { MaintenanceCard {
             DetailDisclosure("访问凭据", if (data.account.hasToken) "已设置 Token" else "未设置 · 可公开浏览") {
-                OutlinedTextField(token, { token = it }, label = { Text("新的 Bearer Token") }, singleLine = true,
+                OutlinedTextField(token, { token = it }, label = { Text("站点访问令牌") }, placeholder = { Text("输入 asmr.one 账号的 Bearer Token") }, singleLine = true,
                     visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     enabled = idle && !editing, modifier = Modifier.fillMaxWidth())
-                if (tokenAction) data.accountError?.let { MaintenanceHint(it, error = true) }
+                if (accountAction == "token") data.accountError?.let { MaintenanceHint(it, error = true) }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    MotionButton({ tokenAction = true; tools.saveToken(data.account.apiBase, token) { token = "" } },
+                    MotionButton({ accountAction = "token"; tools.saveToken(data.account.apiBase, token) { token = "" } },
                         enabled = idle && !editing && token.isNotBlank()) { Text("保存 Token") }
-                    if (data.account.hasToken) MotionTextButton({ tokenAction = true; tools.saveToken(data.account.apiBase, null) { token = "" } },
+                    if (data.account.hasToken) MotionTextButton({ accountAction = "token"; tools.saveToken(data.account.apiBase, null) { token = "" } },
                         enabled = idle && !editing) { Text("清除 Token") }
                 }
             }

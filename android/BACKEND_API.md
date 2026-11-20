@@ -81,9 +81,10 @@ AN007.R14 将作品 `inLibrary` 与 `favorite` 分开：普通音频库只列主
 
 | API | 调用与结果 |
 | --- | --- |
-| `account.state` | StateFlow：`apiBase`、`hasToken`，不返回明文凭据。 |
+| `account.state` | StateFlow 提供 `apiBase`、`hasToken`、缓存作用域与已登录的 `accountName`。 |
 | `account.setApiBase(origin)` | HTTPS origin，不带路径/query/用户信息；切换来源后重新加载列表。不同 origin 分开保存 Token，旧库的来源引用仍使用原 origin。 |
-| `account.setToken(tokenOrNull)` | 当前 origin 的 Bearer Token；null/空串清除。Android Keystore AES-GCM 加密后持久化；跨 origin 重定向不转发认证头。没有用户名/密码登录接口。 |
+| `account.login(origin, name, password)` | 向当前官方镜像的 `POST /api/auth/me` 提交官网账号名和密码。登录成功后按来源保存账号名与加密令牌。密码只用于当次请求。 |
+| `account.setToken(tokenOrNull)` | 手动设置当前来源的 Bearer Token，由 Android Keystore AES-GCM 加密保存。传 null 或空串会清除该来源的账号名和令牌。 |
 | `browse(query="", page=1, order="release", ascending=false)` | 返回 `OnlinePage(items, page, pageSize, total)`。order 支持 popular、recommend、release、dl_count、rate_average_2dp、id、create_date 和 review_count。使用本地库的 NSFW 及未分级偏好，total 是来源总数，过滤后本页可能不足 pageSize。 |
 | `detail(id)` | 接受数字或 RJ 编号，返回作品元数据和目录树展开后的音频/字幕/图片条目；不改本地库。返回的媒体 URL 只供当次请求使用，不能持久化。 |
 | `importWork(id, addToLibrary=true)` | 导入或刷新版本及附件引用，返回 `ImportedOnlineWork(workId, versionIds, assetIds, coverAssetId)`。临时播放/加入队列/喜欢操作传 false，只缓存播放资料；主动入库和下载传 true。false 不会移除已有入库状态。保留喜欢、分级、进度、书签和下载附件；来源消失只标记在线引用不可用。 |

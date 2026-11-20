@@ -22,12 +22,15 @@ class AsmrOneProvider(val account: ProviderAccount, val http: HttpTransport,
         val terms=filters.query(query)
         val effective = if (includeNsfw || filters.rating == "general") terms else "${terms} \$age:general\$".trim()
         val sub=if(filters.subtitleOnly)1 else 0
+        var recommendationIdentity: RecommendationIdentity? = null
         val body = if (order == "recommend" || (order == "popular" && query.isBlank())) {
             val headers = withContext(Dispatchers.IO) { account.headers(base) }
             val payload=JSONObject().put("keyword",effective.ifBlank { " " }).put("page",page).put("subtitle",sub)
                 .put("localSubtitledWorks",org.json.JSONArray()).put("withPlaylistStatus",org.json.JSONArray())
             val feed = if (order == "recommend") {
-                payload.put("recommenderUuid", recommenderUuid(base, headers)).put("pageSize", 20)
+                val (id, identity) = recommendationProfile(base, headers)
+                recommendationIdentity = identity
+                payload.put("recommenderUuid", id).put("pageSize", 20)
                 "recommend-for-user"
             } else "popular"
             request(base, "/api/recommender/$feed", payload.toString(), headers)
@@ -39,7 +42,7 @@ class AsmrOneProvider(val account: ProviderAccount, val http: HttpTransport,
         }
         val result = parse { AsmrJson.page(body, page).also { p -> p.items.forEach { it.coverUrl?.let(http::validate) } } }
         if (account.state.value != source) throw CancellationException("来源账号已切换")
-        return result.copy(items = result.items.filter { work ->
+        return result.copy(recommendationIdentity = recommendationIdentity, items = result.items.filter { work ->
             (includeNsfw || work.rating != "NSFW") && (includeUnrated || work.rating != "UNRATED") &&
                 when(filters.rating) {
                     "adult" -> work.rating == "NSFW"
@@ -49,18 +52,18 @@ class AsmrOneProvider(val account: ProviderAccount, val http: HttpTransport,
         })
     }
 
-    private suspend fun recommenderUuid(base: String, headers: Map<String, String>): String {
-        if (headers.isNotEmpty()) {
-            val profile = request(base, "/api/auth/me", accountHeaders = headers)
-            val id = parse {
-                val user = JSONObject(profile).getJSONObject("user")
-                if (user.getBoolean("loggedIn") && user.optString("name") != "guest") {
-                    (user.get("recommenderUuid") as String).also { require(it.isNotBlank()) }
-                } else null
+    private suspend fun recommendationProfile(base: String, headers: Map<String, String>): Pair<String, RecommendationIdentity> {
+        if (headers.isEmpty()) return account.guestRecommenderUuid(base) to RecommendationIdentity.Guest
+        val profile = request(base, "/api/auth/me", accountHeaders = headers)
+        return parse {
+            val user = JSONObject(profile).getJSONObject("user")
+            val name = user.opt("name") as? String
+            if (!user.getBoolean("loggedIn") || name == "guest") {
+                throw OnlineException(OnlineError.AUTH_REQUIRED, "站点登录已失效，请重新登录 asmr.one。")
             }
-            if (id != null) return id
+            val id = (user.get("recommenderUuid") as String).also { require(it.isNotBlank()) }
+            id to RecommendationIdentity.Account(name)
         }
-        return account.guestRecommenderUuid(base)
     }
 
     suspend fun detail(rawId: String, base: String = account.state.value.apiBase): OnlineDetail = coroutineScope {

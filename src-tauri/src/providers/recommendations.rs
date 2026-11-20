@@ -1,5 +1,5 @@
 use super::{parse_works_page_json, AsmrOneProvider, ProviderWork};
-use crate::domain::{AppError, AppResult, ErrorCode, Page};
+use crate::domain::{AppError, AppResult, ErrorCode, Page, RecommendationIdentity};
 use chrono::Utc;
 use rusqlite::params;
 use serde::Deserialize;
@@ -13,14 +13,18 @@ struct AccountResponse {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RecommendationUser {
-    logged_in: bool,
-    name: Option<String>,
+pub(super) struct RecommendationUser {
+    pub(super) logged_in: bool,
+    pub(super) name: Option<String>,
     recommender_uuid: Option<String>,
 }
 
 impl AsmrOneProvider {
-    async fn recommender_uuid(&self, base: &str, token: Option<&str>) -> AppResult<String> {
+    async fn recommendation_profile(
+        &self,
+        base: &str,
+        token: Option<&str>,
+    ) -> AppResult<(String, RecommendationIdentity)> {
         if let Some(token) = token {
             let body = self
                 .request_api_text(&format!("{base}/api/auth/me"), None, Some(token))
@@ -31,17 +35,28 @@ impl AsmrOneProvider {
                     "无法读取来源账号的推荐资料",
                 )
             })?;
-            if profile.user.logged_in && profile.user.name.as_deref() != Some("guest") {
-                return profile
-                    .user
-                    .recommender_uuid
-                    .filter(|id| !id.trim().is_empty())
-                    .ok_or_else(|| {
-                        AppError::new(ErrorCode::ProviderSchemaChanged, "来源账号缺少推荐标识")
-                    });
+            let user = profile.user;
+            if !user.logged_in || user.name.as_deref() == Some("guest") {
+                return Err(AppError::new(
+                    ErrorCode::AuthRequired,
+                    "站点登录已失效，请重新登录 asmr.one。",
+                ));
             }
+            let id = user
+                .recommender_uuid
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| {
+                    AppError::new(ErrorCode::ProviderSchemaChanged, "来源账号缺少推荐标识")
+                })?;
+            return Ok((id, RecommendationIdentity::Account { name: user.name }));
         }
+        Ok((
+            self.guest_recommender_uuid(base)?,
+            RecommendationIdentity::Guest,
+        ))
+    }
 
+    fn guest_recommender_uuid(&self, base: &str) -> AppResult<String> {
         let key = format!("asmr_one_guest_recommender_uuid:{base}");
         if let Some(id) = self.db.get_setting(&key)? {
             return Ok(id);
@@ -66,9 +81,15 @@ impl AsmrOneProvider {
         page: u32,
         subtitle_only: bool,
     ) -> AppResult<Page<ProviderWork>> {
-        let base = self.api_base();
-        let token = self.auth_token_mem.read().clone();
-        let id = self.recommender_uuid(&base, token.as_deref()).await?;
+        let (base, token, revision) = {
+            let state = self.account.read();
+            (
+                state.base.clone(),
+                state.credential.as_ref().map(|c| c.token.clone()),
+                state.revision,
+            )
+        };
+        let (id, identity) = self.recommendation_profile(&base, token.as_deref()).await?;
         let page = page.max(1);
         let keyword = match (query, self.nsfw_enabled()) {
             ("", true) => " ".to_owned(),
@@ -92,7 +113,14 @@ impl AsmrOneProvider {
                 token.as_deref(),
             )
             .await?;
-        let result = parse_works_page_json(&body, page)?;
+        if self.account.read().revision != revision {
+            return Err(AppError::new(
+                ErrorCode::SourceChanged,
+                "推荐账号或站点已切换，请刷新作品。",
+            ));
+        }
+        let mut result = parse_works_page_json(&body, page)?;
+        result.recommendation_identity = Some(identity);
         Ok(self.apply_nsfw_filter(Self::fill_default_cover_urls(&base, result)))
     }
 }
@@ -118,7 +146,7 @@ mod tests {
         let db = Database::open_and_migrate(&dir.path().join("data"), &dir.path().join("cache"))
             .unwrap();
         let provider = AsmrOneProvider::new(db.clone());
-        *provider.auth_token_mem.write() = None;
+        provider.account.write().credential = None;
         provider.set_api_base(&server.uri()).unwrap();
         Mock::given(method("POST"))
             .and(path("/api/recommender/recommend-for-user"))
@@ -137,6 +165,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
+            first.recommendation_identity,
+            Some(RecommendationIdentity::Guest)
+        );
+        assert_eq!(
             first
                 .items
                 .iter()
@@ -151,7 +183,7 @@ mod tests {
             .ends_with("/api/cover/123459.jpg?type=main"));
 
         let reopened = AsmrOneProvider::new(db);
-        *reopened.auth_token_mem.write() = None;
+        reopened.account.write().credential = None;
         let filters = [OnlineFilter {
             kind: OnlineFilterKind::Tag,
             value: "雨".into(),
@@ -202,7 +234,10 @@ mod tests {
         let provider = AsmrOneProvider::new(db);
         provider.set_api_base(&server.uri()).unwrap();
         provider.set_nsfw_enabled(true).unwrap();
-        *provider.auth_token_mem.write() = Some("fixture".to_owned());
+        provider.account.write().credential = Some(crate::providers::SiteCredential {
+            token: "fixture".to_owned(),
+            name: None,
+        });
         Mock::given(method("GET"))
             .and(path("/api/auth/me"))
             .and(header("Authorization", "Bearer fixture"))
@@ -218,7 +253,8 @@ mod tests {
                 json!({"recommenderUuid": "account-id", "keyword": " "}),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "works": [], "pagination": {"currentPage": 1, "pageSize": 12, "totalCount": 0}
+                "works": [{"id": 123459, "title": "Quiet forest"}, {"id": 123450, "title": "Evening rain"}],
+                "pagination": {"currentPage": 1, "pageSize": 12, "totalCount": 2}
             })))
             .mount(&server)
             .await;
@@ -226,7 +262,50 @@ mod tests {
             .browse_works(1, "recommend", "desc", false)
             .await
             .unwrap();
-        assert!(page.items.is_empty());
+        assert_eq!(
+            page.items
+                .iter()
+                .map(|w| w.source_work_id.as_str())
+                .collect::<Vec<_>>(),
+            ["123459", "123450"]
+        );
+        assert_eq!(
+            serde_json::to_value(&page).unwrap()["recommendationIdentity"],
+            json!({"kind": "account", "name": "test"})
+        );
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
+
+        Mock::given(method("POST"))
+            .and(path("/api/recommender/popular"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "works": [{"id": 123456, "title": "Popular work"}],
+                "pagination": {"currentPage": 1, "pageSize": 20, "totalCount": 1}
+            })))
+            .mount(&server)
+            .await;
+        let popular = provider
+            .browse_works(1, "popular", "desc", false)
+            .await
+            .unwrap();
+        assert_eq!(popular.items[0].source_work_id, "123456");
+        assert!(popular.recommendation_identity.is_none());
+
+        for user in [
+            json!({"loggedIn": false}),
+            json!({"loggedIn": true, "name": "guest", "recommenderUuid": "guest-id"}),
+        ] {
+            server.reset().await;
+            Mock::given(method("GET"))
+                .and(path("/api/auth/me"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"user": user})))
+                .mount(&server)
+                .await;
+            let error = provider
+                .browse_works(1, "recommend", "desc", false)
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::AuthRequired);
+            assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        }
     }
 }

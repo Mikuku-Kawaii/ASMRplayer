@@ -4,6 +4,7 @@ import { SettingsSearchResults } from "./SettingsSearchResults";
 import { indexSettings, revealSetting, type SettingsSearchEntry } from "./settingsSearch";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { SettingsDisclosure } from "./SettingsDisclosure";
+import { AsmrOneAccountSettings, asmrOneMirrors } from "./AsmrOneAccountSettings";
 import { DownloadPolicyPanel } from "../downloads/DownloadPolicyPanel";
 import { HelpHint } from "../../components/HelpHint";
 import { DesktopLyricsSettings } from "./DesktopLyricsSettings";
@@ -59,12 +60,13 @@ import { RecognitionSettings } from "./RecognitionSettings";
 interface SettingsViewProps {
   onError: (err: AppError) => void;
   initialSection?: string;
+  initialField?: string;
   onSectionChange?: (section: string) => void;
   searchQuery?: string;
   onSearchQueryChange?: (value: string) => void;
 }
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSection = "privacy-window", onSectionChange, searchQuery, onSearchQueryChange }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSection = "privacy-window", initialField, onSectionChange, searchQuery, onSearchQueryChange }) => {
   const [localSection, setLocalSection] = useState(initialSection);
   const section = resolveSettingsSection(onSectionChange ? initialSection : localSection);
   const setSection = onSectionChange ?? setLocalSection;
@@ -93,7 +95,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
     const frame = revealSetting(located);
     return () => { cancelAnimationFrame(frame); located.element.classList.remove("settings-search-hit"); };
   }, [located]);
-  const [targetField, setTargetField] = useState<string | null>(initialSection === "download-policy" ? "download-concurrency" : null);
+  const [targetField, setTargetField] = useState<string | null>(initialField ?? (initialSection === "download-policy" ? "download-concurrency" : null));
   const navigate = (id: string, field?: string) => { setLocated(null); setTargetField(field ?? null); setSection(resolveSettingsSection(id)); setSearch(""); };
   useEffect(() => {
     if (!targetField || !panelsRef.current) return;
@@ -469,6 +471,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
       <div hidden={!recognitionVisible}>{(recognitionVisible || recognitionVisited) && <RecognitionSettings page={section === "translation" ? "translation" : "recognition"} onOpenGlossary={() => navigate("recognition", "subtitle-glossary")} />}</div>
 
       <div data-settings-group="file-preferences" hidden={!visible("file-preferences")}><FilePreferencesSettings /></div>
+
+      {settings && <section className="settings-card settings-group-card" data-settings-group="asmr-one-account"
+        hidden={!visible("asmr-one-account")} aria-label="asmr.one 账号">
+        <AsmrOneAccountSettings key={settings.apiBaseUrl} settings={settings} onChange={setSettings}
+          chooseMirror={() => navigate("network", "setting-api-base")} />
+      </section>}
 
       {/* 模块化设置表单 — 功能相近聚合为同一分组卡片，功能相异拆分为独立分组卡片 */}
       <form
@@ -946,7 +954,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
                   }}
                   options={[
                     { value: "", label: "镜像预设..." },
-                    ...["api.asmr-200.com", "api.asmr.one", "api.asmr-100.com", "api.asmr-300.com"].map(host => ({ value: `https://${host}`, label: host })),
+                    ...asmrOneMirrors.map(host => ({ value: `https://${host}`, label: host })),
                   ]}
                 />
               </div>
@@ -978,7 +986,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
               <span className="setting-label-help"><label htmlFor="setting-token">
                   站点访问令牌
                 </label><HelpHint label={"站点 Bearer 凭据 (存于 Windows 系统凭据管理器)"} text={<>
-                  令牌通过系统级 Keyring 加密存储，绝不明文写入数据库或日志
+                  使用与 asmr.one 官网相同账号的令牌即可查看个人推荐。令牌保存在 Windows 凭据管理器中。
                 </>} /></span>
               <div className="input-with-btn">
                 <input
@@ -988,7 +996,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onError, initialSect
                   placeholder={
                     settings?.hasAuthToken
                       ? "已保存系统凭据（输入新值可覆盖）"
-                      : "可选：输入站点访问令牌"
+                      : "输入 asmr.one 账号的 Bearer Token"
                   }
                   value={authTokenInput}
                   onChange={(e) => {

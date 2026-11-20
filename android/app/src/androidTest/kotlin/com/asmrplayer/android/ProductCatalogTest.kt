@@ -76,6 +76,7 @@ class ProductCatalogTest {
                 val route = "/api/recommender/recommend-for-user"
                 val first = provider.browse(order = "recommend")
                 assertEquals(listOf("123456"), first.items.map { it.sourceId })
+                assertEquals(RecommendationIdentity.Guest, first.recommendationIdentity)
                 val guest = JSONObject(server.requests.single().body).getString("recommenderUuid")
                 assertEquals(guest, java.util.UUID.fromString(guest).toString())
 
@@ -98,11 +99,19 @@ class ProductCatalogTest {
                 assertFalse(body.has("sort"))
 
                 account.setToken("fixture")
-                provider.browse(order = "recommend", includeNsfw = true)
+                val accountPage = provider.browse(order = "recommend", includeNsfw = true)
+                assertEquals(RecommendationIdentity.Account("test"), accountPage.recommendationIdentity)
                 val signedIn = server.requests.last()
                 assertEquals("Bearer fixture", signedIn.headers["authorization"])
                 assertEquals("account-id", JSONObject(signedIn.body).getString("recommenderUuid"))
                 assertEquals(" ", JSONObject(signedIn.body).getString("keyword"))
+                for (user in listOf("""{"loggedIn":false}""", """{"loggedIn":true,"name":"guest","recommenderUuid":"guest-id"}""")) {
+                    server.browseResponse = { 200 to """{"user":$user}""" }
+                    val beforeFailure = server.requests.size
+                    val rejected = runCatching { provider.browse(order = "recommend") }.exceptionOrNull()
+                    assertEquals(OnlineError.AUTH_REQUIRED, (rejected as OnlineException).code)
+                    assertEquals(listOf("/api/auth/me"), server.requests.drop(beforeFailure).map { it.path })
+                }
                 account.setToken(null)
                 server.browseResponse = { 404 to "" }
                 val count = server.requests.size

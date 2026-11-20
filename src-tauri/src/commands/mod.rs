@@ -901,6 +901,22 @@ pub fn get_app_settings(state: State<'_, AppState>) -> AppResult<AppSettingsDto>
 }
 
 #[tauri::command]
+pub async fn login_asmr_one(app: AppHandle, state: State<'_, AppState>, api_base: String, name: String, password: String) -> AppResult<AppSettingsDto> {
+    state.provider.login_site_account(&api_base, &name, &password).await?;
+    let settings = state.session.get_settings()?;
+    let _ = app.emit("settings:updated", &settings);
+    Ok(settings)
+}
+
+#[tauri::command]
+pub fn logout_asmr_one(app: AppHandle, state: State<'_, AppState>, api_base: String) -> AppResult<AppSettingsDto> {
+    state.provider.logout_site_account(&api_base)?;
+    let settings = state.session.get_settings()?;
+    let _ = app.emit("settings:updated", &settings);
+    Ok(settings)
+}
+
+#[tauri::command]
 pub fn get_file_preferences(state: State<'_, AppState>) -> AppResult<crate::services::file_preferences::FilePreferences> {
     crate::services::file_preferences::read(&state.db)
 }

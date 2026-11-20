@@ -913,6 +913,19 @@ button { font-family: inherit; }
   gap: 8px;
 }
 
+.online-recommendation-account {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.asmr-one-login { display: grid; gap: 12px; }
+.asmr-one-login-error { margin: 0; color: var(--danger); font-size: 13px; }
+
 /* Work Cards Grid */
 .online-filter-summary, .online-tag-selected {
   display: flex;

@@ -185,7 +185,7 @@ fun PlayerApp(model: PlayerViewModel, playerRequest: Int = 0, refraction: Boolea
         fun routeTitle(route: String?): String = when {route=="queue-current"->"当前队列";route?.startsWith("queue-group:")==true->"歌单详情";route=="player"->"正在播放";route=="settings"->"设置";route=="appearance"->"外观";route=="file-preferences"->"文件偏好";route=="content-settings"->"内容显示";route=="effects"->"音效与均衡器";route=="downloads"->"任务中心";route=="tasks"->"任务中心";
             route=="sync"->"跨设备同步";route=="history"->"收听记录";route=="backup"->"资料备份与恢复";route=="storage"->"存储管理";route in setOf("updates", "updates/install")->"应用更新";
             route=="headphones"->"耳机音效偏好";route=="system-media"->"系统媒体与灵动岛";
-            route=="online-source"->"在线来源";route?.startsWith("online:")==true->"作品详情";
+            route in setOf("online-source","online-source/account")->"在线来源";route?.startsWith("online:")==true->"作品详情";
             route=="directories"->"作品目录";route=="subtitles"->"字幕";route=="subtitle-settings"->"字幕设置";route=="bookmarks"->"标记";route=="ab"->"A–B 循环";route=="sleep"->"睡眠定时";
             route?.startsWith("audio:")==true->"作品详情";else->tab.title}
         DisposableEffect(route == null && tab == Destination.Discover) {
@@ -244,6 +244,7 @@ fun PlayerApp(model: PlayerViewModel, playerRequest: Int = 0, refraction: Boolea
                                                 active = page == tab && LocalRouteActive.current)
                                             Destination.Discover -> DiscoverPage(onlineState, model.online, bottom, state,
                                                 active = page == tab && LocalRouteActive.current,
+                                                openSiteAccount = { open("online-source/account") },
                                                 download = { origin, id -> model.downloadPlan.open(origin = origin, sourceId = id) }) { origin, id -> open("online:${Uri.encode(origin)}:$id") }
                                             Destination.Queue -> QueueGroupsPage(state, model, bottom, ::open)
                                         }
@@ -270,7 +271,7 @@ fun PlayerApp(model: PlayerViewModel, playerRequest: Int = 0, refraction: Boolea
                         route=="tasks" -> TaskCenterPage(state,model,::open)
                         route=="storage" -> StoragePage(model.maintenance,{open("downloads")})
                         route in setOf("updates", "updates/install") -> UpdatePage(model, confirmInstallOnOpen = route == "updates/install")
-                        route=="online-source" -> OnlineSourcePage(onlineState,model.online)
+                        route in setOf("online-source","online-source/account") -> OnlineSourcePage(onlineState,model.online, openAccount = route == "online-source/account")
                         route?.startsWith("online:")==true -> {
                             val origin=Uri.decode(route.removePrefix("online:").substringBeforeLast(':'))
                             val id=route.substringAfterLast(':')

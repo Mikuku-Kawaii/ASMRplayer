@@ -10,7 +10,12 @@ class OnlineException(val code: OnlineError, message: String) : IOException(mess
 data class OnlineWork(val sourceId: String, val code: String, val title: String, val circle: String,
     val voices: List<String>, val tags: List<String>, val coverUrl: String?, val rating: String,
     val description:String="", val release:String="", val hasSubtitle:Boolean=false, val score:Double?=null)
-data class OnlinePage(val items: List<OnlineWork>, val page: Int, val pageSize: Int, val total: Long)
+sealed interface RecommendationIdentity {
+    data object Guest : RecommendationIdentity
+    data class Account(val name: String?) : RecommendationIdentity
+}
+data class OnlinePage(val items: List<OnlineWork>, val page: Int, val pageSize: Int, val total: Long,
+    val recommendationIdentity: RecommendationIdentity? = null)
 data class OnlineFile(val id: String, val path: String, val title: String, val kind: String, val format: String,
     val bytes: Long?, val streamUrl: String?, val downloadUrl: String?, val durationMs:Long?=null)
 data class OnlineDetail(val work: OnlineWork, val files: List<OnlineFile>)

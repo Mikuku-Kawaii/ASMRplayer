@@ -26,6 +26,63 @@ import java.util.concurrent.TimeUnit
 class HomeFeedLayoutTest {
     @get:Rule val ui = createAndroidComposeRule<MainActivity>()
 
+    @Test fun connectsWebsiteAccountFromRecommendationsAndReturnsToItsFeed() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        check(context.packageName.endsWith(".uitest"))
+        val account = AndroidBackend.get(context).online.account
+        val oldBase = account.state.value.apiBase
+        OnlineFixtureServer().use { server ->
+            server.browseResponse = { request ->
+                when {
+                    request.path == "/api/recommender/popular" -> 200 to feedPage(1, listOf(123451), total = 1)
+                    request.path == "/api/auth/me" && request.method == "POST" -> {
+                        val body = org.json.JSONObject(request.body)
+                        if (request.headers["authorization"] == null && body.getString("name") == "listener" && body.getString("password") == "fixture-password")
+                            200 to """{"token":"fixture","user":{"loggedIn":true,"name":"listener","recommenderUuid":"member-id"}}"""
+                        else 401 to ""
+                    }
+                    request.path == "/api/auth/me" && request.headers["authorization"] == "Bearer fixture" ->
+                        200 to """{"user":{"loggedIn":true,"name":"listener","recommenderUuid":"member-id"}}"""
+                    request.path == "/api/recommender/recommend-for-user" -> {
+                        val uuid = org.json.JSONObject(request.body).getString("recommenderUuid")
+                        val id = if (uuid == "member-id" && request.headers["authorization"] == "Bearer fixture") 123459 else 123450
+                        200 to feedPage(1, listOf(id), total = 1)
+                    }
+                    else -> 401 to ""
+                }
+            }
+            try {
+                runBlocking { account.setApiBase(server.base) }
+                ui.onNode(hasText("发现") and isSelectable()).performClick()
+                ui.waitUntil(8_000) { ui.onAllNodesWithText("Feed work 123451").fetchSemanticsNodes().isNotEmpty() }
+                ui.onNodeWithText("推荐作品").performClick()
+                ui.waitUntil(8_000) { ui.onAllNodesWithText("Feed work 123450").fetchSemanticsNodes().isNotEmpty() }
+                ui.onNodeWithText("访客推荐", substring = true).assertIsDisplayed()
+                ui.onNodeWithText("登录 asmr.one").performClick()
+                ui.onNodeWithText("账号名").performTextInput("listener")
+                ui.onNodeWithText("密码").performTextInput("wrong")
+                ui.onNodeWithText("密码").performImeAction()
+                ui.waitUntil(8_000) { ui.onAllNodesWithText("账号名或密码未通过验证。").fetchSemanticsNodes().isNotEmpty() }
+                ui.onNodeWithText("密码").performTextReplacement("fixture-password")
+                ui.onNodeWithText("密码").performImeAction()
+                ui.waitUntil(6_000) { account.state.value.hasToken }
+                ui.waitUntil(6_000) { ui.onAllNodesWithText("已连接账号 · listener").fetchSemanticsNodes().isNotEmpty() }
+                ui.onNodeWithContentDescription("返回").performClick()
+                ui.waitUntil(8_000) { ui.onAllNodesWithText("Feed work 123459").fetchSemanticsNodes().isNotEmpty() }
+                ui.onNodeWithText("账号推荐 · listener").assertIsDisplayed()
+                ui.onNodeWithText("Feed work 123450").assertDoesNotExist()
+                ui.onNodeWithText("Feed work 123451").assertDoesNotExist()
+                ui.onNodeWithText("管理站点账号").performClick()
+                ui.onNodeWithText("退出登录").performClick()
+                ui.waitUntil(6_000) { !account.state.value.hasToken }
+                ui.onNodeWithContentDescription("返回").performClick()
+                ui.waitUntil(8_000) { ui.onAllNodesWithText("Feed work 123450").fetchSemanticsNodes().isNotEmpty() }
+            } finally {
+                runBlocking { account.setToken(null); account.setApiBase(oldBase) }
+            }
+        }
+    }
+
     @Test fun detailJoinsVisiblePrefetchAndNeverShowsPartialLocalTrackList() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         check(context.packageName.endsWith(".uitest"))

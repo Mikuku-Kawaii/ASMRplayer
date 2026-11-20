@@ -135,6 +135,7 @@ impl SessionService {
             island_toast_duration_sec,
             island_privacy_mode,
             has_auth_token,
+            site_account_name: self.provider.site_account_name(),
             mpv_available,
             mpv_path,
         })

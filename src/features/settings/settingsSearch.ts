@@ -14,6 +14,7 @@ const aliases: Record<string, string> = {
   "subtitle-glossary": "人名 词汇 术语 候选错词",
   "deepseek-prompt": "全局 prompt 提示词 风格",
   "setting-api": "镜像 网络 API",
+  "setting-site-account": "asmrone asmr.one 账号登录 个人推荐",
 };
 const text = (node: Element | null) => node?.textContent?.replace(/\s+/g, " ").trim() ?? "";
 

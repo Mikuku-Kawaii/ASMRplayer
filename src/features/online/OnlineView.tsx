@@ -29,7 +29,8 @@ import {
 } from "lucide-react";
 import {
   ProviderWork,
-  Page,
+  OnlineWorksPage,
+  RecommendationIdentity,
   WorkDetailDto,
   DownloadPreviewDto,
   DownloadTaskDto,
@@ -67,6 +68,7 @@ interface OnlineViewProps {
   onReturnToDetail?: () => void;
   onOpenWorkDetail: (workId: string, online?: boolean) => void;
   onOpenDownloads?: () => void;
+  onOpenSiteAccount?: () => void;
   onError: (err: AppError) => void;
 }
 
@@ -89,6 +91,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
   onReturnToDetail,
   onOpenWorkDetail,
   onOpenDownloads,
+  onOpenSiteAccount,
   onError,
 }) => {
   const [localSearch, setLocalSearch] = useState<OnlineSearchState>({ keyword: "", committedKeyword: "" });
@@ -119,6 +122,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
   const [jumpPage, setJumpPage] = useState("");
 
   const [works, setWorks] = useState<ProviderWork[]>([]);
+  const [recommendationIdentity, setRecommendationIdentity] = useState<RecommendationIdentity | null>(null);
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [queryError, setQueryError] = useState<AppError | null>(null);
@@ -155,11 +159,12 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
       setQueryError(null);
       setPage(targetPage);
       setWorks([]);
+      setRecommendationIdentity(null);
       setTotalCount(0);
       setContextMenu(null);
       try {
         const query = async (requestedPage: number) => committedKeyword.trim() || filters.length > 0
-          ? await callCommand<Page<ProviderWork>>("search_online_works", {
+          ? await callCommand<OnlineWorksPage>("search_online_works", {
               keyword: committedKeyword.trim(),
               page: requestedPage,
               order,
@@ -167,7 +172,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
               subtitleOnly,
               filters,
             })
-          : await callCommand<Page<ProviderWork>>("browse_online_works", {
+          : await callCommand<OnlineWorksPage>("browse_online_works", {
               page: requestedPage,
               order,
               sort,
@@ -190,6 +195,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
           setPageSize(res.pageSize);
         }
         setWorks(res.items);
+        setRecommendationIdentity(res.recommendationIdentity ?? null);
       } catch (e) {
         if (reqSeqRef.current === mySeq) {
           setQueryError(normalizeAppError(e));
@@ -475,6 +481,14 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
       <OnlineFilterSummary filters={filters} onChange={setFilters} keyword={committedKeyword}
         subtitleOnly={subtitleOnly} onClearKeyword={clearKeyword} onClearSubtitle={() => setSubtitleOnly(false)}
         onReset={() => { clearKeyword(); setFilters([]); setSubtitleOnly(false); }} />
+
+      {order === "recommend" && <div className="online-recommendation-account">
+        {recommendationIdentity && <span>{recommendationIdentity.kind === "guest"
+          ? "访客推荐"
+          : recommendationIdentity.name ? `账号推荐 · ${recommendationIdentity.name}` : "账号推荐"}</span>}
+        {onOpenSiteAccount && <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenSiteAccount}>
+          {recommendationIdentity?.kind === "account" ? "管理站点账号" : "登录 asmr.one"}</button>}
+      </div>}
 
       {queryError && <ErrorNotice message={[queryError.message, queryError.hint].filter(Boolean).join(" ")}>
         <button type="button" className="btn btn-secondary btn-sm" disabled={loading || nsfwSaving}

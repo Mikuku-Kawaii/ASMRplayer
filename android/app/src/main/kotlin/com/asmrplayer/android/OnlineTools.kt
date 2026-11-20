@@ -149,12 +149,7 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
                 if (generation == browseGeneration) mutable.update { it.copy(page = result.copy(items = result.items.distinctBy { work -> work.sourceId }), feedRevision = it.feedRevision + 1) }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                val message = when {
-                    e is IllegalArgumentException -> "筛选条件无效：关键词最多 200 字，条件名称不能包含 $ 或换行。"
-                    order == "popular" && query.isBlank() && e is OnlineException && e.code == OnlineError.NETWORK -> "热门榜暂时无法加载，请重试。"
-                    else -> onlineMessage(e)
-                }
-                if (generation == browseGeneration) mutable.update { it.copy(error = message) }
+                browseFailed(generation, e, loadingMore = false)
             }
             finally { if (generation == browseGeneration) mutable.update { it.copy(loading = false) } }
         }
@@ -178,9 +173,24 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
                 }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                if (generation == browseGeneration) mutable.update { it.copy(moreError = onlineMessage(e)) }
+                browseFailed(generation, e, loadingMore = true)
             } finally {
                 if (generation == browseGeneration) mutable.update { it.copy(loadingMore = false) }
+            }
+        }
+    }
+
+    private fun browseFailed(generation: Long, error: Exception, loadingMore: Boolean) {
+        if (generation != browseGeneration) return
+        mutable.update { state ->
+            when {
+                state.order == "recommend" && error is OnlineException && error.code == OnlineError.AUTH_REQUIRED ->
+                    state.copy(page = null, requestedPage = 1, moreError = null, error = "站点登录已失效，请重新登录 asmr.one。")
+                loadingMore -> state.copy(moreError = onlineMessage(error))
+                error is IllegalArgumentException -> state.copy(error = "筛选条件无效：关键词最多 200 字，条件名称不能包含 $ 或换行。")
+                state.order == "popular" && state.query.isBlank() && error is OnlineException && error.code == OnlineError.NETWORK ->
+                    state.copy(error = "热门榜暂时无法加载，请重试。")
+                else -> state.copy(error = onlineMessage(error))
             }
         }
     }
@@ -301,19 +311,27 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
         require(origin == backend.online.account.state.value.apiBase)
         backend.online.account.setToken(value); done()
     }
-    private fun accountChange(change: suspend () -> Unit) {
+    fun loginSiteAccount(origin: String, name: String, password: String, done: () -> Unit) = accountChange(login = true) {
+        backend.online.account.login(origin, name, password)
+        done()
+    }
+
+    private fun accountChange(login: Boolean = false, change: suspend () -> Unit) {
         if (mutable.value.accountSaving || mutable.value.working) return
         mutable.update { it.copy(accountSaving = true, accountError = null, accountNotice = null) }
         scope.launch {
             try {
-                change(); mutable.update { it.copy(accountNotice = "来源设置已保存。") }
+                change(); mutable.update { it.copy(accountNotice = if (login) "已登录 asmr.one。" else "来源设置已保存。") }
                 // Replacing a token can leave hasToken unchanged; still invalidate authenticated results.
                 ++browseGeneration; browseJob?.cancel()
                 mutable.update { it.copy(page = null, requestedPage = 1, loading = false, loadingMore = false, moreError = null, feedRevision = it.feedRevision + 1) }
                 if (browsing) search()
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { mutable.update { it.copy(accountError = if (e is IllegalArgumentException)
-                "设置未保存。请检查 HTTPS 来源地址或 Token 格式；来源切换后需重新填写。" else onlineMessage(e)) } }
+            catch (e: Exception) { mutable.update { it.copy(accountError = when {
+                login && e is OnlineException -> e.message
+                e is IllegalArgumentException -> "设置未保存。请检查来源地址与输入内容。"
+                else -> onlineMessage(e)
+            }) } }
             finally { mutable.update { it.copy(accountSaving = false) } }
         }
     }

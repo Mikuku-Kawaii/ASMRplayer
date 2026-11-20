@@ -149,6 +149,7 @@ const AppShell: React.FC = () => {
   const { onlinePage, setOnlinePage, settingsSection, setSettingsSection, visibleCounts, setVisibleCounts,
     pageSearches, setPageSearches, onlineSearch, setOnlineSearch,
     pageFilters, setPageFilters, onlineFilters, setOnlineFilters, libraryCollection, setLibraryCollection } = usePagePreferences();
+  const [settingsField, setSettingsField] = useState<string>();
   const changeVisibleCount = useCallback((page: string, update: React.SetStateAction<number>) => {
     setVisibleCounts(previous => ({ ...previous, [page]: typeof update === "function" ? update(previous[page] ?? 24) : update }));
   }, [setVisibleCounts]);
@@ -475,7 +476,8 @@ const AppShell: React.FC = () => {
     [selectedWorkId, selectedWorkIsOnline, activeNav]
   );
 
-  const handleSelectNav = useCallback((page: NavPage) => {
+  const handleSelectNav = useCallback((page: NavPage, field?: string) => {
+    setSettingsField(field);
     setIsImmersiveOpen(false);
     detailHistoryRef.current = [];
     setSelectedWorkId(null);
@@ -1307,6 +1309,12 @@ const AppShell: React.FC = () => {
                 onSearchStateChange={setOnlineSearch}
                 externalSearch={externalSearch}
                 onExternalSearchHandled={handleOnlineSearchHandled}
+                onOpenSiteAccount={() => {
+                  setOnlinePage(1);
+                  updatePageSearch("settings", "");
+                  setSettingsSection("network");
+                  handleSelectNav("settings", "setting-site-account");
+                }}
                 canReturnToDetail={canReturnToDetail}
                 onReturnToDetail={handleBackFromDetail}
                 onOpenWorkDetail={handleSelectWork}
@@ -1334,7 +1342,7 @@ const AppShell: React.FC = () => {
                 }}
               />}/>
             ) : (
-              <SettingsView onError={setGlobalError} initialSection={settingsSection} onSectionChange={setSettingsSection}
+              <SettingsView onError={setGlobalError} initialSection={settingsSection} initialField={settingsField} onSectionChange={setSettingsSection}
                 searchQuery={pageSearches.settings} onSearchQueryChange={value => updatePageSearch("settings", value)} />
             )}
           </div>

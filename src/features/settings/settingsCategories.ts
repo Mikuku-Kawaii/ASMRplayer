@@ -7,7 +7,7 @@ export const settingsSections = [
   { id: "recognition", members: ["recognition"], title: "字幕识别", group: "使用偏好", icon: Cpu },
   { id: "translation", members: ["translation"], title: "字幕翻译", group: "使用偏好", icon: Languages },
   { id: "library", members: ["storage-library", "download-policy", "storage-media"], title: "媒体库与下载", group: "资源与系统", icon: FolderOpen },
-  { id: "network", members: ["network-online"], title: "网络与账户", group: "资源与系统", icon: Globe },
+  { id: "network", members: ["asmr-one-account", "network-online"], title: "网络与账户", group: "资源与系统", icon: Globe },
   { id: "sync", members: ["device-sync"], title: "跨设备同步", group: "资源与系统", icon: RefreshCw },
   { id: "privacy", members: ["privacy"], title: "内容与隐私", group: "资源与系统", icon: ShieldAlert },
   { id: "maintenance", members: ["updates", "storage-cache", "backup-sync", "cache-diagnostics"], title: "数据与维护", group: "资源与系统", icon: RefreshCw },

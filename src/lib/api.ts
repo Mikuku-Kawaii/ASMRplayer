@@ -41,6 +41,12 @@ export interface Page<T> {
   totalCount: number;
 }
 
+export type RecommendationIdentity = { kind: "guest" } | { kind: "account"; name: string | null };
+
+export interface OnlineWorksPage extends Page<ProviderWork> {
+  recommendationIdentity?: RecommendationIdentity;
+}
+
 export interface CollectionFilters {
   keyword: string;
   voiceActors: string[];
@@ -570,6 +576,7 @@ export interface AppSettingsDto {
   islandToastDurationSec?: number;
   islandPrivacyMode?: boolean;
   hasAuthToken: boolean;
+  siteAccountName?: string | null;
   mpvAvailable: boolean;
   mpvPath: string;
 }
