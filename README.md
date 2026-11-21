@@ -1,155 +1,249 @@
 <div align="center">
-  <img src="public/desktop-brand-mark.svg" width="150" alt="ASMR Player 透明背景角色图标" />
+
+  <img src="public/desktop-brand-mark.svg" width="144" alt="ASMR Player Logo" />
 
   <h1>ASMR Player</h1>
-  <p><strong>为音声收听而设计的 Windows &amp; Android 播放器</strong></p>
-  <p>在电脑上整理作品，在手机上继续收听。<br />
-  本地音频、在线作品、双语台本与收听记录，都有自己的位置。</p>
-  <p><a href="https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest">下载最新版本</a> · <a href="docs/releases/v26.11.21.md">更新说明</a> · <a href="https://github.com/Mikuku-Kawaii/ASMRplayer/issues">反馈问题</a></p>
+
+  <p><strong>为音声收听而设计的 Windows &amp; Android 跨端播放器</strong></p>
+
+  <p>
+    在电脑上整理大容量音频库与台本，在手机上随时继续收听。<br />
+    本地音频、在线作品、双语台本、专业音效与收听记录，都有自己的位置。
+  </p>
+
+  <p>
+    <a href="https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest">
+      <img src="https://img.shields.io/github/v/release/Mikuku-Kawaii/ASMRplayer?style=flat-square&label=Release&color=6366F1" alt="Latest Release" />
+    </a>
+    <a href="#下载与安装">
+      <img src="https://img.shields.io/badge/Windows-x64-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows x64" />
+    </a>
+    <a href="#下载与安装">
+      <img src="https://img.shields.io/badge/Android-6.0%2B-3DDC84?style=flat-square&logo=android&logoColor=white" alt="Android 6.0+" />
+    </a>
+    <img src="https://img.shields.io/badge/Tauri%202-Rust%20%2B%20React-F97316?style=flat-square&logo=tauri&logoColor=white" alt="Tauri 2" />
+    <img src="https://img.shields.io/badge/Compose-Kotlin%20%2B%20Media3-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin Jetpack Compose" />
+    <a href="https://github.com/Mikuku-Kawaii/ASMRplayer/stargazers">
+      <img src="https://img.shields.io/github/stars/Mikuku-Kawaii/ASMRplayer?style=flat-square&color=F59E0B" alt="GitHub Stars" />
+    </a>
+  </p>
+
+  <p>
+    <a href="https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest"><strong>下载最新版本</strong></a>
+    &nbsp;·&nbsp;
+    <a href="#界面预览">界面预览</a>
+    &nbsp;·&nbsp;
+    <a href="#核心特性">核心特性</a>
+    &nbsp;·&nbsp;
+    <a href="#跨设备同步">跨设备同步</a>
+    &nbsp;·&nbsp;
+    <a href="docs/releases/v26.11.21.md">更新说明</a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/Mikuku-Kawaii/ASMRplayer/issues">问题反馈</a>
+  </p>
+
 </div>
 
 ---
 
-## 在喜欢的设备上收听
+## 界面预览
 
-**Windows** 适合整理大容量音频库、管理字幕与沉浸收听；**Android** 把音频库、后台播放和双语台本带到手机。两端可以绑定同一种存储服务，同步作品资料与收听记录。
+**Windows** 适合整理大容量音频库、离线语音识别与沉浸听读；**Android** 将完整音频库、后台播放、小组件与双语台本带到随身设备。两端绑定同一存储服务后，即可自动同步作品资料、歌单与收听进度。
 
-### Windows
-
-<table>
-  <tr>
-    <td align="center"><img src="readme/PixPin_2026-11-12_20-25-46.png" alt="Windows 音频库" /><br /><sub>音频库 · 整理你的作品</sub></td>
-    <td align="center"><img src="readme/PixPin_2026-11-12_20-26-59.png" alt="Windows 沉浸台本" /><br /><sub>沉浸台本 · 跟随声音阅读</sub></td>
-  </tr>
-</table>
-
-### Android
+### Windows 桌面端
 
 <table>
   <tr>
-    <td align="center" width="33%"><img src="readme/Screenshot_2026-11-12-20-22-50-50_e34910c6bea77f.jpg" alt="Android 音频库" width="240" /><br /><sub>音频库</sub></td>
-    <td align="center" width="33%"><img src="readme/Screenshot_2026-11-12-20-24-53-51_e34910c6bea77f.jpg" alt="Android 播放页" width="240" /><br /><sub>播放页</sub></td>
-    <td align="center" width="33%"><img src="readme/Screenshot_2026-11-12-20-25-20-46_e34910c6bea77f.jpg" alt="Android 台本阅读" width="240" /><br /><sub>双语台本</sub></td>
+    <td align="center" width="50%">
+      <img src="readme/PixPin_2026-11-12_20-25-46.png" alt="Windows 音频库" />
+      <br />
+      <sub><strong>音频库</strong> · 整理本地与在线作品</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="readme/PixPin_2026-11-12_20-26-59.png" alt="Windows 沉浸台本" />
+      <br />
+      <sub><strong>沉浸台本</strong> · 跟随声音逐句阅读</sub>
+    </td>
   </tr>
 </table>
 
-## 为每次收听准备好
+### Android 移动端
 
-- **建立自己的音频库**：导入本地文件夹，也可以在线浏览作品并下载。用作品喜欢、音轨收藏、歌单和时间标记整理想听的内容。
-- **跟着台本一起听**：关联原文与译文，调整时间偏移。手机上点封面展开台本、点句子跳转；Windows 还提供独立桌面歌词，并支持配置语音识别与翻译。
-- **让播放融入日常**：Windows 提供桌面灵动岛、快捷键和系统媒体控制；Android 支持后台播放、锁屏与通知控制、桌面小组件。两端均支持睡眠定时。
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="readme/Screenshot_2026-11-12-20-22-50-50_e34910c6bea77f.jpg" alt="Android 音频库" width="240" />
+      <br />
+      <sub><strong>音频库</strong> · 随时浏览与检索</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="readme/Screenshot_2026-11-12-20-24-53-51_e34910c6bea77f.jpg" alt="Android 播放页" width="240" />
+      <br />
+      <sub><strong>播放页</strong> · 简洁控制与睡眠定时</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="readme/Screenshot_2026-11-12-20-25-20-46_e34910c6bea77f.jpg" alt="Android 台本阅读" width="240" />
+      <br />
+      <sub><strong>双语台本</strong> · 点击封面展开与跳转</sub>
+    </td>
+  </tr>
+</table>
 
-## 文件偏好
+---
 
-Windows 在「设置 → 通用 → 文件偏好」，Android 在「设置 → 播放与字幕 → 文件偏好」中，可分别选择有／无效果音和 MP3／WAV，也可以不指定。偏好在各端本机自动保存。双端优先展示正片，再匹配效果音和格式；同等匹配优先上次未听完的目录，其他目录仍可手动选择。支持中文、繁体中文及 SEあり／SEなし 等目录名称；不会将「无背景音乐」误判为「无效果音」。
+## 核心特性
 
-## 台本、字幕识别与翻译
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <strong>音频库与在线聚合</strong><br /><br />
+      支持本地目录导入与 <code>asmr.one</code> 在线浏览、账号登录、断点续传下载；通过喜欢、音轨收藏、歌单与时间笔记构建个人音频库。
+    </td>
+    <td width="33%" valign="top">
+      <strong>双语台本与 AI 字幕</strong><br /><br />
+      同步显示原文与译文台本，支持时间轴偏移与点击跳转；Windows 端内置多引擎本地语音识别与 Ollama / DeepSeek 字幕翻译。
+    </td>
+    <td width="33%" valign="top">
+      <strong>专业音效与睡前体验</strong><br /><br />
+      内置参数均衡器、AutoEQ 耳机校准、峰值防炸耳限制器、A–B 区间循环、睡眠渐弱定时，以及 Windows 桌面灵动岛与 WASAPI 独占。
+    </td>
+  </tr>
+</table>
 
-### 双语台本，跟着播放阅读
+### 双端能力一览
 
-为音轨选择原文和译文字幕后，播放页会随时间显示当前句子。可以分别调整整体时间和译文偏移，打开完整台本或字幕时间轴查看上下文，再点击句子跳转到对应位置。Android 支持从作品附件绑定或导入已有字幕；Windows 还可以使用独立的桌面歌词窗口与灵动岛显示字幕。
+| 功能模块 | Windows 桌面端 | Android 移动端 |
+| :--- | :---: | :---: |
+| 本地目录导入、文件偏好自动匹配（效果音 / 格式） | ✅ | ✅ |
+| `asmr.one` 在线浏览、个人推荐登录、断点续传下载 | ✅（支持批量任务） | ✅（按作品管理） |
+| 双语台本显示、时间与译文偏移、点击跳转 | ✅（含独立桌面歌词） | ✅（封面展开台本） |
+| 本地语音识别（SenseVoice / Whisper / Kotoba）与翻译 | ✅ | — |
+| 歌单、A–B 区间循环、睡眠定时 | ✅（含渐弱淡出、保存区间） | ✅ |
+| 专业音效、AutoEQ 均衡器与耳机方案 | ✅（含峰值限制器、WASAPI 独占） | ✅（含实时 / 整轨响度均衡） |
+| 系统集成体验 | 桌面灵动岛、全局快捷键、SMTC | 后台播放、锁屏通知、桌面小组件 |
+| 跨设备云同步（Gist / OneDrive / WebDAV / Supabase） | ✅ | ✅ |
 
-### Windows · 按需识别与翻译
+---
 
-没有合适字幕时，可以在 Windows 端为音轨启动识别，再生成或整理译文：
+## 功能详解
 
-- **本地语音识别**：可选择 SenseVoice、Whisper、Faster-Whisper 或面向日语的 Kotoba-Whisper。模型和运行库按需下载，识别进度可在任务中心查看。
-- **字幕翻译**：可使用本机 Ollama 模型，或配置 DeepSeek API；支持翻译参数、词库和提示词设置，也可以按需开启自动处理。
-- **阅读与修正**：识别或翻译后，可在字幕文档中检查、编辑文本，并使用时间同步和台本对齐工具调整结果。
+### 台本阅读、语音识别与翻译
 
-识别效果与速度取决于音源、模型和硬件；DeepSeek 翻译会发送字幕文本并按服务使用量计费。Android 当前提供已有字幕的导入、绑定、双语显示和偏移调整，不包含自动识别与翻译。
+- **双语台本跟随**：为音轨绑定原文与译文字幕后，播放页随进度高亮当前句子；支持独立调节整体时间与译文偏移，在完整台本或时间轴中点击任意句子即可跳转。
+- **多形态展示**：Android 支持附件绑定、外部导入与封面展开台本；Windows 额外提供独立桌面歌词窗口，并可在桌面灵动岛中实时显示字幕。
+- **Windows 按需识别与翻译**：
+  - **本地语音识别**：可选 `SenseVoice`、`Whisper`、`Faster-Whisper` 或面向日语优化的 `Kotoba-Whisper`，模型与运行库按需下载，进度统一在任务中心管理。
+  - **字幕翻译与校对**：支持本地 `Ollama` 模型或 `DeepSeek API`，可自定义翻译参数、术语词库与提示词；完成后可直接在字幕文档中编辑文本、执行时间同步与台本对齐。
 
-## Windows 桌面灵动岛
+> [!NOTE]
+> 语音识别的速度与准确率取决于音源质量、所选模型与本机硬件；使用 DeepSeek API 翻译会将字幕文本发送至对应服务并按量计费。Android 端目前聚焦已有字幕的导入、绑定与双语阅读。
 
-收起主窗口后，也可以通过桌面灵动岛查看当前曲目或字幕。展开后可直接播放、暂停、切换音轨，拖动进度条跳转，或打开主窗口；菜单里还提供音量调整、作品操作和脱敏模式。
+### 桌面灵动岛与日常播放
 
-灵动岛与主窗口使用同一个播放状态。可在设置中调整显示、位置和字幕相关选项，也可以配合独立桌面歌词窗口使用。
+- **Windows 桌面灵动岛**：收起主窗口后仍可在桌面顶部查看当前曲目与实时字幕。展开后支持播放控制、切轨、进度拖拽、音量调节、作品操作与脱敏模式，与主窗口共享播放状态。
+- **歌单与播放队列**：可将作品优先音轨或单首音轨加入歌单并跨端同步；移除队列或删除歌单不会影响本地原始音频文件。
+- **A–B 区间循环**：自由设定 A/B 节点反复收听精选片段，Windows 支持保存循环区间以便下次快速启用。
+- **睡眠定时**：支持指定分钟后暂停或当前音轨播完后暂停，Windows 额外提供渐弱淡出时长，随时可取消。
+- **WASAPI 独占输出（Windows）**：支持独占所选耳机或音频输出设备，减少系统混音干扰，随时切回共享模式。
 
-## 在线浏览与下载管理
+### 在线浏览、下载管理与文件偏好
 
-在 Windows「在线浏览」或 Android「发现」中，点「热门作品」旁的「推荐作品」即可查看 asmr.one 推荐。可以在推荐结果中搜索和筛选，作品按站点给出的顺序展示。
+- **在线发现与个人推荐**：在 Windows「在线浏览」或 Android「发现」中切换「推荐作品」即可浏览 `asmr.one` 推荐；支持在推荐页或设置中登录官网账号查看个人推荐。
+- **按需下载与断点续传**：按目录或单文件选择下载音频、字幕与图片，支持暂停、继续与重试。未完成下载使用临时文件隔离，不会误入可播放列表；本地作品、在线来源与已下载文件围绕同一音轨统一管理，不割裂收听记录。
 
-要查看与官网同一账号的个人推荐，点击「推荐作品」里的「登录 asmr.one」，输入官网账号名和密码。也可以在 Windows「设置与诊断 → 网络与账户」或 Android「设置 → 在线来源」中登录和退出。登录后推荐页会显示账号名，退出后显示访客推荐。
+<details>
+<summary><strong>展开查看：智能文件偏好匹配规则</strong></summary>
 
-从在线作品中选择需要的目录或文件，下载音频、字幕、图片等内容，在离线时继续收听或阅读。下载管理显示任务状态与进度，提供暂停、继续、重试等操作；Windows 还支持批量处理任务，Android 可按作品查看下载文件。
+在 Windows「设置 → 通用 → 文件偏好」或 Android「设置 → 播放与字幕 → 文件偏好」中，可分别设定 **有 / 无效果音** 与 **MP3 / WAV** 偏好（或留空不指定），配置于各端本机自动保存：
 
-下载使用临时文件并支持断点续传；尚未完成的文件不会当作可播放音源。音频库中的本地作品、在线来源和已完成下载可围绕对应音轨管理，不必把每种来源当成一份全新的收听记录。
+- 双端优先展示正片目录，再依偏好匹配效果音与音频格式；
+- 同等匹配条件下，优先选择上次未听完的目录，其余目录仍可随时手动切换；
+- 兼容简体中文、繁体中文及 `SEあり` / `SEなし` 等常见目录命名，且不会将「无背景音乐」误判为「无效果音」。
 
-## 歌单、循环与睡前收听
+</details>
 
-- **歌单与队列**：把作品中的优先音轨或单首音轨加入歌单，调整顺序并跨设备同步。当前播放队列可单独调整；移出队列或删除歌单不会删除原始音频文件。
-- **A–B 区间循环**：在音轨中设置 A 点和 B 点，反复收听选定片段。Windows 可保存循环区间，方便之后重新启用；Android 可在播放器的播放工具中设置和关闭。
-- **睡眠定时**：选择若干分钟后暂停，或让当前音轨播完后暂停。Windows 还可以选择渐弱淡出时长；定时也可以随时取消。
-- **Windows WASAPI 独占输出**：选择让播放器独占所选耳机或音箱，也可以切回共享模式。独占时其他应用可能暂时无法通过该设备发声，适合希望单独使用输出设备的场景。
+---
 
-## 电脑与手机，接着同一段声音
+## 跨设备同步
 
-在电脑上整理音频库、创建歌单，出门后打开手机，也可以找到同一部作品和上次的收听位置。两端通过你选择的存储服务交换资料，并各自管理本机的音源与播放。
+在电脑上整理音频库、维护歌单，出门后打开手机即可无缝接续同一部作品与上次的收听进度。
 
 <p align="center">
-  <img src="readme/PixPin_2026-11-12_20-27-12.png" alt="Windows 跨设备同步页面，显示存储选择和同步资料统计" width="850" /><br />
-  <sub>跨设备同步 · 查看资料、进度与待匹配内容</sub>
+  <img src="readme/PixPin_2026-11-12_20-27-12.png" alt="Windows 跨设备同步页面" width="820" /><br />
+  <sub><strong>跨设备同步</strong> · 存储服务选择、资料统计与待匹配项管理</sub>
 </p>
 
-| 可以同步 | 包含的内容 |
-| --- | --- |
-| **作品与收藏** | 音频库作品、喜欢的作品、收藏音轨与对应的作品资料。 |
-| **歌单** | 歌单名称、音轨和顺序，以及歌单的新增、修改和删除。 |
-| **收听记录** | 音轨进度、完成状态，以及带时间和笔记的标记。 |
-| **继续收听** | 收到其他设备的较新进度且音源可用时，提供继续收听入口；同步本身不会打断当前播放。 |
+| 同步类别 | 同步内容说明 |
+| :--- | :--- |
+| **作品与收藏** | 音频库作品目录、喜欢的作品、收藏音轨及对应作品元数据 |
+| **歌单** | 歌单名称、音轨列表、排序以及新增、编辑与删除记录 |
+| **收听记录** | 音轨播放进度、完播状态，以及带时间戳与笔记的标记 |
+| **继续收听** | 检测到其他设备有较新进度且本机音源可用时提供接续入口，不打断当前播放 |
 
-### 连接两端
+<details>
+<summary><strong>展开查看：双端绑定步骤与匹配说明</strong></summary>
 
-1. 在 Windows 和 Android 的「设置 → 跨设备同步」中，选择**同一种**存储方式：GitHub Gist、OneDrive、WebDAV 或 Supabase。
-2. 两端绑定同一账号或同一个 WebDAV 位置；首次绑定会拉取并上传资料。
-3. 之后可以手动点击「立即同步」，也可以按各端设置使用后台自动同步。遇到并发修改时，可在同步页选择保留的版本。
+1. 在 Windows 与 Android 的「设置 → 跨设备同步」中选择**同一种**存储方式：**GitHub Gist**、**OneDrive**、**WebDAV** 或 **Supabase**。
+2. 两端绑定同一账号或同一 WebDAV 路径，首次绑定会自动拉取并上传资料。
+3. 后续可随时点击「立即同步」或启用后台自动同步；若出现并发冲突，可在同步页选择保留版本。
 
-在线音轨可通过同步的稳定来源信息匹配。本地音频按文件指纹匹配；尚未匹配的记录会保留，待另一端具备相应音源后再继续匹配。**同步不传输本地音频文件**，请在目标设备另行导入或授权。
+> [!IMPORTANT]
+> 同步仅交换元数据与收听记录，**不会上传或传输本地音频文件**。在线音轨通过稳定来源信息自动匹配，本地音频通过文件指纹匹配；尚未匹配的记录会被保留，待目标设备导入对应音频后自动衔接。
+>
+> 更多细节请参阅 [跨设备同步说明](docs/releases/DEVICE_SYNC.md)。注：Supabase 新用户的注册确认邮件可能受当前邮件服务投递限制。
 
-[了解同步范围、绑定方法与存储位置](docs/releases/DEVICE_SYNC.md) · Supabase 新用户的注册确认邮件受当前邮件服务投递限制。
+</details>
 
-## 为耳语、声音细节与耳机调音
+---
 
-从原声开始，也可以按作品、耳机和收听习惯调整音色。Windows 提供专业音效抽屉；Android 将常用预设和细调入口放在播放页，两端都可以保存自己的音效方案。
+## 专业音效与耳机调音
+
+从原声直通起步，也可针对不同作品、耳机与收听习惯精细打磨音色。Windows 提供专业音效抽屉，Android 在播放页内置常用预设与精细调音入口，双端均可保存自定义方案。
 
 <table>
   <tr>
-    <td align="center" width="50%"><img src="readme/windows-audio-effects.png" alt="Windows 专业音效界面，显示参数均衡器、音色预设和峰值限制器" width="350" /><br /><sub>Windows · 专业音效与防炸耳</sub></td>
-    <td align="center" width="50%"><img src="readme/android-audio-effects.jpg" alt="Android 音效抽屉，显示音色预设、响度选项和精细调整入口" width="300" /><br /><sub>Android · 音效预设与细调</sub></td>
+    <td align="center" width="50%">
+      <img src="readme/windows-audio-effects.png" alt="Windows 专业音效界面" width="360" />
+      <br />
+      <sub><strong>Windows</strong> · 参数均衡器、音色预设与峰值限制器</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="readme/android-audio-effects.jpg" alt="Android 音效抽屉" width="290" />
+      <br />
+      <sub><strong>Android</strong> · 快捷音色预设、响度均衡与精细调音</sub>
+    </td>
   </tr>
 </table>
 
-### Windows · 按作品细调
+| 平台 | 音效与调音亮点 |
+| :--- | :--- |
+| **Windows** | **预设与旁路对比**（原声直通、低频净化、柔和齿音等，支持按作品记忆）；**交互式参数均衡器**（支持导入 AutoEQ / Equalizer APO 配置）；**低频高通、齿音与空气感调节**；**峰值限制器**（可调阈值与前瞻时间，有效防炸耳）。 |
+| **Android** | **6 种快捷音色**（自然音色、柔和人声、耳语细节、低频净化、温暖柔和、清晰轻语）+ 均衡器 / 声道 / AutoEQ 细调；**实时响度均衡与整轨响度统一**（支持本地与已下载音轨，详见 [Android 响度均衡说明](docs/releases/ANDROID_LOUDNESS.md)）；**输出设备方案关联**。 |
 
-- **预设与旁路对比**：切换原声直通、低频净化、柔和齿音等方案，也可保存自定义预设或为当前作品记住设置。
-- **均衡器与耳机校准**：使用交互式参数均衡器调整频响，或导入 AutoEQ / Equalizer APO 的参数化均衡器配置。
-- **声音细节与峰值控制**：按需调整低频高通、齿音和空气感；峰值限制器提供阈值与前瞻时间设置，用于降低突发峰值。
+> [!TIP]
+> 所有音效均支持一键开启或旁路对比；最终听感仍受系统音频链路、蓝牙编解码与耳机硬件特性影响。
 
-### Android · 从预设到完整方案
-
-- **快捷音色**：在播放页选择自然音色、柔和人声、耳语细节、低频净化、温暖柔和或清晰轻语，也可以展开均衡器、声道和 AutoEQ 细调。
-- **响度选项**：实时响度均衡用于减小同一音轨内的音量起伏；音轨响度统一在完整分析后应用补偿，支持本地和已下载音轨。在线流需先下载才能进行整轨分析。
-- **耳机方案**：保存完整音效设置并按需应用，也可以为输出设备关联方案。[了解 Android 响度均衡](docs/releases/ANDROID_LOUDNESS.md)
-
-音效可以按需开启或旁路；实际输出仍受系统、蓝牙设备和音频硬件影响。
+---
 
 ## 下载与安装
 
-前往 [GitHub Releases](https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest)，选择适合设备的安装包：
+前往 [GitHub Releases](https://github.com/Mikuku-Kawaii/ASMRplayer/releases/latest) 获取对应平台的最新安装包：
 
-| 平台 | 安装包 | 安装方式 |
-| --- | --- | --- |
-| Windows x64 | `x64-setup.exe` 或 `.msi` | 打开安装包，按照向导完成安装。 |
-| Android 6.0 及以上 | `universal.apk` | 在手机上打开 APK，按系统提示允许安装。 |
+| 平台 | 推荐安装包 | 系统要求 | 安装方式 |
+| :--- | :--- | :--- | :--- |
+| **Windows** | `x64-setup.exe` / `.msi` | Windows x64 | 双击安装包，按向导完成安装 |
+| **Android** | `universal.apk` | Android 6.0 及以上 | 在手机上打开 APK，按系统提示允许安装 |
 
-安装后，在音频库添加本地目录，或从在线浏览选择一部作品。Android 首次导入时，需要通过系统文件选择器授予目录访问权限。
+安装完成后，在音频库添加本地目录或从「在线浏览 / 发现」选择作品即可开始收听。Android 首次导入本地目录时，需通过系统文件选择器授予目录访问权限。
 
-## 从源码运行
+---
+
+## 从源码构建
 
 <details>
-<summary><strong>Windows · Tauri 2 / React / Rust / SQLite / libmpv</strong></summary>
+<summary><strong>Windows 桌面端 · Tauri 2 / React / Rust / SQLite / libmpv</strong></summary>
 
-准备 Node.js、pnpm、Rust 和 Visual Studio C++ 构建工具，然后在仓库根目录运行：
+准备 **Node.js**、**pnpm**、**Rust** 与 **Visual Studio C++ 构建工具**，在仓库根目录执行：
 
 ```powershell
 pnpm install --frozen-lockfile
@@ -160,23 +254,27 @@ pnpm tauri dev
 </details>
 
 <details>
-<summary><strong>Android · Kotlin / Jetpack Compose / Media3 / Room</strong></summary>
+<summary><strong>Android 移动端 · Kotlin / Jetpack Compose / Media3 / Room</strong></summary>
 
-准备 JDK 17 和 Android SDK 36，然后在仓库根目录运行：
+准备 **JDK 17** 与 **Android SDK 36**，在仓库根目录执行：
 
 ```powershell
 pnpm install --frozen-lockfile
 .\android\gradlew.bat -p android :app:assembleDebug
 ```
 
-也可以用 Android Studio 打开 `android/`。[Android 开发说明](android/README.md)
+也可使用 Android Studio 直接打开 `android/` 目录，详见 [Android 开发说明](android/README.md)。
 
 </details>
 
 ---
 
 <div align="center">
-  <a href="docs/releases/UPDATING.md">签名与更新机制</a> ·
-  <a href="docs/releases/TODO.md">开发计划</a> ·
+  <a href="docs/releases/UPDATING.md">签名与更新机制</a>
+  &nbsp;·&nbsp;
+  <a href="docs/releases/TODO.md">开发计划</a>
+  &nbsp;·&nbsp;
+  <a href="docs/releases/DEVICE_SYNC.md">同步说明</a>
+  &nbsp;·&nbsp;
   <a href="https://github.com/Mikuku-Kawaii/ASMRplayer/issues">问题反馈</a>
 </div>
