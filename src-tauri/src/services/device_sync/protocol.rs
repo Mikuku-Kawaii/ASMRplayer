@@ -73,6 +73,8 @@ impl From<Document> for WireDocument {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OnlineWork {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
     pub source_id: String,
     pub title: String,
     pub rating: String,
@@ -115,6 +117,7 @@ impl OnlineTrack {
 impl OnlineWork {
     pub fn complete_from(&mut self, other: &Self) {
         self.fill_unknown_rating(other);
+        if self.code.is_none() { self.code.clone_from(&other.code); }
         if self.local_key.is_none() {
             self.local_key.clone_from(&other.local_key);
         }
@@ -136,6 +139,7 @@ impl OnlineWork {
     }
     pub fn valid(&self, key: &str) -> bool {
         valid_local_key(self.local_key.as_deref())
+            && self.code.as_ref().is_none_or(|c| c.len()<=14 && c.get(..2).is_some_and(|p|matches!(p,"RJ"|"BJ"|"VJ")) && c.len()>2 && c.as_bytes()[2..].iter().all(|b|b.is_ascii_digit()))
             && !self.source_id.is_empty()
             && self.source_id.len() <= 12
             && !self.source_id.starts_with('0')
@@ -183,7 +187,7 @@ impl Document {
         for (key, versions) in &self.records {
             let p: Vec<_> = key.split('|').collect();
             if p.len() != 3
-                || !["work", "library", "track", "position", "bookmark", "playlist"].contains(&p[0])
+                || !["work", "library", "track", "position", "bookmark", "playlist", "worklist"].contains(&p[0])
                 || p[1].len() != 64
                 || !p[1].bytes().all(|b| b.is_ascii_hexdigit())
                 || p[2].len() > 128
@@ -220,6 +224,7 @@ impl Document {
                                 && v["createdMs"].as_u64().is_some()
                                 && v["note"].as_str().is_some_and(|s| s.len() <= 64_000))
                     }
+                    "worklist" => super::playlist_sync::valid_works(p[1],p[2],v),
                     "playlist" => super::playlist_sync::valid(p[1],p[2],v),
                     _ => false,
                 };
@@ -306,7 +311,7 @@ impl Journal {
         }
         for key in self.baseline.keys().cloned().collect::<Vec<_>>() {
             if !current.contains_key(&key)
-                && (key.starts_with("playlist|") || (key.starts_with("bookmark|")
+                && (key.starts_with("worklist|") || key.starts_with("playlist|") || (key.starts_with("bookmark|")
                 && targets.contains(key.split('|').nth(1).unwrap_or(""))))
             {
                 changes.push((key, Value::Null));

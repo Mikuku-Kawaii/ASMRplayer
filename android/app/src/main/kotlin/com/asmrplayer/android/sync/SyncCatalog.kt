@@ -22,12 +22,13 @@ internal class SyncCatalog(val versions: MutableMap<String, String>, val works: 
                 if(validTrack(rows.getString(2).trimStart('0'),key,ref)) byWork.getOrPut(rows.getString(0)){JSONObject()}.put(key,ref)
             }
         }
-        db.query("SELECT w.id,m.sourceId,w.title,w.rating,(w.favorite=1 OR w.inLibrary=1) FROM works w JOIN catalog_metadata m ON m.workId=w.id WHERE m.origin<>''").use { rows ->
+        db.query("SELECT w.id,m.sourceId,w.title,w.rating,(w.favorite=1 OR w.inLibrary=1),w.code FROM works w JOIN catalog_metadata m ON m.workId=w.id WHERE m.origin<>''").use { rows ->
             while (rows.moveToNext()) {
                 val key = works[rows.getString(0)] ?: continue
                 val tracks=byWork[rows.getString(0)]
-                if(tracks==null && rows.getInt(4)==0) continue
+                if(tracks==null && rows.getInt(4)==0 && key !in tracked) continue
                 val item = JSONObject().put("sourceId",rows.getString(1).trimStart('0')).put("title",rows.getString(2)).put("rating",rows.getString(3))
+                rows.getString(5)?.takeIf { it.matches(Regex("(RJ|BJ|VJ)[0-9]{1,12}")) }?.let { item.put("code",it) }
                 if(tracks!=null) item.put("tracks",tracks)
                 if (validDescriptor(key,item)) {
                     SyncProtocol.completeDescriptor(item,descriptors.optJSONObject(key))
@@ -79,11 +80,11 @@ internal class SyncCatalog(val versions: MutableMap<String, String>, val works: 
                 val effective=replacements[it] ?: it
                 (effective in needed || (item.has("localKey") && values.optBoolean("library|$key|"))) && effective !in knownVersions
             }?.toList().orEmpty()
-            if(missing.isEmpty() && (key in owners || !(values.optBoolean("work|$key|") || values.optBoolean("library|$key|")))) continue
+            if(missing.isEmpty() && (key in owners || !(key in needed || values.optBoolean("work|$key|") || values.optBoolean("library|$key|")))) continue
             val id=owners[key] ?: com.asmrplayer.android.library.LibraryIndex.id("asmr_one",base,source)
             if(key !in owners) {
                 db.execSQL("INSERT OR IGNORE INTO works(id,rootId,relativePath,title,code,coverUri,favorite,rating,inLibrary) VALUES(?,NULL,'',?,?,NULL,0,?,0)",
-                arrayOf(id,item.getString("title"),"RJ"+source.padStart(8,'0'),item.getString("rating")))
+                arrayOf(id,item.getString("title"),item.optString("code").ifBlank { "RJ"+source.padStart(8,'0') },item.getString("rating")))
                 db.execSQL("INSERT OR IGNORE INTO catalog_metadata(workId,circle,voicesJson,tagsJson,description,release,hasSubtitle,origin,sourceId) VALUES(?,'','[]','[]','','',0,?,?)",arrayOf(id,base,source))
                 works[id]=key
                 names[key]=item.getString("title")
@@ -125,10 +126,10 @@ internal class SyncCatalog(val versions: MutableMap<String, String>, val works: 
             db.query("SELECT id,positionMs,note,createdMs FROM bookmarks WHERE versionId=?", arrayOf<Any>(id)).use {
                 while (it.moveToNext()) result.put("bookmark|$key|${it.getString(0)}", JSONObject().put("positionMs", it.getLong(1)).put("note", it.getString(2)).put("createdMs", it.getLong(3)))
             }
-        }; SyncPlaylists.snapshot(db,versions,result); return result
+        }; SyncPlaylists.snapshot(db,versions,result,works); return result
     }
     fun apply(db: SupportSQLiteDatabase, values: JSONObject) {
-        SyncPlaylists.apply(db,values,versions)
+        SyncPlaylists.apply(db,values,versions,works)
         values.keys().forEach { key -> val p = key.split('|'); val v = values.get(key)
             val ids = if (p[0] in setOf("work","library")) works else versions
             ids.filterValues { it == p[1] }.keys.forEach { id ->
@@ -155,7 +156,7 @@ internal class SyncCatalog(val versions: MutableMap<String, String>, val works: 
                 if(tracks.length()>50_000 || !tracks.keys().asSequence().all { k->tracks.optJSONObject(k)?.let { validTrack(id,k,it) }==true })return false
             }
             return id.matches(Regex("[1-9][0-9]{0,11}")) && hash("asmr_one|$id")==key &&
-                item.optString("title").toByteArray().size in 1..4096 && item.optString("rating") in setOf("SAFE","NSFW","UNRATED")
+                (!item.has("code") || item.optString("code").matches(Regex("(RJ|BJ|VJ)[0-9]{1,12}"))) && item.optString("title").toByteArray().size in 1..4096 && item.optString("rating") in setOf("SAFE","NSFW","UNRATED")
         }
         private fun validTrack(source:String,key:String,ref:JSONObject):Boolean {
             val file=ref.optString("fileId")

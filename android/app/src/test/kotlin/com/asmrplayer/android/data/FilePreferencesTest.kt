@@ -4,6 +4,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class FilePreferencesTest {
+    @org.junit.Test fun collectionUsesOnlyOneFormatAndDirectoryInChapterOrder() {
+        val versions=listOf(VersionDetail("a","one","w","01","Disc","wav",true),VersionDetail("alt","one","w","01","Disc","mp3",true),
+            VersionDetail("b","two","w","02","Disc","wav",true),VersionDetail("extra","bonus","w","特典","Bonus","wav",true))
+        org.junit.Assert.assertEquals(listOf("a","b"),collectionChapters(CollectionWork("w"),versions,FilePreferences(format=AudioFormatPreference.Wav),null))
+        org.junit.Assert.assertEquals(listOf("alt"),collectionChapters(CollectionWork("w","Disc","mp3"),versions,FilePreferences(),null))
+        org.junit.Assert.assertTrue(collectionChapters(CollectionWork("w","missing","wav"),versions,FilePreferences(),null).isEmpty())
+    }
     @Test fun sharedPcAndroidDirectoryRegressions() {
         val fixtures = org.json.JSONArray(java.io.File("../../tests/fixtures/file-preferences.json").readText())
         for (index in 0 until fixtures.length()) {

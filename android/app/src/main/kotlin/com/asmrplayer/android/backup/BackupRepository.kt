@@ -27,6 +27,7 @@ class BackupRepository(private val context: Context, private val db: LibraryData
             var totalRows = 0; var estimatedBytes = 0L
             PortableFormat.tables.forEach { table ->
                 val query = when (table.name) {
+                    "catalog_metadata" -> "SELECT m.* FROM catalog_metadata m JOIN works w ON w.id=m.workId WHERE m.sourceId<>'' AND m.origin<>''"
                     "subtitles" -> "SELECT s.*, COALESCE((SELECT r.id FROM remote_assets r WHERE s.uri = 'asmr-subtitle://' || r.id LIMIT 1), (SELECT r.id FROM work_assets a JOIN remote_assets r ON r.id=a.id WHERE a.uri=s.uri LIMIT 1)) AS assetId FROM subtitles s"
                     "media_sources" -> "SELECT * FROM media_sources WHERE kind IN ('local_imported','online_provider')"
                     "work_assets" -> "SELECT * FROM work_assets WHERE rootId IN (SELECT id FROM library_roots)"
@@ -123,6 +124,10 @@ class BackupRepository(private val context: Context, private val db: LibraryData
                     when (table.name) {
                         "library_roots" -> { value.put("treeUri", "unbound://root/${Uri.encode(key)}"); value.put("available", 0); value.put("lastScanMs", 0) }
                         "works" -> value.putNull("coverUri")
+                        "catalog_metadata" -> {
+                            listOf("circle","description","release").forEach { value.put(it,"") }
+                            value.put("voicesJson","[]"); value.put("tagsJson","[]"); value.put("hasSubtitle",0)
+                        }
                         "remote_assets" -> value.put("available", 1)
                         "media_sources" -> {
                             val online = row.getString("kind") == "online_provider"

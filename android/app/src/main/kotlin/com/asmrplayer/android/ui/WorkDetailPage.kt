@@ -102,7 +102,9 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
     val attachmentMeasurer = rememberTextMeasurer()
     var page by rememberSaveable(workId){mutableStateOf("tracks")}
     var image by remember {mutableStateOf<String?>(null)}
+    var pickingTracks by rememberSaveable(workId) { mutableStateOf(false) }
     var fileInfo by remember {mutableStateOf<String?>(null)}
+    var metadataInput by rememberSaveable(workId) { mutableStateOf<String?>(null) }
     var binding by remember {mutableStateOf<WorkAsset?>(null)}
     val available=versions.filter{it.available}.map{it.id}
     val groupVersions=if(remote!=null) files.map { it.versionId(workId) } else available
@@ -140,14 +142,20 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
     }
     val workActions: CardMenu = {close->
         DropdownMenuItem(text={Text("从头播放")},enabled=playable,onClick={close();act("restart")})
-        CardAction("加入歌单", close, !busy && !waitingForTracks) {
-            if (remote != null && origin != null) model.online.cardAction(origin, remote.work.sourceId, com.asmrplayer.android.OnlineTools.CardAction.Playlist)
-            else model.choosePlaylist(com.asmrplayer.android.data.preferredPlaylistVersions(local?.versions.orEmpty()))
+        CardAction("加入作品集", close, !busy && (presentedWork != null || local != null)) {
+            if (presentedWork != null && origin != null) model.online.chooseWork(presentedWork,origin,selected?.first,selected?.second)
+            else model.chooseWork(workId,selected?.first,selected?.second)
         }
         if(remote!=null||detailState.remoteId!=null) DropdownMenuItem(text={Text("下载作品")},enabled=!busy,onClick={close();download()})
         DropdownMenuItem(text={Text("加入队列")},enabled=!busy && !waitingForTracks,onClick={close();act("enqueue")})
         if(remote!=null)DropdownMenuItem(text={Text(if(local?.inLibrary!=true)"加入音频库" else "刷新作品信息")},onClick={close();if(local?.inLibrary==true&&origin!=null)model.details.refresh(remote.work.sourceId,origin) { model.online.loadDetail(origin, remote.work.sourceId) } else model.online.act("save")})
         else if(detailState.remoteId!=null&&detailState.remoteOrigin!=null)DropdownMenuItem(text={Text("刷新作品信息")},onClick={close();model.details.refresh(detailState.remoteId!!,detailState.remoteOrigin!!)})
+        else if (!isOnline && local != null) CardAction("同步元数据", close, !busy) {
+            val input = meta?.takeIf { it.origin == online.account.apiBase }?.sourceId?.takeIf { it.isNotBlank() }
+                ?: local.code?.takeIf { it.isNotBlank() } ?: LibraryIndex.workCode(local.title)
+                ?: local.versions.firstNotNullOfOrNull { LibraryIndex.workCode(it.title) }
+            if (input == null) metadataInput = "" else model.details.syncLocalMetadata(workId, input)
+        }
         if(local!=null)DropdownMenuItem(text={Text(if(local.nsfw)"取消 NSFW 标记" else "标记为 NSFW")},onClick={close();model.setNsfw(workId,!local.nsfw)})
         DropdownMenuItem(text={Text("下载管理")},onClick={close();open("downloads")})
     }
@@ -221,7 +229,10 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                     MotionTextButton(::retryDetail) { Text("重新加载") }
                 }
                 if (groups.isNotEmpty()) item {
-                    GroupPicker(groups,selected){group=it.first;format=it.second}
+                    Column {
+                        GroupPicker(groups,selected){group=it.first;format=it.second}
+                        MotionTextButton({pickingTracks=true}, enabled=!busy && groupVersions.isNotEmpty()){ Text("选择音轨") }
+                    }
                 }
                 if(remote!=null) itemsIndexed(files,key={_,it->it.path}) {index,file ->
                     val id=file.versionId(workId)
@@ -233,7 +244,7 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                         {if(version!=null)model.collections.favorite(version.id,!liked) else act("favorite-track",paths=listOf(file.path))}) { close ->
                         DropdownMenuItem(text={Text("下一首播放")},onClick={close();act("next",paths=listOf(file.path))})
                         DropdownMenuItem(text={Text("加入队列")},onClick={close();act("enqueue",paths=listOf(file.path))})
-                        DropdownMenuItem(text={Text("加入歌单")},onClick={close();act("playlist",paths=listOf(file.path))})
+                        DropdownMenuItem(text={Text("加入音轨歌单")},onClick={close();act("playlist",paths=listOf(file.path))})
                         DropdownMenuItem(text={Text("下载音轨")},onClick={close();download(paths=setOf(file.path))})
                         DropdownMenuItem(text={Text("文件信息")},onClick={close();fileInfo="${file.path}\n${file.format.uppercase()} · ${byteSize(file.bytes)}"})
                     }
@@ -245,7 +256,7 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
                         { model.playGroup(available, startVersion = version.id); open("player") },version.available,index,version.id==current,favorite,{model.collections.favorite(version.id,!favorite)}) { close ->
                         DropdownMenuItem(text={Text("下一首播放")},enabled=version.available,onClick={close();model.enqueue(listOf(version.id),true)})
                         DropdownMenuItem(text={Text("加入队列")},enabled=version.available,onClick={close();model.enqueue(listOf(version.id))})
-                        DropdownMenuItem(text={Text("加入歌单")},onClick={close();model.choosePlaylist(listOf(version.id))})
+                        DropdownMenuItem(text={Text("加入音轨歌单")},onClick={close();model.choosePlaylist(listOf(version.id))})
                         if(detailState.remoteId!=null)DropdownMenuItem(text={Text("下载音轨")},onClick={close();download(ids=setOf(version.id))})
                         DropdownMenuItem(text={Text("文件信息")},onClick={close();fileInfo="${version.groupPath}/${version.title}"})
                     }
@@ -315,6 +326,27 @@ internal fun WorkDetailPage(state:PlayerScreenState,model:PlayerViewModel,workId
             }
         }
         image?.let { uri -> FullscreenArtwork(uri, label = "附件图片") { image = null } }
+        if(pickingTracks) PlayerSheet("选择音轨",{pickingTracks=false},contentScrolls=true) {
+            val choices = if(remote != null) files.map { PlaylistChoice(it.path,it.title,it.format.uppercase()) }
+                else versions.filter { it.available }.map { PlaylistChoice(it.id,it.title,it.format.uppercase()) }
+            PlaylistMemberChoices(choices,emptyList(),busy,"加入音轨歌单",500) { chosen ->
+                pickingTracks=false
+                if(remote!=null) act("playlist",paths=chosen) else model.choosePlaylist(chosen)
+            }
+        }
+        metadataInput?.let { input ->
+            PlayerAlertDialog(
+                onDismissRequest = { metadataInput = null },
+                title = { Text("同步元数据") },
+                text = { OutlinedTextField(input, { metadataInput = it }, singleLine = true,
+                    label = { Text("作品编号") }, placeholder = { Text("RJ、VJ、BJ 编号或站内 ID") }) },
+                confirmButton = { MotionTextButton({
+                    metadataInput = null
+                    model.details.syncLocalMetadata(workId, input.trim())
+                }, enabled = input.isNotBlank()) { Text("同步") } },
+                dismissButton = { MotionTextButton({ metadataInput = null }) { Text("取消") } },
+            )
+        }
         fileInfo?.let {text->PlayerSheet("文件信息",{fileInfo=null}){Text(text)}}
         detailState.preview?.let {text->PlayerSheet("字幕预览",model.details::closePreview,contentScrolls=true){LazyColumn(Modifier.fillMaxWidth().padding(horizontal=20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){items(text.split("\n\n")){Text(it)}}}}
         binding?.let {asset->

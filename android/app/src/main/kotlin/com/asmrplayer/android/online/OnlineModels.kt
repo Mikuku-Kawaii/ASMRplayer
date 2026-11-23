@@ -25,7 +25,7 @@ data class RemoteAddress(val url: String, val bytes: Long?)
 object AsmrJson {
     fun workId(raw: String): String {
         val value = raw.trim().replace(Regex("(?i)^RJ"), "")
-        require(value.length in 1..12 && value.all { it in '0'..'9' }) { "请输入作品 ID 或 RJ 编号" }
+        require(value.length in 1..12 && value.all { it in '0'..'9' }) { "请输入有效的作品编号或站内 ID" }
         return value.trimStart('0').also { require(it.isNotEmpty()) { "作品编号不能全为零" } }
     }
     /** Format workInfo like the website; database and media identities stay canonical. */

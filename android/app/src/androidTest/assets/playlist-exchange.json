@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "records": {
+    "worklist|030390983b50669598c0b9e7077a0516e4169f0a8de9157379d741d8b96ec09c|fixture-works": [
+      {
+        "device": "fixture",
+        "seq": 1,
+        "clock": 1,
+        "context": {},
+        "value": {
+          "name": "原作",
+          "items": [
+            {
+              "id": "ddecddaefc873b917005c4df544781559169a7dabba8f5e1cc0211ca2e8e0fa4",
+              "directory": "本篇",
+              "format": "wav",
+              "fromSite": true
+            },
+            {
+              "id": "a0fdad7ff589c8e4f842a1e6fc8e518e34a1a8d8101e6a6d57958b0e69012ac9"
+            }
+          ],
+          "sortOrder": 0
+        }
+      }
+    ]
+  },
+  "playlistRecords": {
+    "playlist|1edc5844a1f6c5a67618dbb4039d7968eac113fb8cf96ad0f9d801eb7472b81d|fixture-tracks": [
+      {
+        "device": "fixture",
+        "seq": 2,
+        "clock": 2,
+        "context": {},
+        "value": {
+          "name": "手选音轨",
+          "items": [
+            "06cc538830181643863274a63ec73aac9b132be2860069722f97a9b68d2579c6"
+          ],
+          "sortOrder": 1
+        }
+      }
+    ]
+  },
+  "onlineWorks": {
+    "ddecddaefc873b917005c4df544781559169a7dabba8f5e1cc0211ca2e8e0fa4": {
+      "sourceId": "100000041",
+      "code": "VJ01002150",
+      "title": "示例原作",
+      "rating": "SAFE"
+    }
+  }
+}

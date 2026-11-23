@@ -1326,7 +1326,7 @@ impl PlaybackService {
     }
 
     pub async fn play_work(&self, work_id: &str, group_path: Option<String>, from_start: bool) -> AppResult<PlaybackSnapshot> {
-        let detail = self.db.get_work_detail(work_id)?;
+        let detail = self.provider.library_work_detail(work_id).await?;
         let last_track = detail.tracks.iter().find(|t| t.versions.iter().any(|v| Some(&v.id) == detail.last_version_id.as_ref()));
         let group = group_path.or_else(|| last_track.map(|t| t.logical_dir_path.clone()))
             .or_else(|| detail.directory_groups.first().map(|g| g.group_path.clone()))
@@ -1604,14 +1604,13 @@ impl PlaybackService {
     }
 
     /// Saved playlists reuse the same queue, playback generation and source selection.
-    pub async fn play_playlist(&self, ids: Vec<String>, append: bool, start: Option<String>) -> AppResult<PlaybackSnapshot> {
-        if ids.is_empty() || ids.len()>500 {return Err(AppError::new(ErrorCode::InvalidInput,"歌单中没有可播放的音轨"));}
-        let pairs=ids.into_iter().map(|id|(id,None)).collect::<Vec<_>>();
+    pub async fn play_playlist(&self, pairs: Vec<(String,Option<String>)>, append: bool, start: Option<String>) -> AppResult<PlaybackSnapshot> {
+        if pairs.is_empty() {return Err(AppError::new(ErrorCode::InvalidInput,"歌单中没有可播放的音轨"));}
         if append {self.db.append_queue_items(&pairs)?;self.emit_snapshot();return self.get_snapshot();}
         let index=start.and_then(|id|pairs.iter().position(|(v,_)|v==&id)).unwrap_or(0);
         let qid=self.db.replace_queue_items(&pairs,index)?;
         {self.inner.lock().current_queue_item_id=qid;}
-        self.play_with_position(&pairs[index].0,None,false,None,None).await
+        self.play_with_position(&pairs[index].0,pairs[index].1.clone(),false,None,None).await
     }
 
     /// T1117 / R37: Enqueues all favorite works in order (preferring With-SE + WAV format) and starts playback immediately.

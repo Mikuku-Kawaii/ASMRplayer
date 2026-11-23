@@ -57,7 +57,7 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 internal enum class Destination(val title: String, val glyph: Glyph) {
-    Library("音频库",Glyph.Library), Discover("发现",Glyph.Discover), Favorites("喜欢",Glyph.Heart), Queue("队列",Glyph.Queue)
+    Library("音频库",Glyph.Library), Discover("发现",Glyph.Discover), Favorites("喜欢",Glyph.Heart), Queue("歌单",Glyph.Queue)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -264,7 +264,7 @@ fun PlayerApp(model: PlayerViewModel, playerRequest: Int = 0, refraction: Boolea
                         route=="file-preferences" -> FilePreferencesPage(state,model)
                         route=="content-settings" -> ContentPreferencesPage(state,model)
                         route=="queue-current" -> QueuePage(state,model,24.dp,locateCurrent=true,directControls=true)
-                        route?.startsWith("queue-group:")==true -> SavedQueuePage(route.substringAfter(":"),state,model,24.dp,::back)
+                        route?.startsWith("queue-group:")==true -> SavedQueuePage(route.substringAfter(":"),state,model,24.dp,::back,::open)
                         route=="history" -> HistoryPage(state,model,::open)
                         route=="backup" -> BackupPage(model.maintenance,chooseDirectory)
                         route=="sync" -> SyncPage(model)
@@ -340,7 +340,11 @@ fun PlayerApp(model: PlayerViewModel, playerRequest: Int = 0, refraction: Boolea
         DownloadSelectionDialog(downloadPlan, model.downloadPlan::toggle, model.downloadPlan::close, model.downloadPlan::retry) {
             model.downloadPlan.confirm { open("downloads") }
         }
-        playlistTarget?.let { ids -> PlayerSheet("加入歌单", model::closePlaylistPicker) { AddTracksToGroup(ids, model) } }
+        playlistTarget?.let { selection ->
+            PlayerSheet(if(selection.works != null) "加入作品集" else "加入音轨歌单", model::closePlaylistPicker,contentScrolls=true) {
+                AddTracksToGroup(selection.ids, model, selection.works, model::closePlaylistPicker)
+            }
+        }
         IncomingDialog(incoming,model.incoming,state) { id -> open("online:${Uri.encode(onlineState.account.apiBase)}:$id") }
         if(streamDialog) PlayerAlertDialog(onDismissRequest={streamDialog=false},title={Text("播放在线音频")},text={
             OutlinedTextField(address,{address=it},label={Text("HTTPS 音频地址")},modifier=Modifier.fillMaxWidth())

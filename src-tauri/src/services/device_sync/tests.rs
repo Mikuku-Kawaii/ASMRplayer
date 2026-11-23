@@ -138,6 +138,52 @@ fn playlists_roundtrip_order_tombstone_missing_media_and_restart() {
 }
 
 #[test]
+fn reads_and_reemits_the_shared_android_playlist_packet() {
+    let raw=include_str!("../../../../android/app/src/androidTest/assets/playlist-exchange.json");
+    let doc: Document=serde_json::from_str(raw).unwrap();doc.validate().unwrap();
+    let (_dir,s)=fixture("portable");
+    let output=s.exchange_local(Some(&doc),None).unwrap();
+    for (key,value) in doc.selected() { assert_eq!(output.selected()[&key],value); }
+    let rows=s.db.list_playlists().unwrap();
+    assert_eq!(rows.len(),2);let works=rows[0].work_items.as_ref().unwrap();
+    assert!(works[0].from_site);assert_eq!(works[0].directory.as_deref(),Some("本篇"));
+    assert!(works[1].id.starts_with("sync:"));assert!(rows[1].version_ids[0].starts_with("sync:"));
+    assert_eq!(s.db.get_work_detail(&works[0].id).unwrap().rj_code.as_deref(),Some("VJ01002150"));
+}
+
+#[test]
+fn work_collections_exchange_online_only_and_local_members_without_expanding_tracks() {
+    use crate::db::playlists::WorkItem;
+    let (_left,a)=fixture("left"); let (_right,b)=fixture("right");
+    a.db.with_conn(|c| { c.execute_batch("INSERT INTO works(id,title,rj_code,created_at,updated_at) VALUES('online','云端作品','VJ01002150','now','now');
+        INSERT INTO work_sources(id,work_id,provider,source_work_id,refreshed_at) VALUES('online-source','online','asmr_one','191919','now');")?;Ok(()) }).unwrap();
+    let pinned=WorkItem{id:"leftw".into(),directory:Some("Disc 1".into()),format:Some("wav".into()),from_site:false};
+    let p=a.db.create_typed_playlist("完整作品",vec![],Some(vec![pinned.clone()])).unwrap();
+    let online=WorkItem::new("online".into());
+    assert_eq!(a.db.change_members(&p.id,Some(&[pinned.clone(),online.clone()]),&[],&[],None).unwrap(),vec!["online"]);
+    assert!(a.db.change_members(&p.id,None,&["leftv".into()],&[],None).is_err());
+    let empty=a.db.create_typed_playlist("空作品集",vec![],Some(vec![])).unwrap();
+    let legacy=a.db.create_playlist("旧音轨",vec!["leftv".into()]).unwrap();
+    let doc=a.exchange_local(None,None).unwrap();
+    let key=format!("worklist|{}|{}",catalog::hash(p.id.as_bytes()),p.id);
+    let wire=serde_json::to_value(&doc).unwrap();
+    assert!(wire["records"].get(&key).is_some());assert!(wire["playlistRecords"].as_object().unwrap().len()==1);
+    assert!(doc.online_works.contains_key(&catalog::hash(b"asmr_one|191919")));
+    let decoded:Document=serde_json::from_value(wire).unwrap();decoded.validate().unwrap();
+    b.exchange_local(Some(&decoded),None).unwrap();
+    let rows=b.db.list_playlists().unwrap();
+    let members=rows.iter().find(|g|g.id==p.id).unwrap().work_items.as_ref().unwrap();
+    assert_eq!(members.len(),2);assert_eq!(members[0],WorkItem{id:"rightw".into(),..pinned});
+    let remote=b.db.get_work_detail(&members[1].id).unwrap();
+    assert_eq!(remote.title,"云端作品");assert_eq!(remote.rj_code.as_deref(),Some("VJ01002150"));assert!(remote.tracks.is_empty());assert!(!remote.is_collected);
+    assert_eq!(rows.iter().find(|g|g.id==empty.id).unwrap().work_items,Some(vec![]));
+    assert_eq!(rows.iter().find(|g|g.id==legacy.id).unwrap().version_ids,vec!["rightv"]);
+    let again=b.exchange_local(None,None).unwrap();assert_eq!(again.selected()[&key],doc.selected()[&key]);
+    a.db.change_members(&p.id,Some(&[]),&[],&["online".into()],None).unwrap();
+    assert_eq!(a.db.list_playlists().unwrap()[0].work_items.as_ref().unwrap().len(),1);
+}
+
+#[test]
 fn playlist_only_online_source_imports_without_collecting_or_liking() {
     let (_da,a)=fixture("poa");let (_db,b)=fixture("pob");
     a.db.with_conn(|c|{c.execute_batch("INSERT INTO work_sources(id,work_id,provider,source_work_id,refreshed_at) VALUES('pows','poaw','asmr_one','1234','now'); INSERT INTO media_sources(id,version_id,source_kind,provider,source_work_id,remote_file_id,remote_relative_path,format,byte_size,created_at,updated_at) VALUES('poremote','poav','online_provider','asmr_one','1234','stable','disc/track.wav','wav',123,'now','now');")?;Ok(())}).unwrap();
@@ -156,7 +202,7 @@ fn playlist_verified_file_identity_restores_online_source_without_identity_drift
     let work=catalog::hash(b"asmr_one|5678");let track=catalog::hash(b"asmr_one|5678|file");let local=catalog::hash(b"verified file");
     let id="android-playlist";let key=format!("playlist|{}|{id}",catalog::hash(id.as_bytes()));
     let mut j=protocol::Journal::default();j.edit(key.clone(),json!({"name":"跨端歌单","items":[local.clone()],"sortOrder":0}));
-    j.doc.online_works.insert(work,protocol::OnlineWork{source_id:"5678".into(),title:"已验证作品".into(),rating:"UNRATED".into(),local_key:None,tracks:std::collections::BTreeMap::from([(track,protocol::OnlineTrack{file_id:"file".into(),path:"audio.wav".into(),bytes:None,local_key:Some(local.clone())})])});
+    j.doc.online_works.insert(work,protocol::OnlineWork{code:None,source_id:"5678".into(),title:"已验证作品".into(),rating:"UNRATED".into(),local_key:None,tracks:std::collections::BTreeMap::from([(track,protocol::OnlineTrack{file_id:"file".into(),path:"audio.wav".into(),bytes:None,local_key:Some(local.clone())})])});
     service.exchange_local(Some(&j.doc),None).unwrap();
     let group=service.db.list_playlists().unwrap().remove(0);assert!(!group.version_ids[0].starts_with("sync:"));
     for _ in 0..2 {let doc=service.exchange_local(Some(&j.doc),None).unwrap();assert_eq!(doc.selected()[&key]["items"],json!([local]));}

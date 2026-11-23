@@ -1,3 +1,5 @@
+import { MemberPicker } from "../player/PlaylistDrawer";
+import { requestPlaylist } from "../player/playlists";
 import { PlaylistMenuItem } from "../player/PlaylistPicker";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { ContextMenu } from "../../components/ContextMenu";
@@ -111,6 +113,7 @@ const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDet
   const [loading, setLoading] = useState(false);
   const subtitleActions = useSubtitleActions(detail?.tracks.flatMap(track => track.versions.map(version => version.id)) ?? []);
   const [syncVersions, setSyncVersions] = useState<string[] | null>(null);
+  const [pickingTracks, setPickingTracks] = useState(false);
   const [trackMenu, setTrackMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   useEffect(() => { setTrackMenu(null); setSyncVersions(null); }, [workId]);
   const [selectedGroupPath, setSelectedGroupPath] = useState(() => preferredDirectory(initialDetail.directoryGroups, filePreferences, resumeDirectory(initialDetail.tracks, initialDetail.lastVersionId)));
@@ -128,7 +131,8 @@ const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDet
   const [ovTags, setOvTags] = useState("");
 
   // Sync metadata & cloud subtitles from asmr.one state
-  const [syncRjInput, setSyncRjInput] = useState("");
+  const [workCodeInput, setWorkCodeInput] = useState("");
+  const sourceInput = detail?.onlineSources[0]?.sourceWorkId || detail?.rjCode || workCodeInput.trim();
   const [syncingMeta, setSyncingMeta] = useState(false);
   const [fetchingSubs, setFetchingSubs] = useState(false);
 
@@ -154,9 +158,6 @@ const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDet
       setOvDesc(d.description);
       setOvVas(d.voiceActors.join(", "));
       setOvTags(d.tags.join(", "));
-      if (d.rjCode) {
-        setSyncRjInput(d.rjCode);
-      }
       if (d.directoryGroups.length > 0) {
         const bestGroup = preferredDirectory(d.directoryGroups, filePreferences, resumeDirectory(d.tracks, d.lastVersionId));
         if (lastInitWorkIdRef.current !== workId) {
@@ -302,7 +303,7 @@ const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDet
         "sync_work_from_asmr_one",
         {
           workId,
-          rjOrId: syncRjInput.trim() || detail?.rjCode || null,
+          rjOrId: sourceInput || null,
           preferOnlineCover,
         }
       );
@@ -326,7 +327,7 @@ const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDet
         "fetch_online_subtitles_for_work",
         {
           workId,
-          rjOrId: syncRjInput.trim() || detail?.rjCode || null,
+          rjOrId: sourceInput || null,
         }
       );
       setDetail(updated);
@@ -394,7 +395,7 @@ const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDet
         {
           workId,
           rjOrId:
-            detail?.rjCode ?? detail?.onlineSources[0]?.sourceWorkId ?? null,
+            detail?.onlineSources[0]?.sourceWorkId ?? detail?.rjCode ?? null,
         }
       );
       if (!prev || !Array.isArray(prev.items)) {
@@ -555,20 +556,23 @@ const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDet
         </button>
 
         <div className="detail-top-actions">
-          {!detail.rjCode && (
-            <input
-              type="text"
-              className="input-text input-sm"
-              placeholder="RJ 号 (如 RJ01705068)"
-              value={syncRjInput}
-              onChange={(e) => setSyncRjInput(e.target.value)}
-            />
+          {!detail.rjCode && !detail.onlineSources.length && (
+            <label className="detail-work-code">
+              作品编号
+              <input
+                type="text"
+                className="input-text input-sm"
+                placeholder="RJ、VJ、BJ 编号或站内 ID"
+                value={workCodeInput}
+                onChange={(e) => setWorkCodeInput(e.target.value)}
+              />
+            </label>
           )}
 
           <button
             type="button"
             className="btn btn-ghost btn-sm"
-            disabled={syncingMeta || (!detail.rjCode && !syncRjInput.trim())}
+            disabled={syncingMeta || !sourceInput}
             onClick={() => void handleSyncFromAsmrOne(true)}
             title="从 asmr.one 同步标题、封面、社团、CV、标签与 R18 分级"
           >
@@ -708,6 +712,7 @@ const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDet
                 disabled={startingPlayback} title="从当前目录第一条音轨的开头播放"
                 onClick={() => void handlePlayWork(true)}><RotateCcw size={16} /><span>从头播放</span></button>}
 
+              <button type="button" className="btn btn-secondary" onClick={()=>requestPlaylist({workId, directory:activeGroup?.groupPath,format:activeGroup?.formats.length===1 ? activeGroup.formats[0] : undefined})}><Plus size={16}/>加入作品集</button>
               {!isLocalWork && <button
                 type="button"
                 className={detail.isCollected ? "btn btn-tonal" : "btn btn-secondary"}
@@ -968,11 +973,12 @@ const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDet
 
           <div className="override-grid">
             <div className="override-row">
-              <label>关联在线作品 ID/RJ</label>
+              <label htmlFor="associate-online-work-code">关联在线作品</label>
               <input
+                id="associate-online-work-code"
                 type="text"
                 className="input-text"
-                placeholder={`输入在线作品号 (当前: ${detail.rjCode ?? "无"})`}
+                placeholder="作品编号或站内 ID"
                 value={assocOnlineInput}
                 onChange={(e) => setAssocOnlineInput(e.target.value)}
               />
@@ -1105,6 +1111,7 @@ const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDet
                 <Play size={16} />
                 <span className="ui-icon-label">播放当前目录</span>
               </button>
+              <button className="btn btn-secondary btn-sm" disabled={!groupVersionIds.length} onClick={()=>setPickingTracks(true)}>选择音轨</button>
               <SubtitleActionButtons actions={subtitleActions} versionIds={groupVersionIds} />
               <button type="button" className="btn btn-secondary btn-sm" disabled={subtitleActions.running || groupVersionIds.length === 0} onClick={() => setSyncVersions(groupVersionIds)}>同步字幕</button>
             </div>
@@ -1112,6 +1119,7 @@ const WorkDetailContent: React.FC<WorkDetailViewProps & { initialDetail: WorkDet
         </section>
       )}
 
+      {pickingTracks && <MemberPicker title="选择音轨" choices={filteredTracks.flatMap(t=>t.versions.map(v=>({id:v.id,title:t.title,detail:[v.versionLabel,formatDurationMs(v.durationMs)].join(" · ")})))} onClose={()=>setPickingTracks(false)} verb="加入音轨歌单" onSubmit={versionIds=>{setPickingTracks(false);requestPlaylist({versionIds});}}/>}
       {subtitleActions.dialog}
       {syncVersions && <SubtitleSyncDialog key={workId} versionIds={syncVersions} onClose={() => setSyncVersions(null)} />}
       {subtitleActions.error && <ErrorNotice message={subtitleActions.error} />}

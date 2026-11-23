@@ -48,6 +48,7 @@ import {
 } from "../lib/api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { PlayerBar } from "../features/player/PlayerBar";
+import { Playlists } from "../features/player/PlaylistDrawer";
 import { PlaylistPickerHost } from "../features/player/PlaylistPicker";
 import { RightDrawer } from "../features/player/RightDrawer";
 import { LibraryView } from "../features/library/LibraryView";
@@ -69,6 +70,7 @@ type NavPage =
   | "online"
   | "favorites"
   | "recent"
+  | "playlists"
   | "tasks"
   | "downloads"
   | "settings";
@@ -110,7 +112,7 @@ const AppShell: React.FC = () => {
   const [bookmarkVersion, setBookmarkVersion] = useState<string | undefined>();
   const [snapshot, setSnapshot] = useState<PlaybackSnapshot>(defaultSnapshot);
   const [drawerTab, setDrawerTab] = useState<
-    "none" | "queue" | "playlists" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio"
+    "none" | "queue" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio"
   >("none");
   const playerToolsTrigger = useRef<HTMLButtonElement>(null);
   const [globalError, setGlobalError] = useState<AppError | null>(null);
@@ -411,7 +413,7 @@ const AppShell: React.FC = () => {
   ]);
 
   const handleToggleDrawer = (
-    tab: "queue" | "playlists" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio"
+    tab: "queue" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio"
   ) => {
     setDrawerTab((cur) => (cur === tab ? "none" : tab));
   };
@@ -1040,6 +1042,7 @@ const AppShell: React.FC = () => {
                 <span>最近收听</span>
               </button>
             </li>
+            <li><button type="button" className={`nav-btn ${activeNav === "playlists" && !selectedWorkId ? "active" : ""}`} onClick={() => handleSelectNav("playlists")}><ListMusic size={17}/><span>歌单</span></button></li>
             <li><button type="button" className={`nav-btn ${["tasks","downloads"].includes(activeNav) && !selectedWorkId ? "active" : ""}`} onClick={() => handleSelectNav("tasks")}>
               <ListMusic size={17}/><span>任务中心{deviceSync.status?.resume ? " · 接续" : ""}</span></button></li>
             <li>
@@ -1325,6 +1328,8 @@ const AppShell: React.FC = () => {
                 }}
                 onError={setGlobalError}
               />
+            ) : activeNav === "playlists" ? (
+              <Playlists onSnapshotChange={applySnapshot} onOpenWork={handleSelectWork}/>
             ) : activeNav === "tasks" || activeNav === "downloads" ? (
               <TaskCenter sync={deviceSync.status} syncError={deviceSync.error} syncBusy={syncBusy}
                 resume={()=>void syncOperation("resume")} dismissResume={()=>void syncOperation("dismissResume")} runSync={()=>void syncOperation("sync")}

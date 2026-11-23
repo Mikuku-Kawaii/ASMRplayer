@@ -5,7 +5,7 @@ import org.json.JSONObject
 
 internal object SyncInsights {
     private val kinds = linkedMapOf("library" to "音频库作品", "work" to "喜欢作品", "track" to "收藏音轨",
-        "position" to "收听进度", "bookmark" to "时间标记", "playlist" to "歌单")
+        "position" to "收听进度", "bookmark" to "时间标记", "playlist" to "音轨歌单", "worklist" to "作品集")
     private fun normalized(value: Any?): String = when(value) {
         is JSONObject -> value.keys().asSequence().filter { it!="deviceName" }.sorted().joinToString(prefix="{",postfix="}") { JSONObject.quote(it)+":"+normalized(value.get(it)) }
         is JSONArray -> (0 until value.length()).joinToString(prefix="[",postfix="]") { normalized(value.get(it)) }
@@ -16,7 +16,7 @@ internal object SyncInsights {
         val selected = SyncProtocol.selected(doc)
         val records = doc.getJSONObject("records")
         val keys = selected.keys().asSequence().toList()
-        fun pending(key: String) = !key.startsWith("playlist|") && key.split('|')[1] !in catalog.targets
+        fun pending(key: String) = !key.startsWith("playlist|") && !key.startsWith("worklist|") && key.split('|')[1] !in catalog.targets
         val summary = JSONArray()
         for ((kind,label) in kinds) {
             val rows = keys.filter { it.startsWith("$kind|") }

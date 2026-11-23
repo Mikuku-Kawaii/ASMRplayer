@@ -74,6 +74,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (20, "020_library_query_covering_indexes", include_str!("../../migrations/020_library_query_covering_indexes.sql")),
     (21, "021_download_task_dismissals", include_str!("../../migrations/021_download_task_dismissals.sql")),
     (22, "022_playlists", include_str!("../../migrations/022_playlists.sql")),
+    (23, "023_work_collections", include_str!("../../migrations/023_work_collections.sql")),
 ];
 
 #[derive(Clone)]

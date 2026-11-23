@@ -60,6 +60,7 @@ pub struct BackupStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RestoreScope {
+    Playlists,
     Subtitles,
     Favorites,
     Positions,
@@ -177,6 +178,25 @@ mod tests {
     fn bundle(s: &BackupService) -> UserBackupBundleDto {
         s.db.export_user_backup().unwrap()
     }
+    #[test]
+    fn playlist_backup_scope_preserves_order_unresolved_items_and_online_cards() {
+        use crate::db::playlists::WorkItem;
+        let (_dir, s)=fixture();
+        s.db.with_conn(|c| { c.execute_batch("INSERT INTO works(id,title,created_at,updated_at) VALUES('cloud','备份作品','now','now');
+            INSERT INTO work_sources(id,work_id,provider,source_work_id,refreshed_at) VALUES('source','cloud','asmr_one','100000041','now');")?;Ok(()) }).unwrap();
+        let p=s.db.create_typed_playlist("备份作品集",vec![],Some(vec![WorkItem::new("cloud".into())])).unwrap();
+        let track=s.db.create_playlist("旧音轨歌单",vec![]).unwrap();
+        let saved=bundle(&s);
+        s.db.delete_playlist(&p.id).unwrap();s.db.delete_playlist(&track.id).unwrap();
+        s.db.with_conn(|c|{c.execute_batch("DELETE FROM work_sources WHERE work_id='cloud';DELETE FROM works WHERE id='cloud'")?;Ok(())}).unwrap();
+        let restore=preview(&s,&saved);s.restore(&restore.token.unwrap(),vec![RestoreScope::Favorites]).unwrap();
+        assert!(s.db.list_playlists().unwrap().is_empty());
+        let restore=preview(&s,&saved);let result=s.restore(&restore.token.unwrap(),vec![RestoreScope::Playlists]).unwrap();
+        assert_eq!(result.report.playlists_restored,2);
+        let rows=s.db.list_playlists().unwrap();assert_eq!(rows[0].work_items.as_ref().unwrap()[0].id,"cloud");assert!(rows[1].work_items.is_none());
+        let cloud=s.db.get_work_detail("cloud").unwrap();assert_eq!(cloud.online_sources[0].source_work_id,"100000041");
+    }
+
     #[test]
     fn t1513_subtitle_backup_roundtrip_scope_validation_and_existing_edits_survive() {
         use crate::db::subtitles::SubtitleDocument;
@@ -502,6 +522,7 @@ fn validate(bundle: &UserBackupBundleDto) -> AppResult<()> {
 fn counts(b: &UserBackupBundleDto) -> Vec<RestoreCount> {
     use RestoreScope::*;
     [
+        (Playlists, b.playlists.lists.len()),
         (Subtitles, b.subtitle_documents.len()),
         (Favorites, b.favorites.len() + b.favorite_versions.len()),
         (Positions, b.playback_positions.len()),
@@ -518,6 +539,7 @@ fn counts(b: &UserBackupBundleDto) -> Vec<RestoreCount> {
 }
 fn select(mut b: UserBackupBundleDto, scopes: &[RestoreScope]) -> UserBackupBundleDto {
     use RestoreScope::*;
+    if !scopes.contains(&Playlists) { b.playlists = Default::default(); }
     if !scopes.contains(&Subtitles) { b.subtitle_documents.clear(); }
     if !scopes.contains(&Favorites) {
         b.favorites.clear();

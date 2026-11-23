@@ -9,6 +9,29 @@ use std::fs;
 use std::path::Path;
 use std::sync::LazyLock;
 use uuid::Uuid;
+use crate::services::library::extract_work_code;
+
+/// Older imports can have a store code in their folder or audio name but no works.rj_code.
+pub(crate) fn imported_work_code(conn: &Connection, work_id: &str, title: &str) -> AppResult<Option<String>> {
+    if let Some(code) = extract_work_code(title) {
+        return Ok(Some(code));
+    }
+    let mut stmt = conn.prepare_cached(
+        "SELECT CASE WHEN e.relative_work_path IN ('.','__root_direct__') THEN r.display_name ELSE e.relative_work_path END
+         FROM library_entries e JOIN library_roots r ON r.id=e.root_id WHERE e.work_id=?1
+         UNION ALL
+         SELECT ms.relative_path FROM tracks t JOIN track_versions tv ON tv.track_id=t.id
+         JOIN media_sources ms ON ms.version_id=tv.id
+         WHERE t.work_id=?1 AND ms.source_kind='local_imported' AND ms.relative_path IS NOT NULL"
+    )?;
+    let mut rows = stmt.query([work_id])?;
+    while let Some(row) = rows.next()? {
+        if let Some(code) = extract_work_code(&row.get::<_, String>(0)?) {
+            return Ok(Some(code));
+        }
+    }
+    Ok(None)
+}
 
 pub(crate) const WORK_SOURCE_FLAGS_SQL: &str = "SELECT t.work_id,
                 MAX(ms.source_kind IN ('local_imported','local_downloaded')),
@@ -639,7 +662,29 @@ impl Database {
     }
 
     pub fn list_works(&self, filter: &str, search: Option<&str>) -> AppResult<Vec<WorkSummary>> {
-        let recognized_works = self.recognized_subtitle_works(None)?;
+        self.work_summaries(filter, search, None)
+    }
+
+    pub(crate) fn playlist_work_summaries(&self, ids: &[String]) -> AppResult<Vec<WorkSummary>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.work_summaries("playlist", None, Some(ids))
+    }
+
+    fn work_summaries(
+        &self,
+        filter: &str,
+        search: Option<&str>,
+        playlist_ids: Option<&[String]>,
+    ) -> AppResult<Vec<WorkSummary>> {
+        // A playlist needs card metadata and listening state, without reading subtitle documents.
+        let recognized_works = match playlist_ids {
+            Some(_) => Default::default(),
+            None => self.recognized_subtitle_works(None)?,
+        };
+        let playlist_scope = playlist_ids.map(serde_json::to_string).transpose()
+            .map_err(|e| AppError::new(ErrorCode::DatabaseError, e.to_string()))?;
         self.with_conn(|conn| {
             // 1. Preload all user overrides in a single query (T901: eliminates N queries)
             let mut all_overrides: HashMap<String, BTreeMap<String, (String, Option<String>)>> =
@@ -743,10 +788,11 @@ impl Database {
                  LEFT JOIN track_versions tv_last ON tv_last.id = wps.last_version_id
                  LEFT JOIN tracks t_last ON t_last.id = tv_last.track_id
                  LEFT JOIN latest_ws lws ON lws.work_id = w.id
+                 WHERE ?2 IS NULL OR w.id IN (SELECT value FROM json_each(?2))
                  ORDER BY CASE WHEN ?1 = 'recent' THEN wps.last_played_at ELSE w.updated_at END DESC",
             )?;
 
-            let rows = stmt.query_map(params![filter], |r| {
+            let rows = stmt.query_map(params![filter, playlist_scope], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
@@ -833,7 +879,8 @@ impl Database {
 
                 let manual = ov_map.and_then(|m| m.get("nsfw")).filter(|v| v.0 == "set").and_then(|v| v.1.as_deref());
                 let nsfw = manual.and_then(|v| v.parse::<bool>().ok()).unwrap_or_else(|| nsfw_detected || content_is_nsfw(None, online_meta.as_ref(), &tags, &title));
-                if !nsfw_enabled && nsfw { continue; }
+                // Playlist callers render a redacted placeholder in its saved position.
+                if playlist_ids.is_none() && !nsfw_enabled && nsfw { continue; }
                 let has_recognized_subtitle = recognized_works.contains(&id);
                 let has_subtitle = has_recognized_subtitle || has_subtitle_metadata || subtitle_works.contains(&id) || metadata_has_subtitle(online_meta.as_ref());
 
@@ -1128,6 +1175,10 @@ impl Database {
                 is_favorite,
                 is_collected,
             ) = row;
+            let rj_code = match rj_code {
+                Some(code) if !code.is_empty() => Some(code),
+                _ => imported_work_code(conn, work_id, &base_title)?,
+            };
 
             let (title, description, circle_name, cover_ref, voice_actors, tags, overrides) =
                 Self::get_effective_work_fields(
@@ -2498,6 +2549,7 @@ impl Database {
             };
 
             Ok(UserBackupBundleDto {
+                playlists: super::playlists::PlaylistBackup::export(conn)?,
                 subtitle_documents: {
                     let mut stmt = conn.prepare("SELECT document_json,updated_at FROM subtitle_documents ORDER BY version_id,source_key")?;
                     let rows = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?;
@@ -2538,6 +2590,7 @@ impl Database {
     pub(crate) fn restore_user_backup_on_conn(conn: &mut Connection, bundle: &UserBackupBundleDto, apply: bool, restore_dsp: bool, exact_versions: bool) -> AppResult<BackupRestoreReportDto> {
         if bundle.schema_version != 1 { return Err(AppError::new(ErrorCode::InvalidInput,"不支持此备份版本")); }
         let mut report = BackupRestoreReportDto {
+            playlists_restored: 0,
             subtitles_restored: 0,
             subtitles_skipped: 0,
             favorites_restored: 0,
@@ -2634,6 +2687,7 @@ impl Database {
             }
 
             // 2. Global DSP state
+            report.playlists_restored = bundle.playlists.restore(&tx,&now)?;
             if restore_dsp {
             if let Ok(cfg_json) = serde_json::to_string(&bundle.dsp_global_config) {
                 tx.execute(

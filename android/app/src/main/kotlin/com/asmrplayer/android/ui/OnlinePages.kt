@@ -116,7 +116,7 @@ internal fun DiscoverPage(data: OnlineScreenState, tools: OnlineTools, bottom: D
         item(key = "discover-controls", span = { GridItemSpan(maxLineSpan) }) {
             Column {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    HomeSearch(query, { if (it.length <= 200) query = it }, "作品名或 RJ 号", Modifier.weight(1f),
+                    HomeSearch(query, { if (it.length <= 200) query = it }, "作品名或作品编号", Modifier.weight(1f),
                         submit = { anchor = null; tools.search(query) })
                     FilterButton("筛选", data.filters.count) { filterOpen = true; tools.loadTags() }
                 }
@@ -174,7 +174,7 @@ internal fun DiscoverPage(data: OnlineScreenState, tools: OnlineTools, bottom: D
                     }
                     CardAction("下一首播放", close, ready && state.connected) { act(OnlineTools.CardAction.Next) }
                     CardAction("加入播放队列", close, ready && state.connected) { act(OnlineTools.CardAction.Queue) }
-                    CardAction("加入歌单", close, ready) { act(OnlineTools.CardAction.Playlist) }
+                    CardAction("加入作品集", close, ready) { tools.chooseWork(work, data.account.apiBase) }
                     CardAction("下载作品", close, ready) { download(data.account.apiBase, work.sourceId) }
                 }) {
                     WorkCard(work.title,work.coverUrl,work.code,
@@ -285,6 +285,10 @@ internal fun OnlineSourcePage(data: OnlineScreenState, tools: OnlineTools, openA
                     if (relogin) MotionTextButton({ password = ""; relogin = false; tools.dismissAccountFeedback() }, enabled = idle) { Text("取消") }
                 }
             } else MaintenanceHint("选择上方的 asmr.one 官方镜像即可登录。")
+            if (data.account.hasToken && !relogin) {
+                MotionOutlinedButton(tools::previewSiteLibrary, enabled = idle && !editing) { Text("同步收藏与播放列表") }
+                data.siteLibraryNotice?.let { MaintenanceHint(it) }
+            }
             if (accountAction == "login") data.accountError?.let { MaintenanceHint(it, error = true) }
         } }
         item { MaintenanceCard {
@@ -302,6 +306,9 @@ internal fun OnlineSourcePage(data: OnlineScreenState, tools: OnlineTools, openA
             }
         } }
         if (data.accountSaving) item { LoadingRing() }
+    }
+    data.siteLibrary?.takeIf { it.account == data.account }?.let { dialog ->
+        AccountLibraryImportDialog(dialog, tools)
     }
 }
 

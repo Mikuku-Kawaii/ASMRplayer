@@ -161,7 +161,7 @@ internal fun FullPlayer(state:PlayerScreenState,model:PlayerViewModel,open:(Stri
                         }
                         PlayerTool(Glyph.Sleep,"睡眠",selected=state.session.deadlineMs!=null||state.session.endOfTrack){sheet="sleep"}
                         PlayerTool(Glyph.Sliders,"音效",selected=!state.dsp.bypass){sheet="effects"}
-                        PlayerTool(Glyph.GroupAdd,"歌单",enabled=work!=null&&!hidden){sheet="groups"}
+                        PlayerTool(Glyph.GroupAdd,"加入音轨歌单",enabled=work!=null&&!hidden){stableCurrent(state)?.let { model.choosePlaylist(listOf(it)) }}
                         PlayerTool(Glyph.More,"更多"){playbackSettings=true}
                     }
                 }
@@ -191,9 +191,8 @@ internal fun FullPlayer(state:PlayerScreenState,model:PlayerViewModel,open:(Stri
             SettingsLink("下载管理",""){playbackSettings=false;open("downloads")}
             MotionTextButton({playbackSettings=false;model.stop()}){Text("停止播放")}
         }
-        sheet?.let { kind -> PlayerSheet(when(kind){"groups"->"加入歌单";"queue"->"播放队列 · ${state.queue.size}";"sleep"->"睡眠定时";"ab"->"A–B 循环";"bookmarks"->"当前音轨标记";"effects"->"音效";"speed"->"播放速度";"note","edit-note"->"标记备注";else->"字幕与字号"},{sheet=null},contentScrolls=kind in setOf("sleep","ab","bookmarks","subtitle-settings","effects","queue")) {
+        sheet?.let { kind -> PlayerSheet(when(kind){"queue"->"播放队列 · ${state.queue.size}";"sleep"->"睡眠定时";"ab"->"A–B 循环";"bookmarks"->"当前音轨标记";"effects"->"音效";"speed"->"播放速度";"note","edit-note"->"标记备注";else->"字幕与字号"},{sheet=null},contentScrolls=kind in setOf("sleep","ab","bookmarks","subtitle-settings","effects","queue")) {
             when(kind) {
-                "groups" -> AddCurrentToGroup(state,model)
                 "queue" -> QueuePage(state,model,16.dp,locateCurrent=true,directControls=true)
                 "sleep" -> SleepPage(state,model,false,{},quick=true)
                 "ab" -> AbLoopPage(state,model)

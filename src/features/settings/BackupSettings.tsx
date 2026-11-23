@@ -13,10 +13,10 @@ import { callCommand, formatBytes, normalizeAppError, type BackupRestoreReportDt
 export interface BackupPolicy { intervalHours: number; keepCount: number }
 export interface BackupFile { id: string; createdAt: string; kind: string; bytes: number; sha256: string }
 export interface BackupStatus { policy: BackupPolicy; files: BackupFile[]; lastSuccess: string | null; lastError: string | null; nextDue: string | null; directory: string }
-export type RestoreScope = "subtitles" | "favorites" | "positions" | "bookmarks" | "abLoops" | "metadata" | "presets" | "workDsp" | "globalDsp";
+export type RestoreScope = "playlists" | "subtitles" | "favorites" | "positions" | "bookmarks" | "abLoops" | "metadata" | "presets" | "workDsp" | "globalDsp";
 export interface RestorePreview { token: string | null; schemaVersion: number; exportedAt: string; compatible: boolean; issue: string | null; counts: { scope: RestoreScope; count: number }[]; matched: BackupRestoreReportDto | null; safetyBackup: BackupFile | null }
 interface RestoreResult { report: BackupRestoreReportDto; safetyBackup: BackupFile; dspChanged: boolean; runtimeWarning?: string | null }
-const labels: Record<RestoreScope,string> = { subtitles: "字幕文档与修正", favorites: "喜欢", positions: "收听进度", bookmarks: "标记笔记", abLoops: "A–B 循环", metadata: "元数据覆盖", presets: "自定义音效预设", workDsp: "作品音效", globalDsp: "全局音效" };
+const labels: Record<RestoreScope,string> = { playlists: "作品集与音轨歌单", subtitles: "字幕文档与修正", favorites: "喜欢", positions: "收听进度", bookmarks: "标记笔记", abLoops: "A–B 循环", metadata: "元数据覆盖", presets: "自定义音效预设", workDsp: "作品音效", globalDsp: "全局音效" };
 const date = (value: string | null) => { if (!value) return "尚无记录"; const d = new Date(value); return Number.isNaN(d.getTime()) ? "时间无效" : d.toLocaleString(); };
 const kind = (value: string) => value === "automatic" ? "自动备份" : value === "before_restore" ? "恢复前副本" : "手动备份";
 
@@ -103,7 +103,7 @@ export function BackupSettings({ onRestored }: { onRestored: () => Promise<void>
       let result: RestoreResult;
       try { result=await callCommand<RestoreResult>("apply_user_backup",{token:preview.token,scopes}); }
       catch(e){ if(mounted.current)setPreview(null);throw e; }
-      if(mounted.current){setPreview(null);setNotice(`恢复完成：喜欢 ${result.report.favoritesRestored} 项 · 进度 ${result.report.positionsRestored} 项 · 标记 ${result.report.bookmarksRestored} 项 · 字幕 ${result.report.subtitlesRestored ?? 0} 份（跳过 ${result.report.subtitlesSkipped ?? 0} 份）。执行前副本已保留。${result.runtimeWarning ?? ""}`);}
+      if(mounted.current){setPreview(null);setNotice(`恢复完成：喜欢 ${result.report.favoritesRestored} 项 · 歌单 ${result.report.playlistsRestored ?? 0} 个 · 进度 ${result.report.positionsRestored} 项 · 标记 ${result.report.bookmarksRestored} 项 · 字幕 ${result.report.subtitlesRestored ?? 0} 份（跳过 ${result.report.subtitlesSkipped ?? 0} 份）。执行前副本已保留。${result.runtimeWarning ?? ""}`);}
       await reload(); await onRestored();
     })} />}
   </section>;

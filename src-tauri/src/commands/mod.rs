@@ -142,9 +142,7 @@ pub fn latest_library_batch(state: State<'_, AppState>) -> AppResult<Option<Bulk
 
 #[tauri::command]
 pub async fn get_work_detail(state: State<'_, AppState>, work_id: String) -> AppResult<WorkDetailDto> {
-    let db = state.db.clone();
-    tauri::async_runtime::spawn_blocking(move || db.get_work_detail(&work_id))
-        .await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))?
+    state.provider.library_work_detail(&work_id).await
 }
 
 #[tauri::command]
@@ -917,6 +915,26 @@ pub fn logout_asmr_one(app: AppHandle, state: State<'_, AppState>, api_base: Str
 }
 
 #[tauri::command]
+pub async fn preview_asmr_one_library(state: State<'_, AppState>) -> AppResult<crate::providers::AccountLibraryPreview> {
+    state.provider.preview_account_library().await
+}
+
+#[tauri::command]
+pub async fn decide_asmr_one_library(
+    app: AppHandle, state: State<'_, AppState>, id: String, accept: bool,
+    keep_playlists: Option<bool>, selection: Option<crate::providers::AccountLibrarySelection>,
+) -> AppResult<usize> {
+    let provider = state.provider.clone();
+    let keep_lists = keep_playlists.unwrap_or(false);
+    let save_lists = selection.as_ref().map_or(keep_lists, |s| !s.playlist_ids.is_empty());
+    let count = tauri::async_runtime::spawn_blocking(move || provider.apply_account_library(&id, accept, keep_lists, selection.as_ref()))
+        .await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))??;
+    if count > 0 { let _ = app.emit("library:affinity", ""); }
+    if accept && save_lists { let _ = app.emit("playlists:updated", ()); }
+    Ok(count)
+}
+
+#[tauri::command]
 pub fn get_file_preferences(state: State<'_, AppState>) -> AppResult<crate::services::file_preferences::FilePreferences> {
     crate::services::file_preferences::read(&state.db)
 }
@@ -1128,7 +1146,7 @@ pub async fn preview_user_backup(state: State<'_, AppState>, raw: Option<String>
     let svc=state.session.backups.clone();tokio::task::spawn_blocking(move ||svc.preview(raw,file_id,passphrase)).await.map_err(|e|AppError::new(ErrorCode::InternalError,e.to_string()))?
 }
 #[tauri::command]
-pub async fn apply_user_backup(state: State<'_, AppState>, token: String, scopes: Vec<crate::services::backup::RestoreScope>) -> AppResult<crate::services::backup::RestoreResult> {
+pub async fn apply_user_backup(app: tauri::AppHandle, state: State<'_, AppState>, token: String, scopes: Vec<crate::services::backup::RestoreScope>) -> AppResult<crate::services::backup::RestoreResult> {
     let svc=state.session.backups.clone();
     let subtitle_tasks=state.subtitle_tasks.clone();
     let mut result=tokio::task::spawn_blocking(move || {
@@ -1136,6 +1154,7 @@ pub async fn apply_user_backup(state: State<'_, AppState>, token: String, scopes
             subtitle_tasks.with_idle(|| svc.restore(&token,scopes))
         } else { svc.restore(&token,scopes) }
     }).await.map_err(|e|AppError::new(ErrorCode::InternalError,e.to_string()))??;
+    if result.report.playlists_restored > 0 { let _ = app.emit("playlists:updated", ()); }
     if result.report.subtitles_restored > 0 { state.subtitle_tasks.refresh_restored_subtitles(); }
     if result.dsp_changed {
         if let Err(e) = state.playback.reload_restored_dsp().await {

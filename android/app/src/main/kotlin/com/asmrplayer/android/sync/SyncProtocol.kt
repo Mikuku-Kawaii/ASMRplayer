@@ -38,13 +38,14 @@ internal object SyncProtocol {
         require(records.length() <= 100000)
         records.keys().forEach { key ->
             val p = key.split('|'); val rows = records.getJSONArray(key)
-            require(p.size == 3 && p[0] in listOf("work", "library", "track", "position", "bookmark", "playlist") && p[1].matches(Regex("[0-9a-f]{64}")) && p[2].length <= 128 && rows.length() in 1..100)
+            require(p.size == 3 && p[0] in listOf("work", "library", "track", "position", "bookmark", "playlist", "worklist") && p[1].matches(Regex("[0-9a-f]{64}")) && p[2].length <= 128 && rows.length() in 1..100)
             rows(rows).forEach { r ->
                 require(r.getString("device").length in 1..64 && r.getLong("seq") in 1..1_000_000_000_000 && r.getLong("clock") in 0..1_000_000_000_000)
                 val ctx = r.getJSONObject("context"); require(ctx.length() <= 1000)
                 ctx.keys().forEach { require(ctx.getLong(it) in 0..1_000_000_000_000) }
                 val v = r.get("value")
                 when (p[0]) {
+                    "worklist" -> require(SyncPlaylists.validWorks(p[1],p[2],v))
                     "playlist" -> require(SyncPlaylists.valid(p[1],p[2],v))
                     "work", "library", "track" -> require(v is Boolean)
                     "position" -> { require(v is JSONObject && v.get("completed") is Boolean); listOf("positionMs", "durationMs", "updatedMs").forEach { require(v.getLong(it) in 0..9_000_000_000_000) } }
@@ -65,6 +66,7 @@ internal object SyncProtocol {
         if (item.optString("rating") == "UNRATED" && known != null) item.put("rating",known.getString("rating"))
     }
     fun completeDescriptor(item:JSONObject, known:JSONObject?) {
+        if(!item.has("code") && known?.has("code")==true) item.put("code",known.getString("code"))
         fillUnknownRating(item,known)
         if(!item.has("localKey") && known?.has("localKey")==true) item.put("localKey",known.getString("localKey"))
         val incoming=known?.optJSONObject("tracks") ?: return
@@ -115,7 +117,7 @@ internal object SyncProtocol {
         current.keys().forEach { key -> val v = current.get(key)
             if (baseline.opt(key)?.toString() != v.toString() && (baseline.has(key) || v != false)) changes.add(key to v)
         }
-        baseline.keys().forEach { key -> if (!current.has(key) && (key.startsWith("playlist|") || (key.startsWith("bookmark|") && key.split('|')[1] in targets))) changes.add(key to JSONObject.NULL) }
+        baseline.keys().forEach { key -> if (!current.has(key) && (key.startsWith("worklist|") || key.startsWith("playlist|") || (key.startsWith("bookmark|") && key.split('|')[1] in targets))) changes.add(key to JSONObject.NULL) }
         val doc = j.getJSONObject("doc"); val context = vector(doc); val device = j.getString("device"); val records = doc.getJSONObject("records"); var clock = 0L
         records.keys().forEach { key -> rows(records.getJSONArray(key)).forEach { clock = maxOf(clock, it.getLong("clock")) } }
         changes.forEach { (key, value) ->

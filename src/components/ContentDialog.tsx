@@ -2,6 +2,9 @@ import { ReactNode, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { DialogSize, useDialogGeometry } from "./useDialogGeometry";
 
+// React 18 focuses autoFocus inputs while the dialog is still closed. Let showModal focus the field.
+export function dialogAutofocus(field: HTMLElement | null) { if (field) field.autofocus = true; }
+
 export function ContentDialog({ children, onClose, busy = false, label, size = "standard", className = "" }: { children: ReactNode; onClose: () => void; busy?: boolean; label: string; size?: DialogSize; className?: string }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useDialogGeometry(dialog, size);

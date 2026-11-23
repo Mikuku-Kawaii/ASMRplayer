@@ -39,6 +39,17 @@ class DetailTools(context:Context,private val scope:CoroutineScope) {
         updated()
         mutable.update { it.copy(notice = "作品信息已更新。") }
     }
+    fun syncLocalMetadata(workId: String, input: String) = run {
+        val notice = try {
+            backend.online.refreshMetadata(workId, input)
+            "作品元数据已同步。"
+        } catch (e: com.asmrplayer.android.online.OnlineException) {
+            e.message ?: "同步失败，请重试。"
+        } catch (_: IllegalArgumentException) {
+            "请输入有效的作品编号或站内 ID。"
+        }
+        mutable.update { it.copy(notice = notice) }
+    }
     fun download(ids:List<String>) {
         val workId=mutable.value.workId
         run {backend.downloads.enqueue(ids);workId?.let{backend.library.setMembership(it,true)};mutable.update{it.copy(notice="已提交下载任务。")}}

@@ -1472,6 +1472,27 @@ button { font-family: inherit; }
   gap: 8px;
 }
 
+.detail-work-code {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.asmr-import-group { margin: 0; padding: 0; min-width: 0; border: 0; }
+.asmr-import-group legend { width: 100%; padding: 0; }
+.asmr-import-group ul { margin: 0; padding: 0; list-style: none; }
+.asmr-import-group li { border-top: 1px solid var(--border-subtle); }
+.asmr-import-choice { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 4px 8px; cursor: pointer; }
+.asmr-import-choice input { flex: none; width: 1.1rem; height: 1.1rem; margin: 0; accent-color: var(--accent); }
+.asmr-import-choice span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.asmr-import-choice small, .asmr-import-hint { color: var(--text-secondary); }
+.asmr-import-choice small { flex: none; font-weight: normal; }
+.asmr-import-group-toggle { font-weight: 600; }
+.asmr-import-group li .asmr-import-choice { padding-inline-start: 20px; }
+.asmr-import-choice:hover { background: var(--bg-hover); border-radius: 8px; }
+
 .detail-hero-card,
 .modal-card,
 .settings-card {
@@ -5633,6 +5654,14 @@ svg.lucide-play, svg.lucide-pause { fill: currentColor; stroke-width: 0; }
 :root[data-theme^="ink_blue"] .player-bar { --transport-track: light-dark(#B8C4D4, #323944); }
 /* Saved playlists share the player drawer surface and the Android artwork/list hierarchy. */
 .playlists-panel { gap:12px; }
+.playlists-page { display:flex;flex-direction:column;padding:clamp(16px,3vw,36px);max-width:1320px;margin-inline:auto; }
+.playlists-page h2 { margin:0;overflow-wrap:anywhere; }
+.playlist-tabs { display:inline-flex;align-self:flex-start;border:1px solid var(--border-subtle);border-radius:24px;overflow:hidden; }
+.playlist-tabs button { background:transparent;color:inherit;border:0;padding:8px 18px;cursor:pointer; }
+.playlist-tabs button[aria-pressed=true] { background:var(--accent-bg);color:var(--accent);font-weight:600; }
+.playlists-page .playlist-grid { grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr)); }
+.playlists-page .playlist-tracks { max-width:980px; }
+.playlist-work-thumb { width:44px;height:44px;object-fit:cover;border-radius:6px;flex:none; }
 .playlist-toolbar,.playlist-actions,.playlist-inline-form { display:flex;align-items:center;gap:8px;flex-wrap:wrap; }
 .playlist-toolbar h4,.playlist-summary h4 { margin:0; }
 .playlist-toolbar-spacer { flex:1; }

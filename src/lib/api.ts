@@ -692,6 +692,7 @@ export interface UserBackupBundleDto {
 }
 
 export interface BackupRestoreReportDto {
+  playlistsRestored?: number;
   subtitlesRestored?: number;
   subtitlesSkipped?: number;
   favoritesRestored: number;

@@ -66,15 +66,39 @@ class AsmrOneProvider(val account: ProviderAccount, val http: HttpTransport,
         }
     }
 
-    suspend fun detail(rawId: String, base: String = account.state.value.apiBase): OnlineDetail = coroutineScope {
-        val id = AsmrJson.workId(rawId)
-        val work = async { work(id,base) }
-        val files = async { tree(base, id) }
+    internal data class WorkLookup(val id: String, val storeCode: String? = null) {
+        fun matches(work: OnlineWork) = work.sourceId == id && (storeCode == null || storeCode.equals(work.code, true))
+    }
+
+    internal suspend fun resolveWorkInput(raw: String, base: String): WorkLookup {
+        val code = raw.trim().uppercase()
+        if (!code.startsWith("VJ") && !code.startsWith("BJ")) return WorkLookup(AsmrJson.workId(raw))
+        require(LibraryIndex.workCode(code) == code && code.drop(2).any { it != '0' }) { "无效的作品编号" }
+        var page = 1
+        while (true) {
+            val body = request(base, "/api/search/$code?page=$page")
+            val result = parse { AsmrJson.page(body, page) }
+            val match = result.items.firstOrNull { it.code.equals(code, true) }
+            if (match != null) return WorkLookup(match.sourceId, code)
+            if (result.items.isEmpty() || result.pageSize <= 0 || result.page != page || page.toLong() * result.pageSize >= result.total)
+                throw OnlineException(OnlineError.NOT_FOUND, "来源未找到编号为 $code 的作品")
+            page++
+        }
+    }
+
+    suspend fun detail(rawId: String, base: String = account.state.value.apiBase): OnlineDetail =
+        detail(resolveWorkInput(rawId, base), base)
+
+    internal suspend fun detail(lookup: WorkLookup, base: String): OnlineDetail = coroutineScope {
+        val work = async { work(lookup, base) }
+        val files = async { tree(base, lookup.id) }
         OnlineDetail(work.await(), files.await())
     }
-    suspend fun work(rawId:String, base:String=account.state.value.apiBase):OnlineWork {
-        val id=AsmrJson.workId(rawId)
-        val route="/api/workInfo/${AsmrJson.workInfoId(id)}"
+    suspend fun work(rawId: String, base: String = account.state.value.apiBase): OnlineWork =
+        work(resolveWorkInput(rawId, base), base)
+
+    private suspend fun work(lookup: WorkLookup, base: String): OnlineWork {
+        val route="/api/workInfo/${AsmrJson.workInfoId(lookup.id)}"
         val body=try { metadataRequest(base,route,true) } catch(error:OnlineException) {
             if(error.code!=OnlineError.NETWORK || base !in metadataNodes) throw error
             var recovered:String?=null
@@ -86,7 +110,7 @@ class AsmrOneProvider(val account: ProviderAccount, val http: HttpTransport,
             recovered ?: throw error
         }
         return parse { readWork(body) }.also {
-            check(it.sourceId==id) { "来源返回的作品身份不一致" }
+            if (!lookup.matches(it)) throw OnlineException(OnlineError.SOURCE_CHANGED, "来源返回的作品身份不一致")
         }
     }
     private suspend fun metadataRequest(base:String,route:String,useAccount:Boolean):String = try {
@@ -144,6 +168,12 @@ class AsmrOneProvider(val account: ProviderAccount, val http: HttpTransport,
         }
         error("unreachable")
     }
+    internal suspend fun accountListPage(expected: ProviderAccountState, route: String): JSONObject {
+        val headers = withContext(Dispatchers.IO) { account.headers(expected.apiBase) }
+        if (account.state.value != expected || headers.isEmpty()) throw OnlineException(OnlineError.AUTH_REQUIRED, "请重新登录 asmr.one。")
+        val body = request(expected.apiBase, route, accountHeaders = headers)
+        return parse { JSONObject(body) }
+    }
     private fun readWork(text: String) = AsmrJson.work(JSONObject(text)).also { it.coverUrl?.let(http::validate) }
     private suspend fun <T> parse(block: suspend () -> T): T = withContext(Dispatchers.Default) {
         try { block() } catch (e: CancellationException) { throw e } catch (e: OnlineException) { throw e }
@@ -158,6 +188,7 @@ data class ImportedOnlineWork(val workId: String, val versionsByPath: Map<String
 class OnlineRepository(private val db: LibraryDatabase, val provider: AsmrOneProvider) {
     private val dao = db.library()
     val account get() = provider.account
+    val accountLibrary = AccountLibraryImport(db, provider)
     fun assets(workId: String) = dao.observeRemoteAssets(workId)
     suspend fun browse(query: String = "", page: Int = 1, order: String = "release", ascending: Boolean = false, filters:BrowseFilters=BrowseFilters()): OnlinePage {
         val prefs = dao.observePreferences().first() ?: LibraryPreference()
@@ -178,12 +209,15 @@ class OnlineRepository(private val db: LibraryDatabase, val provider: AsmrOnePro
     }
 
     suspend fun detail(id: String, force: Boolean = false): OnlineDetail {
-        val key = DetailKey(account.state.value, AsmrJson.workId(id))
+        val selectedAccount = account.state.value
+        val lookup = provider.resolveWorkInput(id, selectedAccount.apiBase)
+        if (account.state.value != selectedAccount) throw CancellationException("来源已切换")
+        val key = DetailKey(selectedAccount, lookup.id)
         return detailLocks[(key.hashCode() and Int.MAX_VALUE) % detailLocks.size].withLock {
             val now = android.os.SystemClock.elapsedRealtime()
             val cached = detailCache.get(key)
-            if (!force && cached != null && now - cached.loadedMs < 300_000) return@withLock cached.value
-            val fresh = try { provider.detail(key.id, key.account.apiBase) }
+            if (!force && cached != null && now - cached.loadedMs < 300_000 && lookup.matches(cached.value.work)) return@withLock cached.value
+            val fresh = try { provider.detail(lookup, key.account.apiBase) }
             catch (e: OnlineException) {
                 if (e.code in setOf(OnlineError.AUTH_REQUIRED, OnlineError.NOT_FOUND)) detailCache.remove(key)
                 throw e
@@ -207,15 +241,13 @@ class OnlineRepository(private val db: LibraryDatabase, val provider: AsmrOnePro
             artworkChanged = artworkChanged || old == null || old.coverUri != detail.work.coverUrl
             dao.putWork(LibraryWork(workId, null, "", detail.work.title, detail.work.code, detail.work.coverUrl,
                 old?.favorite ?: false, old?.rating ?: detail.work.rating, old?.inLibrary == true || addToLibrary))
-            db.metadata().put(CatalogMetadata(workId, detail.work.circle, org.json.JSONArray(detail.work.voices).toString(),
-                org.json.JSONArray(detail.work.tags).toString(),detail.work.description,detail.work.release,
-                detail.work.hasSubtitle||detail.files.any{it.kind=="subtitle"},base,detail.work.sourceId))
+            db.metadata().put(detail.work.catalogMetadata(workId, base, detail.work.hasSubtitle || detail.files.any { it.kind == "subtitle" }))
             dao.invalidateOnlineWork(workId)
             val versionsByPath = detail.files.filter { it.kind == "audio" }.associate { file ->
                 val trackId = LibraryIndex.id(workId, "track", file.path.substringBeforeLast('.'))
                 val versionId = file.versionId(workId)
                 dao.putTrack(LibraryTrack(trackId, workId, file.title, file.path.substringBeforeLast('/', "")))
-                dao.putVersion(TrackVersion(versionId, trackId, file.format))
+                dao.putVersion(TrackVersion(versionId, trackId, file.format, file.durationMs?.takeIf { it > 0 }))
                 dao.putRemote(RemoteMedia(versionId, base, detail.work.sourceId, file.id, file.path, file.bytes, file.format))
                 dao.putSource(MediaSource(LibraryIndex.id(versionId, "online"), versionId, null, file.path,
                     "asmr-online://$versionId", file.bytes ?: 0, modifiedMs = if (file.id.startsWith("${detail.work.sourceId}:path:")) revision else 0, kind = "online_provider"))
@@ -244,9 +276,7 @@ class OnlineRepository(private val db: LibraryDatabase, val provider: AsmrOnePro
             val old=requireNotNull(dao.work(workId)) { "作品已移除" }
             dao.putWork(old.copy(title=work.title,code=work.code,coverUri=work.coverUrl ?: old.coverUri,
                 rating=if(old.rating=="UNRATED") work.rating else old.rating))
-            db.metadata().put(CatalogMetadata(workId,work.circle,org.json.JSONArray(work.voices).toString(),
-                org.json.JSONArray(work.tags).toString(),work.description,work.release,work.hasSubtitle,
-                selectedAccount.apiBase,work.sourceId))
+            db.metadata().put(work.catalogMetadata(workId, selectedAccount.apiBase))
         }
         com.asmrplayer.android.artwork.CoverArtwork.invalidate(workId)
     }

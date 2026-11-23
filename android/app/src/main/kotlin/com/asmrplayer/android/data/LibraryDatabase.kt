@@ -21,7 +21,7 @@ data class LibraryTrack(@PrimaryKey val id: String, val workId: String, val titl
 
 @Entity(tableName = "track_versions", foreignKeys = [ForeignKey(entity = LibraryTrack::class,
     parentColumns = ["id"], childColumns = ["trackId"])], indices = [Index("trackId")])
-data class TrackVersion(@PrimaryKey val id: String, val trackId: String, val format: String)
+data class TrackVersion(@PrimaryKey val id: String, val trackId: String, val format: String, val durationMs: Long? = null)
 
 @Entity(tableName = "media_sources", foreignKeys = [ForeignKey(entity = TrackVersion::class,
     parentColumns = ["id"], childColumns = ["versionId"])], indices = [Index("versionId"), Index("rootId"), Index("uri")])
@@ -59,9 +59,9 @@ data class SessionRecord(@PrimaryKey val id: Int = 1, val queueJson: String, val
 data class LibraryPreference(@PrimaryKey val id: Int = 1, val includeNsfw: Boolean = false, val includeUnrated: Boolean = true)
 
 data class VersionDetail(val id: String, val trackId: String, val workId: String, val title: String,
-    val groupPath: String, val format: String, val available: Boolean)
+    val groupPath: String, val format: String, val available: Boolean, val durationMs: Long? = null)
 
-private const val VERSION_ROWS = "SELECT v.id, v.trackId, t.workId, t.title, t.groupPath, v.format, EXISTS(SELECT 1 FROM media_sources s WHERE s.versionId = v.id AND s.available = 1) AS available FROM track_versions v JOIN tracks t ON t.id = v.trackId"
+private const val VERSION_ROWS = "SELECT v.id, v.trackId, t.workId, t.title, t.groupPath, v.format, COALESCE(v.durationMs,(SELECT NULLIF(p.durationMs,0) FROM playback_positions p WHERE p.versionId=v.id)) AS durationMs, EXISTS(SELECT 1 FROM media_sources s WHERE s.versionId = v.id AND s.available = 1) AS available FROM track_versions v JOIN tracks t ON t.id = v.trackId"
 internal const val WORK_WITH_COVER = "SELECT w.id,w.rootId,w.relativePath,w.title,w.code,COALESCE((SELECT a.uri FROM work_assets a JOIN remote_assets r ON a.id = r.id WHERE r.workId = w.id AND r.kind = 'cover' AND a.available = 1 LIMIT 1),w.coverUri) AS coverUri,w.favorite,w.rating,w.inLibrary FROM works w"
 
 @Dao
@@ -147,7 +147,7 @@ interface LibraryDao {
 
 @Database(entities = [LibraryRoot::class, LibraryWork::class, LibraryTrack::class, TrackVersion::class,
     MediaSource::class, SubtitleSource::class, WorkAsset::class, SubtitlePreference::class, PlaybackPosition::class,
-    Bookmark::class, SessionRecord::class, LibraryPreference::class, RemoteMedia::class, RemoteAsset::class, DownloadTask::class, VersionPreference::class, CatalogMetadata::class, com.asmrplayer.android.sync.SyncState::class, QueueGroup::class], version = 8, exportSchema = true)
+    Bookmark::class, SessionRecord::class, LibraryPreference::class, RemoteMedia::class, RemoteAsset::class, DownloadTask::class, VersionPreference::class, CatalogMetadata::class, com.asmrplayer.android.sync.SyncState::class, QueueGroup::class], version = 9, exportSchema = true)
 abstract class LibraryDatabase : RoomDatabase() {
     abstract fun library(): LibraryDao
     abstract fun metadata(): CatalogMetadataDao
@@ -155,7 +155,7 @@ abstract class LibraryDatabase : RoomDatabase() {
     abstract fun queueGroups(): QueueGroupDao
     companion object {
         fun open(context: Context): LibraryDatabase = Room.databaseBuilder(context.applicationContext,
-            LibraryDatabase::class.java, "asmr-library.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, com.asmrplayer.android.sync.MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8).build()
+            LibraryDatabase::class.java, "asmr-library.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, com.asmrplayer.android.sync.MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9).build()
     }
 }
 

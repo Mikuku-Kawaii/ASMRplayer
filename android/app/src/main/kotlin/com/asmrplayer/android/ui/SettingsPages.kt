@@ -28,7 +28,7 @@ private data class SettingEntry(
 
 private val settingsEntries=listOf(
     SettingEntry("资料库与同步","作品目录与扫描","导入、目录授权与重新扫描","directories","文件夹 本地路径"),
-    SettingEntry("资料库与同步","在线来源","asmr.one 账号登录、镜像与访问凭据","online-source","asmrone 个人推荐 API Token"),
+    SettingEntry("资料库与同步","在线来源","asmr.one 账号、收藏与播放列表、镜像与访问凭据","online-source","asmrone 个人推荐 同步歌单 API Token"),
     SettingEntry("资料库与同步","跨设备同步","GitHub Gist、OneDrive、WebDAV 和 Supabase","sync","局域网 自动同步"),
     SettingEntry("资料库与同步","资料备份与恢复","作品、喜欢、进度、标记与媒体授权","backup","还原 数据迁移"),
     SettingEntry("下载与存储","任务中心","离线下载、扫描、同步与双端继续收听","tasks","下载管理 失败任务"),

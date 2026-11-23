@@ -506,6 +506,8 @@ pub fn run() {
             commands::list_association_history,
             commands::get_app_settings,
             commands::login_asmr_one,
+            commands::preview_asmr_one_library,
+            commands::decide_asmr_one_library,
             commands::logout_asmr_one,
             commands::get_theme_preset,
             commands::set_theme_preset,

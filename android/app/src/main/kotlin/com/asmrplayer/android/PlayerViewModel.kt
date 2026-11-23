@@ -93,13 +93,17 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
     val tools = LibraryTools(application, viewModelScope)
     val incoming = com.asmrplayer.android.incoming.IncomingTools(application, viewModelScope, tools::message)
-    private val playlistSelection = MutableStateFlow<List<String>?>(null)
+    data class PlaylistSelection(val ids: List<String> = emptyList(), val works: List<com.asmrplayer.android.data.CollectionWork>? = null)
+    private val playlistSelection = MutableStateFlow<PlaylistSelection?>(null)
     val playlistTarget = playlistSelection.asStateFlow()
     fun choosePlaylist(ids: List<String>) {
         val selected = ids.distinct()
         if (selected.isEmpty()) { feedback("没有可加入的音轨"); return }
         if (selected.size > 500) { feedback("每个歌单最多 500 首音轨"); return }
-        playlistSelection.value = selected
+        playlistSelection.value = PlaylistSelection(ids = selected)
+    }
+    fun chooseWork(id: String, directory: String? = null, format: String? = null) {
+        playlistSelection.value = PlaylistSelection(works = listOf(com.asmrplayer.android.data.CollectionWork(id, directory, format)))
     }
     fun closePlaylistPicker() { playlistSelection.value = null }
     val queueGroups = QueueGroupTools(application, viewModelScope, ::feedback)
@@ -109,7 +113,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     val maintenance = MaintenanceTools(application, viewModelScope) {
         check(send(LibraryPlayback.SAVE_SESSION, Bundle.EMPTY).resultCode == SessionResult.RESULT_SUCCESS)
     }
-    val online = OnlineTools(application, viewModelScope, enqueue=::enqueue, feedback=::feedback, playlist=::choosePlaylist, play=::playGroup)
+    val online = OnlineTools(application, viewModelScope, enqueue=::enqueue, feedback=::feedback, playlist=::choosePlaylist, collection=::chooseWork, play=::playGroup)
     private val sessionMutex = Mutex()
     private val mainExecutor = ContextCompat.getMainExecutor(application)
     private val connection = MediaController.Builder(application, SessionToken(application, ComponentName(application, PlaybackService::class.java)))
@@ -389,6 +393,14 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     fun repeat(mode: Int) { if (mode in 0..2) playbackOrder(PlaybackOrder.from(mode,false)) }
     fun playbackOrder(order:PlaybackOrder) { controller?.let { it.repeatMode=order.repeatMode;it.shuffleModeEnabled=order.shuffle } }
     fun playGroup(ids: List<String>, fromStart: Boolean = false, startVersion:String?=null) = playVersionsAt(ids, if(fromStart) 0 else null,ids.indexOf(startVersion).coerceAtLeast(0))
+    fun playSaved(group: com.asmrplayer.android.data.QueueGroup, append: Boolean = false, start: String? = null) {
+        val prefs = screenState.value.filePreferences
+        val args = Bundle().apply {
+            putString("playlistId", group.id); putString("effects", prefs.effects.key); putString("format", prefs.format.key)
+            start?.let { putString("startVersion", it) }
+        }
+        toolCommand(if (append) LibraryPlayback.ENQUEUE else LibraryPlayback.PLAY_VERSIONS, args, if (append) "已加入队列" else "已开始播放")
+    }
     fun enqueue(ids: List<String>, next: Boolean = false) {
         if(ids.isEmpty()) return
         toolCommand(LibraryPlayback.ENQUEUE, Bundle().apply {

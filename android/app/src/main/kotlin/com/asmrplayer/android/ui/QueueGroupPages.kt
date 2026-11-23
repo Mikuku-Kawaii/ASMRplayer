@@ -30,16 +30,18 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.util.UnstableApi
 import com.asmrplayer.android.*
+import com.asmrplayer.android.data.CollectionWork
+import com.asmrplayer.android.data.QueueGroup
 import kotlinx.coroutines.launch
 
 @Composable
-private fun NewPlaylistDialog(busy: Boolean, error: String?, create: (String) -> Unit, cancel: () -> Unit) {
+private fun NewPlaylistDialog(label: String, busy: Boolean, error: String?, create: (String) -> Unit, cancel: () -> Unit) {
     var name by rememberSaveable { mutableStateOf("") }
     val canCreate = name.isNotBlank() && !busy
     val submit = { if (canCreate) create(name.trim()) }
     PlayerAlertDialog(
         onDismissRequest = { if (!busy) cancel() },
-        title = { Text("新建歌单") },
+        title = { Text("新建$label") },
         text = {
             OutlinedTextField(name, { name = it.take(80) }, Modifier.fillMaxWidth(), enabled = !busy, singleLine = true,
                 label = { Text("歌单名称") }, isError = error != null,
@@ -47,7 +49,7 @@ private fun NewPlaylistDialog(busy: Boolean, error: String?, create: (String) ->
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { submit() }))
         },
-        confirmButton = { MotionTextButton(submit, enabled = canCreate) { Text("创建歌单") } },
+        confirmButton = { MotionTextButton(submit, enabled = canCreate) { Text("创建") } },
         dismissButton = { MotionTextButton(cancel, enabled = !busy) { Text("取消") } }
     )
 }
@@ -80,9 +82,9 @@ private fun PlaylistArt(works:List<LibraryAudio>, modifier:Modifier) {
 }
 
 @Composable
-private fun playlistWorks(ids:List<String>,state:PlayerScreenState):List<LibraryAudio> =
-    remember(ids,state.lookup,state.showNsfw,state.includeUnrated) {
-        ids.asSequence().mapNotNull(state.lookup::forVersion).filter{visibleRating(it.rating,state)}.distinctBy{it.id}.take(4).toList()
+private fun playlistWorks(group:QueueGroup,state:PlayerScreenState):List<LibraryAudio> =
+    remember(group,state.lookup,state.showNsfw,state.includeUnrated) {
+        group.ids().asSequence().mapNotNull { if(group.isWorks) state.lookup.byId[it] else state.lookup.forVersion(it) }.filter{visibleRating(it.rating,state)}.distinctBy{it.id}.take(4).toList()
     }
 
 @UnstableApi
@@ -90,8 +92,12 @@ private fun playlistWorks(ids:List<String>,state:PlayerScreenState):List<Library
 internal fun QueueGroupsPage(state: PlayerScreenState, model: PlayerViewModel, bottom: Dp, open: (String)->Unit) {
     val data by model.queueGroups.state.collectAsStateWithLifecycle()
     var creating by rememberSaveable { mutableStateOf(false) }
-    if (creating) NewPlaylistDialog(data.busy, data.error, { name ->
-        model.queueGroups.create(name) { id -> creating = false; open("queue-group:$id") }
+    var category by rememberSaveable { mutableStateOf("works") }
+    val works = category=="works"
+    val label = if(works) "作品集" else "音轨歌单"
+    val groups = data.groups.filter { it.isWorks == works }
+    if (creating) NewPlaylistDialog(label,data.busy, data.error, { name ->
+        model.queueGroups.create(name,works=if(works) emptyList() else null) { id -> creating = false; open("queue-group:$id") }
     }, { creating = false })
     LazyVerticalGrid(GridCells.Adaptive(145.dp * LocalDensity.current.fontScale.coerceIn(1f, 1.8f)),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = bottom),
@@ -119,27 +125,30 @@ internal fun QueueGroupsPage(state: PlayerScreenState, model: PlayerViewModel, b
             }
         }
         item(span = { GridItemSpan(maxLineSpan) }) { Row(Modifier.fillMaxWidth().padding(top=8.dp),verticalAlignment=Alignment.CenterVertically) {
-            Text("我的歌单",Modifier.weight(1f).semantics { heading() },style=MaterialTheme.typography.titleLarge)
-            MotionTextButton({creating=true},enabled=!data.busy && !creating){AppGlyph(Glyph.Plus);Text("新建歌单")}
+            PageTabs(category,listOf("works" to "作品集","tracks" to "音轨歌单"),Modifier.weight(1f)) { category=it }
+            MotionTextButton({ creating = true }, enabled = !data.busy && !creating) {
+                AppGlyph(Glyph.Plus)
+                Text("新建")
+            }
         } }
 
-        if(data.ready && data.groups.isEmpty() && !creating) item(span = { GridItemSpan(maxLineSpan) }) { MaintenanceHint("新建歌单后，可以从音频库挑选音轨并保存播放顺序。") }
-        items(data.groups,key={it.id}) { group ->
+        if(data.ready && groups.isEmpty() && !creating) item(span = { GridItemSpan(maxLineSpan) }) { MaintenanceHint(if(works) "从音频库或发现加入整部作品。" else "从作品详情挑选音轨，按喜欢的顺序收听。") }
+        items(groups,key={it.id}) { group ->
             val ids=remember(group){group.ids()}
             CardActions(group.name, menu = { close ->
                 CardAction("打开歌单", close) { open("queue-group:${group.id}") }
-                CardAction("播放歌单", close, state.connected && group.ids().isNotEmpty()) { model.playGroup(group.ids()) }
-                CardAction("加入播放队列", close, state.connected && group.ids().isNotEmpty()) { model.enqueue(group.ids()) }
+                CardAction("播放歌单", close, state.connected && group.ids().isNotEmpty()) { model.playSaved(group) }
+                CardAction("加入播放队列", close, state.connected && group.ids().isNotEmpty()) { model.playSaved(group,append=true) }
             }) {
                 Column(Modifier.workListCard().clickable(onClickLabel = "打开歌单") { open("queue-group:${group.id}") }) {
-                    PlaylistArt(playlistWorks(ids,state),Modifier.fillMaxWidth().aspectRatio(4f / 3f))
+                    PlaylistArt(playlistWorks(group,state),Modifier.fillMaxWidth().aspectRatio(4f / 3f))
                     Row(Modifier.fillMaxWidth().padding(start=9.dp,end=4.dp,top=4.dp,bottom=4.dp),
                         verticalAlignment=Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(group.name,maxLines=2,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.titleSmall)
-                            Text("${ids.size} 首音轨",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("${ids.size} ${if(group.isWorks) "部作品" else "首音轨"}",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        if(ids.isNotEmpty()) GlyphButton(Glyph.Play,"播放歌单 ${group.name}",{model.playGroup(ids)},state.connected)
+                        if(ids.isNotEmpty()) GlyphButton(Glyph.Play,"播放歌单 ${group.name}",{model.playSaved(group)},state.connected)
                     }
                 }
             }
@@ -150,11 +159,17 @@ internal fun QueueGroupsPage(state: PlayerScreenState, model: PlayerViewModel, b
 
 @UnstableApi
 @Composable
-internal fun SavedQueuePage(id: String, state: PlayerScreenState, model: PlayerViewModel, bottom: Dp, back: ()->Unit) {
+internal fun SavedQueuePage(id: String, state: PlayerScreenState, model: PlayerViewModel, bottom: Dp, back: ()->Unit, open:(String)->Unit) {
     val data by model.queueGroups.state.collectAsStateWithLifecycle()
     val group=data.groups.firstOrNull{it.id==id}
-    if(group==null) { Column(Modifier.padding(20.dp)){GroupFeedback(data);if(data.ready)EmptyContent("歌单不存在","返回队列页查看其他歌单。",Glyph.Folder) else if(data.error==null)LoadingRing()};return }
-    val ids=group.ids()
+    if(group==null) { Column(Modifier.padding(20.dp)){GroupFeedback(data);if(data.ready)EmptyContent("歌单不存在","返回歌单页查看其他歌单。",Glyph.Folder) else if(data.error==null)LoadingRing()};return }
+    val ids=remember(group){group.ids()}
+    val collection by model.collections.state.collectAsStateWithLifecycle()
+    val history=remember(collection.history) { collection.history.groupBy { it.workId } }
+    val compatible=data.groups.filter { it.isWorks==group.isWorks }
+    val itemName=if(group.isWorks) "作品" else "音轨"
+    var converting by rememberSaveable(id) { mutableStateOf(false) }
+    LaunchedEffect(id) { model.queueGroups.touch(id) }
     var picker by remember { mutableStateOf(false) }
     var options by remember { mutableStateOf(false) }
     var editing by rememberSaveable(id) { mutableStateOf(false) }
@@ -170,41 +185,55 @@ internal fun SavedQueuePage(id: String, state: PlayerScreenState, model: PlayerV
                 GlyphButton(Glyph.Check,"保存名称",{model.queueGroups.rename(id,name){renaming=false}},name.isNotBlank()&&!data.busy)
                 GlyphButton(Glyph.Close,"取消修改",{renaming=false;name=group.name})
             } else Row(Modifier.fillMaxWidth().padding(vertical=8.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(16.dp)){
-                PlaylistArt(playlistWorks(ids,state),Modifier.size(76.dp))
+                PlaylistArt(playlistWorks(group,state),Modifier.size(76.dp))
                 Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(4.dp)){
                     Text(group.name,style=MaterialTheme.typography.titleLarge,maxLines=2,overflow=TextOverflow.Ellipsis)
-                    Text("${ids.size} 首音轨",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("${ids.size} ${if(group.isWorks) "部作品" else "首音轨"}",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             Row(verticalAlignment=Alignment.CenterVertically) {
-                if(ids.isEmpty()) MotionButton({picker=true},enabled=!data.busy){AppGlyph(Glyph.Plus);Text("添加音轨")}
-                else MotionButton({model.playGroup(ids)},enabled=state.connected){AppGlyph(Glyph.Play);Text("播放全部")}
+                if(ids.isEmpty()) MotionButton({picker=true},enabled=!data.busy){AppGlyph(Glyph.Plus);Text("添加$itemName")}
+                else MotionButton({model.playSaved(group)},enabled=state.connected){AppGlyph(Glyph.Play);Text("播放全部")}
                 Spacer(Modifier.weight(1f))
                 if (ids.isNotEmpty()) MotionTextButton({ editing = !editing }) { Text(if (editing) "完成" else "编辑") }
-                if(ids.isNotEmpty()) GlyphButton(Glyph.GroupAdd,"添加音轨",{picker=true})
+                if(ids.isNotEmpty()) GlyphButton(Glyph.GroupAdd,"添加$itemName",{picker=true})
                 GlyphButton(Glyph.More,"歌单操作",{options=true})
             }
         }
         LazyColumn(Modifier.weight(1f),state=list,contentPadding=PaddingValues(start=20.dp,end=20.dp,bottom=bottom),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-            if(ids.isEmpty())item { EmptyContent("还没有音轨","从音频库选几首加入这个歌单。",Glyph.Queue) }
+            if(ids.isEmpty())item { EmptyContent("还没有$itemName","从音频库选择要加入的$itemName。",Glyph.Queue) }
             itemsIndexed(ids,key={_,version->version}) { index,version ->
-                val work=state.lookup.forVersion(version)
+                val work=if(group.isWorks) state.lookup.byId[version] else state.lookup.forVersion(version)
                 val entry=work?.versions?.firstOrNull{it.id==version};val hidden=work!=null&&!visibleRating(work.rating,state)
-                val active=state.queue.getOrNull(state.index)?.id==version
-                CardActions(if (hidden) "音轨操作" else entry?.title ?: "音轨操作", enabled = !editing, menu = { close ->
-                    val playable = state.connected && entry?.available == true
-                    CardAction("从此音轨播放", close, playable) { model.playGroup(ids, startVersion = version) }
-                    CardAction("下一首播放", close, playable) { model.enqueue(listOf(version), true) }
-                    CardAction("加入歌单", close, entry != null && !hidden) { model.choosePlaylist(listOf(version)) }
+                val active=if(group.isWorks) state.currentWork?.id==version else state.queue.getOrNull(state.index)?.id==version
+                val title=when { hidden->"内容已隐藏";group.isWorks->work?.title ?: "作品待匹配";else->entry?.title?.let(::trackDisplayTitle) ?: "音轨待匹配" }
+                val heard=history[work?.id].orEmpty()
+                val progress=when {
+                    work==null -> "暂不可用"
+                    heard.isEmpty() -> "未收听"
+                    work.versions.isNotEmpty() && work.versions.map { it.trackId }.distinct().all { chapter->work.versions.any { v->v.trackId==chapter && heard.any { it.versionId==v.id && it.completed } } } -> "已听完"
+                    else -> "听到 " + time(heard.first().positionMs)
+                }
+                val sub=when {hidden->"";group.isWorks->progress;else->listOfNotNull(work?.title,entry?.durationMs?.let(::time),entry?.format?.uppercase()).joinToString(" · ")}
+                val canOpen=if(group.isWorks) work!=null && !hidden else state.connected && !hidden && entry?.available==true
+                fun openItem() { if(group.isWorks) open("audio:$version") else model.playSaved(group,start=version) }
+                CardActions(title, enabled = !editing, menu = { close ->
+                    if(group.isWorks) CardAction("作品详情",close,canOpen) { openItem() }
+                    else {
+                        CardAction("从此音轨播放", close, canOpen) { openItem() }
+                        CardAction("下一首播放", close, canOpen) { model.enqueue(listOf(version), true) }
+                        CardAction("加入音轨歌单", close, entry != null && !hidden) { model.choosePlaylist(listOf(version)) }
+                    }
                     CardAction("编辑歌单", close) { editing = true }
                 }) {
                     Surface(shape=MaterialTheme.shapes.medium,color=if(active)MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface) {
                         Row(Modifier.fillMaxWidth().padding(start=8.dp),verticalAlignment=Alignment.CenterVertically) {
                             Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                                 Text("${index+1}",Modifier.width(28.dp).alignByBaseline(),style=MaterialTheme.typography.labelSmall)
-                                Column(Modifier.weight(1f).alignByBaseline().clickable(enabled=state.connected&&entry?.available==true){model.playGroup(ids,startVersion=version)}.padding(vertical=14.dp)) {
-                                    Text(if(hidden)"内容已隐藏" else trackDisplayTitle(entry?.title?:"音轨不可用"),maxLines=2,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.titleSmall)
-                                    Text(if(dragging==index)"松开移至第 ${target+1} 首" else if(active)if(state.playRequested)"正在播放" else "当前音轨 · 已暂停" else if(hidden)"" else work?.title.orEmpty(),maxLines=1,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                if(group.isWorks && work!=null && !hidden) AudioArtwork(Modifier.padding(end=8.dp).size(44.dp),work.coverUri,workId=work.id)
+                                Column(Modifier.weight(1f).clickable(enabled=canOpen){openItem()}.padding(vertical=12.dp)) {
+                                    Text(title,maxLines=2,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.titleSmall)
+                                    Text(if(dragging==index)"松开移至第 ${target+1} 项" else sub,maxLines=1,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
                             if (editing) GlyphButton(Glyph.Close,"移出歌单",{model.queueGroups.remove(id,version)},!data.busy)
@@ -218,61 +247,107 @@ internal fun SavedQueuePage(id: String, state: PlayerScreenState, model: PlayerV
             }
         }
     }
-    if(picker)PlayerSheet("添加音轨",{picker=false},contentScrolls=true){GroupTrackPicker(state,ids,data.busy){selected->model.queueGroups.add(id,selected){picker=false}}}
+    if(picker)PlayerSheet("添加$itemName",{picker=false},contentScrolls=true) {
+        val choices=remember(state.lookup,state.showNsfw,state.includeUnrated,group.isWorks) {
+            state.library.filter { it.inLibrary && visibleRating(it.rating,state) }.flatMap { w ->
+                if(group.isWorks) listOf(PlaylistChoice(w.id,w.title,w.code.orEmpty()))
+                else w.versions.filter { it.available }.map { PlaylistChoice(it.id,trackDisplayTitle(it.title),w.title+" · "+it.format.uppercase()) }
+            }
+        }
+        PlaylistMemberChoices(choices,ids,data.busy,"添加",if(group.isWorks) Int.MAX_VALUE else 500) { selected ->
+            model.queueGroups.addSelection(group,if(group.isWorks) emptyList() else selected,if(group.isWorks) selected.map(::CollectionWork) else null) { picker=false }
+        }
+    }
+    if(converting) ConvertPlaylist(group,state,model,{converting=false}) { newId -> converting=false;open("queue-group:$newId") }
     if(options)PlayerSheet("歌单操作",{options=false}) {
+        if(!group.isWorks && ids.isNotEmpty())SettingsLink("整理为作品集","按所属作品另存"){options=false;converting=true}
+        if(ids.isNotEmpty())SettingsLink("加入播放队列",""){options=false;model.playSaved(group,append=true)}
         SettingsLink("重命名",""){options=false;renaming=true}
-        if(data.groups.indexOf(group)>0)SettingsLink("上移歌单",""){model.queueGroups.moveGroup(id,-1);options=false}
-        if(data.groups.indexOf(group)<data.groups.lastIndex)SettingsLink("下移歌单",""){model.queueGroups.moveGroup(id,1);options=false}
+        if(compatible.indexOf(group)>0)SettingsLink("上移歌单",""){model.queueGroups.moveGroup(id,-1);options=false}
+        if(compatible.indexOf(group)<compatible.lastIndex)SettingsLink("下移歌单",""){model.queueGroups.moveGroup(id,1);options=false}
         SettingsLink("删除歌单","保留音频文件与当前播放队列"){model.queueGroups.delete(group){options=false;back()}}
     }
 }
 
-@UnstableApi
-@Composable
-private fun GroupTrackPicker(state: PlayerScreenState, existing: List<String>, busy: Boolean, add: (List<String>)->Unit) {
-    var query by rememberSaveable {mutableStateOf("")};var selected by rememberSaveable{mutableStateOf(listOf<String>())}
-    val tracks=state.library.filter{it.inLibrary&&visibleRating(it.rating,state)}.flatMap{work->work.versions.filter{it.available}.map{work to it}}.filter{(work,track)->query.isBlank()||track.title.contains(query,true)||work.title.contains(query,true)}
-    Column(Modifier.fillMaxWidth().padding(horizontal=20.dp)) {
-        PageSearch(query,{query=it},"搜索音轨或作品")
-        LazyColumn(Modifier.weight(1f, fill = false)) {items(tracks,key={it.second.id}){(work,track)->
-            val included=track.id in existing
-            Row(Modifier.fillMaxWidth().clickable(enabled=!included&&!busy){selected=if(track.id in selected)selected-track.id else selected+track.id}.padding(vertical=8.dp),verticalAlignment=Alignment.CenterVertically) {
-                Checkbox(included||track.id in selected,null,enabled=!included&&!busy)
-                Column(Modifier.weight(1f)){Text(trackDisplayTitle(track.title),maxLines=2,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.bodyMedium);Text(if(included)"已在歌单中" else work.title,maxLines=1,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.bodySmall)}
-            }
-        }}
-        MotionButton({add(selected)},Modifier.fillMaxWidth().padding(vertical=12.dp),enabled=selected.isNotEmpty()&&!busy){Text("添加 ${selected.size} 首")}
-    }
-}
+internal data class PlaylistChoice(val id:String,val title:String,val subtitle:String)
 
-@UnstableApi
 @Composable
-internal fun AddCurrentToGroup(state: PlayerScreenState, model: PlayerViewModel) {
-    val version = stableCurrent(state)
-    AddTracksToGroup(listOfNotNull(version), model)
-}
-
-@UnstableApi
-@Composable
-internal fun AddTracksToGroup(ids: List<String>, model: PlayerViewModel) {
-    val data by model.queueGroups.state.collectAsStateWithLifecycle()
-    var creating by rememberSaveable(ids) { mutableStateOf(false) }
-    GroupFeedback(data)
-    if (ids.isEmpty()) Text("没有可加入的音轨。", style=MaterialTheme.typography.bodyMedium)
-    else {
-        Text("已选择 ${ids.size} 首音轨", style=MaterialTheme.typography.bodySmall, color=MaterialTheme.colorScheme.onSurfaceVariant)
-        data.groups.forEach { group ->
-            val included = ids.all { it in group.ids() }
-            Row(Modifier.fillMaxWidth().heightIn(min=56.dp).clickable(enabled=!included&&!data.busy) {
-                model.queueGroups.add(group.id, ids) { model.feedback("已加入「${group.name}」") }
-            }, verticalAlignment=Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) { Text(group.name, style=MaterialTheme.typography.titleSmall);Text("${group.ids().size} 首", style=MaterialTheme.typography.bodySmall) }
-                AppGlyph(if(included)Glyph.Check else Glyph.GroupAdd, tint=if(included)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+internal fun PlaylistMemberChoices(choices:List<PlaylistChoice>, existing:List<String>, busy:Boolean, verb:String, max:Int,
+    initiallySelected:List<String> = emptyList(), enabled:Boolean = true, submit:(List<String>)->Unit) {
+    var query by rememberSaveable { mutableStateOf("") }
+    var selected by rememberSaveable { mutableStateOf(initiallySelected) }
+    val filtered=remember(query,choices) { choices.filter { it.title.contains(query.trim(),true) || it.subtitle.contains(query.trim(),true) } }
+    Column(Modifier.fillMaxWidth()) {
+        PageSearch(query,{query=it},"搜索名称")
+        LazyColumn(Modifier.weight(1f,fill=false)) {
+            if(filtered.isEmpty()) item { Text("没有符合条件的条目",Modifier.padding(vertical=12.dp)) }
+            items(filtered,key={it.id}) { choice ->
+                val included=choice.id in existing
+                val checked=choice.id in selected
+                val editable=!busy && !included && (checked || existing.size+selected.size<max)
+                Row(Modifier.fillMaxWidth().clickable(enabled=editable){selected=if(checked) selected-choice.id else selected+choice.id}.padding(vertical=6.dp),verticalAlignment=Alignment.CenterVertically) {
+                    Checkbox(included || checked,null,enabled=editable)
+                    Column(Modifier.weight(1f)) {
+                        Text(choice.title,maxLines=2,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.bodyMedium)
+                        Text(if(included) "已加入" else choice.subtitle,style=MaterialTheme.typography.bodySmall)
+                    }
+                }
             }
         }
-        if (creating) NewPlaylistDialog(data.busy, data.error, { name ->
-            model.queueGroups.create(name, ids) { creating = false; model.feedback("已加入「$name」") }
-        }, { creating = false })
-        else MotionOutlinedButton({creating=true}, Modifier.fillMaxWidth(), enabled=!data.busy) { AppGlyph(Glyph.GroupAdd);Spacer(Modifier.width(8.dp));Text("新建歌单并加入") }
+        MotionButton({submit(choices.map { it.id }.filter { it in selected })},Modifier.fillMaxWidth().padding(vertical=8.dp),enabled=enabled && !busy && selected.isNotEmpty()){Text("$verb（${selected.size}）")}
     }
+}
+
+@UnstableApi
+@Composable
+private fun ConvertPlaylist(group:QueueGroup,state:PlayerScreenState,model:PlayerViewModel,close:()->Unit,done:(String)->Unit) {
+    val data by model.queueGroups.state.collectAsStateWithLifecycle()
+    val choices=remember(group,state.lookup,state.showNsfw,state.includeUnrated) {
+        group.ids().mapNotNull { id->state.lookup.forVersion(id)?.takeIf { visibleRating(it.rating,state) }?.let { it to id } }
+            .groupBy({ it.first.id },{ it }).map { (id,members)->
+                val work=members.first().first
+                val versions=members.mapTo(hashSetOf()) { it.second }
+                val tracks=work.versions.filter { it.id in versions }.distinctBy { it.trackId }.size
+                PlaylistChoice(id,work.title,"已收 $tracks / ${work.versions.distinctBy { it.trackId }.size} 轨")
+            }
+    }
+    var name by rememberSaveable(group.id) { mutableStateOf(group.name.take(74)+" · 作品集") }
+    PlayerSheet("整理为作品集",close,contentScrolls=true) {
+        Column {
+            OutlinedTextField(name,{name=it.take(80)},Modifier.fillMaxWidth(),singleLine=true,label={ Text("新作品集名称") })
+            GroupFeedback(data)
+            PlaylistMemberChoices(choices,emptyList(),data.busy,"另存为作品集",Int.MAX_VALUE,choices.map { it.id },name.isNotBlank()) { ids->
+                model.queueGroups.create(name,works=ids.map(::CollectionWork),done=done)
+            }
+        }
+    }
+}
+
+@UnstableApi
+@Composable
+internal fun AddTracksToGroup(ids:List<String>, model:PlayerViewModel, works:List<CollectionWork>?=null, close:()->Unit={}) {
+    val data by model.queueGroups.state.collectAsStateWithLifecycle()
+    var creating by rememberSaveable { mutableStateOf(false) }
+    var query by rememberSaveable { mutableStateOf("") }
+    val label=if(works!=null) "作品集" else "音轨歌单"
+    val recent=model.queueGroups.recent()
+    val groups=data.groups.filter { it.isWorks==(works!=null) && it.name.contains(query.trim(),true) }
+        .sortedBy { recent.indexOf(it.id).takeIf { i->i>=0 } ?: Int.MAX_VALUE }
+    val members=works?.map { it.id } ?: ids
+    Column(Modifier.fillMaxWidth()) {
+        GroupFeedback(data)
+        PageSearch(query,{query=it},"搜索$label")
+        LazyColumn(Modifier.weight(1f,fill=false)) {
+            if(data.ready && groups.isEmpty())item { Text("没有符合条件的$label",Modifier.padding(vertical=12.dp)) }
+            items(groups,key={it.id}) { group->
+                val included=members.all { it in group.ids() }
+                Row(Modifier.fillMaxWidth().heightIn(min=56.dp).clickable(enabled=!included && !data.busy) { model.queueGroups.addSelection(group,ids,works,close) },verticalAlignment=Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) { Text(group.name,style=MaterialTheme.typography.titleSmall);Text("${group.ids().size} ${if(works!=null) "部作品" else "首音轨"}",style=MaterialTheme.typography.bodySmall) }
+                    AppGlyph(if(included) Glyph.Check else Glyph.GroupAdd)
+                }
+            }
+        }
+        MotionOutlinedButton({creating=true},Modifier.fillMaxWidth(),enabled=!data.busy && members.isNotEmpty()){AppGlyph(Glyph.Plus);Text("新建并加入")}
+    }
+    if(creating)NewPlaylistDialog(label,data.busy,data.error,{name->model.queueGroups.create(name,ids,works){creating=false;close()}},{creating=false})
 }

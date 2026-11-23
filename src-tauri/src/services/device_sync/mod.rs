@@ -246,8 +246,8 @@ impl SyncService {
             if let Some((key,device,seq))=resolve {let v=j.doc.records.get(key).and_then(|v|v.iter().find(|r|r.device==device && r.seq==seq)).ok_or_else(||fail("记录已变化，请重新同步后选择"))?.value.clone();j.edit(key.into(),v);}
             j.doc.validate().map_err(fail)?;catalog.use_verified_keys(&j.doc);let selected=j.doc.selected();catalog.restore_likes(&tx,&j.doc,&selected)?;catalog.apply(&tx,&selected)?;j.baseline=catalog.snapshot(&tx)?;
             let targets=catalog.targets();
-            let pending=j.doc.records.keys().filter(|k|!k.starts_with("playlist|")&&!targets.contains(k.split('|').nth(1).unwrap_or(""))).count()+playlist_sync::referenced(&selected).difference(&targets).count();
-            for (key,value) in selected.iter().filter(|(key,_)|key.starts_with("playlist|")){if let Some(name)=value["name"].as_str(){catalog.names.insert(key.split('|').nth(1).unwrap_or("").into(),format!("歌单 · {name}"));}}
+            let pending=j.doc.records.keys().filter(|k|!k.starts_with("playlist|")&&!k.starts_with("worklist|")&&!targets.contains(k.split('|').nth(1).unwrap_or(""))).count()+playlist_sync::referenced(&selected).difference(&targets).count();
+            for (key,value) in selected.iter().filter(|(key,_)|key.starts_with("playlist|")||key.starts_with("worklist|")){if let Some(name)=value["name"].as_str(){catalog.names.insert(key.split('|').nth(1).unwrap_or("").into(),format!("歌单 · {name}"));}}
             tx.execute("INSERT INTO app_settings(key,value_json,updated_at) VALUES('device_sync_pending',?1,'') ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",[pending.to_string()])?;
             tx.execute("INSERT INTO app_settings(key,value_json,updated_at) VALUES('device_sync_names',?1,'') ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",[codec::to_string(&catalog.names)?])?;
             if incoming.is_some() || resolve.is_some() {

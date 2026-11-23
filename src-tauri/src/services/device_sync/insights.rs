@@ -8,15 +8,15 @@ pub fn describe(doc: &Document, before: &Values, catalog: &Catalog, device: &str
     let targets = catalog.targets();
     let selected = doc.selected();
     let kinds = [("library", "音频库作品"), ("work", "喜欢作品"), ("track", "收藏音轨"),
-        ("position", "收听进度"), ("bookmark", "时间标记"), ("playlist", "歌单")];
+        ("position", "收听进度"), ("bookmark", "时间标记"), ("playlist", "音轨歌单"), ("worklist", "作品集")];
     let summary: Vec<_> = kinds.iter().map(|(kind, label)| {
         let rows: Vec<_> = selected.iter().filter(|(k,_)|k.starts_with(&format!("{kind}|"))).collect();
         json!({"kind":kind,"label":label,
             "total":rows.iter().filter(|(_,v)|!v.is_null() && **v != Value::Bool(false)).count(),
             "received":rows.iter().filter(|(k,v)|before.get(*k).map(normalized).unwrap_or(Value::Null)!=normalized(v) && doc.records[*k].last().is_some_and(|r|r.device!=device)).count(),
-            "pending":rows.iter().filter(|(k,_)|*kind!="playlist" && !targets.contains(k.split('|').nth(1).unwrap_or(""))).count()})
+            "pending":rows.iter().filter(|(k,_)|!matches!(*kind,"playlist"|"worklist") && !targets.contains(k.split('|').nth(1).unwrap_or(""))).count()})
     }).collect();
-    let pending: Vec<_> = selected.iter().filter(|(k,_)|!k.starts_with("playlist|") && !targets.contains(k.split('|').nth(1).unwrap_or("")))
+    let pending: Vec<_> = selected.iter().filter(|(k,_)|!k.starts_with("playlist|") && !k.starts_with("worklist|") && !targets.contains(k.split('|').nth(1).unwrap_or("")))
         .take(50).map(|(k,_)|{
             let target=k.split('|').nth(1).unwrap_or("");
             let label=catalog.names.get(target).cloned().or_else(||doc.online_works.get(target).map(|w|w.title.clone()))

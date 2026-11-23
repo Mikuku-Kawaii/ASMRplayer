@@ -166,6 +166,11 @@ internal class LibrarySessionCoordinator(
         }
     }
 
+    private suspend fun requestedVersions(args: Bundle): List<String> {
+        val group = args.getString("playlistId") ?: return requireNotNull(args.getStringArrayList("versionIds")).also { require(it.size <= 500) }
+        return backend.playlistVersions(group, FilePreferences(EffectPreference.from(args.getString("effects")), AudioFormatPreference.from(args.getString("format"))))
+    }
+
     fun command(action: String, args: Bundle): ListenableFuture<SessionResult> {
         val token = if (action == LibraryPlayback.PLAY_VERSIONS) { ++addGeneration; ++generation } else generation
         return future {
@@ -217,9 +222,9 @@ internal class LibrarySessionCoordinator(
                         }
                     }
                     LibraryPlayback.PLAY_VERSIONS -> {
-                        val ids = requireNotNull(args.getStringArrayList("versionIds"))
-                        val index = args.getInt("index")
-                        require(ids.isNotEmpty() && ids.size <= 500 && index in ids.indices)
+                        val ids = requestedVersions(args)
+                        val index = args.getString("startVersion")?.let(ids::indexOf) ?: args.getInt("index")
+                        require(index in ids.indices)
                         val resolved = ids.map { backend.library.playbackReference(it) }
                         // Commit the outgoing track before looking up the target, including replay of the current item.
                         flush()
@@ -254,11 +259,10 @@ internal class LibrarySessionCoordinator(
                         removedItem = null
                     }
                     LibraryPlayback.ENQUEUE -> {
-                        val ids = requireNotNull(args.getStringArrayList("versionIds"))
-                        require(ids.isNotEmpty() && ids.size + player.mediaItemCount <= 500)
+                        val ids = requestedVersions(args)
+                        require(ids.isNotEmpty())
                         val resolved = ids.map { backend.library.playbackReference(it) }
                         if (generation != token) return@future SessionResult(SessionError.INFO_CANCELLED)
-                        require(resolved.size + player.mediaItemCount <= 500)
                         val items = resolved.map { v ->
                             stableIds.add(v.versionId); titles[v.versionId] = v.title
                             metadata(MediaItem.Builder().setMediaId(v.versionId).setUri(v.uri).build())

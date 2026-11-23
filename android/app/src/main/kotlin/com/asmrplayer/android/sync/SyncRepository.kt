@@ -82,8 +82,8 @@ class SyncRepository(private val context: Context, private val database: Library
             catalog.apply(db, selected)
             val targets=catalog.targets
             j.put("baseline", catalog.snapshot(db)).put("cache", cache).put("names", JSONObject(catalog.names))
-            j.put("pending", doc.getJSONObject("records").keys().asSequence().count { !it.startsWith("playlist|") && it.split('|')[1] !in targets } + SyncPlaylists.referenced(selected).count { it !in targets })
-            for (key in selected.keys().asSequence().filter { it.startsWith("playlist|") && !selected.isNull(it) }) catalog.names[key.split('|')[1]]="歌单 · ${selected.getJSONObject(key).getString("name")}"
+            j.put("pending", doc.getJSONObject("records").keys().asSequence().count { !it.startsWith("playlist|") && !it.startsWith("worklist|") && it.split('|')[1] !in targets } + SyncPlaylists.referenced(selected).count { it !in targets })
+            for (key in selected.keys().asSequence().filter { (it.startsWith("playlist|") || it.startsWith("worklist|")) && !selected.isNull(it) }) catalog.names[key.split('|')[1]]="歌单 · ${selected.getJSONObject(key).getString("name")}"
             j.put("names",JSONObject(catalog.names))
             if (remote != null || resolution != null) {
                 val (details,resume)=SyncInsights.describe(doc,before,catalog,j.getString("device"))

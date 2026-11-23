@@ -7,10 +7,9 @@
 
 架构方向：Kotlin / Jetpack Compose + Media3 原生后台播放，优先复用桌面领域规则和现有 Android DSP 原型；详见 [架构评估与实施边界](ANDROID_PORT.md)。
 
-
 ### 下一阶段：云端构建与厂商系统集成
 
-下一阶段优先完成 AN009 的 Android 云端签名配置与联合构建验证，以及 AN018.S 的公开注册邮件投递。AN016.V 在取得适用音乐场景的厂商准入后接入专属接口。
+优先推进 AN009 的 Android 云端签名与联合构建验证，以及 AN018.S 的公开注册邮件投递。AN016.V 待取得适用音乐场景的厂商准入后推进。
 
 - [ ] **AN009** 云端发行：在 GitHub Actions 配置 Android 签名 Secrets 并验证联合构建。
 - [ ] **AN018.S** 为 Supabase 配置面向普通用户的 SMTP 确认邮件投递。

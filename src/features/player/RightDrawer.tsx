@@ -8,7 +8,6 @@ import { AudioOutputPanel } from "./AudioOutputPanel";
 import { BookmarkNotes } from "./BookmarkNotes";
 import { ImmersionPanel } from "./ImmersionPanel";
 import { useImmersionDrawerMotion } from "./useImmersionDrawerMotion";
-import { Playlists } from "./PlaylistDrawer";
 import { PlaylistMenuItem } from "./PlaylistPicker";
 import { subtitleWindows } from "../../lib/subtitleWindow";
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
@@ -44,7 +43,7 @@ import {
 } from "../../lib/api";
 
 interface RightDrawerProps {
-  activeTab: "none" | "queue" | "playlists" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio";
+  activeTab: "none" | "queue" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio";
   playerToolsTrigger?: React.RefObject<HTMLButtonElement>;
   onClose: () => void;
   snapshot: PlaybackSnapshot;
@@ -590,7 +589,6 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
           {activeTab === "queue"
             ? `播放队列 (${snapshot.queue.length})`
             : showImmersion ? <><Sparkles size={14} aria-hidden="true" /><span>沉浸设置</span></>
-            : activeTab === "playlists" ? "歌单"
             : activeTab === "bookmarks"
             ? "标记 · 循环 · 睡眠定时"
             : activeTab === "dsp"
@@ -639,7 +637,6 @@ export const RightDrawer: React.FC<RightDrawerProps> = ({
       </div>
 
       {showImmersion && <ImmersionPanel />}
-      {activeTab === "playlists" && <Playlists onSnapshotChange={onSnapshotChange} />}
       {queueMenu && <ContextMenu x={queueMenu.x} y={queueMenu.y} label="队列音轨操作" onClose={() => setQueueMenu(null)}><PlaylistMenuItem target={{ versionIds: [queueMenu.version] }} onClose={() => setQueueMenu(null)} /></ContextMenu>}
 
       {activeTab === "audio" && (

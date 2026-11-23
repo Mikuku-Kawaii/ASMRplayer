@@ -42,8 +42,7 @@ internal class SessionPersistence(private val database: LibraryDatabase) {
     companion object {
         fun encode(ids: List<String>) = JSONArray(ids).toString()
         fun decode(text: String): List<String> {
-            require(text.length <= 64 * 1024)
-            val array = JSONArray(text); require(array.length() <= 500)
+            val array = JSONArray(text)
             return List(array.length()) { array.getString(it) }
         }
     }

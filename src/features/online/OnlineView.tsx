@@ -303,7 +303,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
         "prepare_work_download",
         {
           workId: detail.id,
-          rjOrId: w.rjCode ?? w.sourceWorkId,
+          rjOrId: w.sourceWorkId,
         }
       );
       setDlPreview(prev);
@@ -407,7 +407,7 @@ export const OnlineView: React.FC<OnlineViewProps> = ({
             <input
               type="text"
               className="input-text"
-              placeholder="搜索关键词、RJ号、声优或标签..."
+              placeholder="搜索关键词、作品编号、声优或标签..."
               aria-label="搜索在线作品"
               maxLength={200}
               pattern="[^$\u0000-\u001f\u007f]*"

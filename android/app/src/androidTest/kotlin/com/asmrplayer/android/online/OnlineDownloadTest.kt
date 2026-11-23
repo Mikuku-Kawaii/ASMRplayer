@@ -9,6 +9,8 @@ import com.asmrplayer.android.data.*
 import com.asmrplayer.android.download.DownloadRepository
 import com.asmrplayer.android.library.LibraryIndex
 import com.asmrplayer.android.library.LibraryRepository
+import com.asmrplayer.android.library.RootMode
+import com.asmrplayer.android.library.ScannedDocument
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import org.json.JSONObject
@@ -73,6 +75,39 @@ class OnlineDownloadTest {
         assertTrue(library.work(workId)!!.inLibrary)
         online.importWork("123456",addToLibrary=false)
         assertTrue(library.work(workId)!!.inLibrary)
+    }
+    @Test fun localVjMetadataUsesExactStoreCodeAndSurvivesRescan() = runBlocking {
+        val root = LibraryRoot("test-root", "content://fixture/root", "本地目录", "WORK")
+        db.library().putRoot(root)
+        val preview = LibraryIndex.build(root.title, listOf(ScannedDocument("01 [vj01002150].wav", "content://fixture/01")), RootMode.WORK)
+        library.commit(root, preview)
+        val id = LibraryIndex.id(root.id, "work", "")
+        val local = library.work(id)!!
+        val localVersion = library.versions(id).first().single().id
+        db.library().putPosition(PlaybackPosition(localVersion, 1200, 3000))
+        assertEquals("VJ01002150", local.code)
+        val exact = """{"id":100000041,"source_id":"VJ01002150","title":"来源标题","name":"来源社团"}"""
+        val other = """{"id":1002150,"source_id":"RJ01002150","title":"VJ01002150"}"""
+        server.browseResponse = { request ->
+            val first = request.path.endsWith("page=1")
+            200 to """{"works":[${if (first) other else exact}],"pagination":{"currentPage":${if (first) 1 else 2},"pageSize":1,"totalCount":2}}"""
+        }
+        server.metadataBody = exact
+        server.requests.clear()
+        online.refreshMetadata(id, local.code!!)
+        assertEquals(listOf("/api/search/VJ01002150?page=1", "/api/search/VJ01002150?page=2", "/api/workInfo/100000041"),
+            server.requests.map { it.path })
+        library.commit(root, preview)
+        assertEquals("来源标题", library.work(id)!!.title)
+        assertEquals("100000041", db.metadata().forWork(id)!!.sourceId)
+        assertEquals("来源社团", db.metadata().forWork(id)!!.circle)
+        assertEquals(localVersion, library.versions(id).first().single().id)
+        assertEquals(1200L, library.position(localVersion)!!.positionMs)
+        server.browseResponse = { 200 to """{"works":[$other]}""" }
+        assertEquals(OnlineError.NOT_FOUND, (runCatching { online.refreshMetadata(id, "VJ01002150") }.exceptionOrNull() as OnlineException).code)
+        server.browseResponse = { 200 to """{"works":[${exact.replace("VJ01002150","BJ01002150")}]}""" }
+        assertEquals(OnlineError.SOURCE_CHANGED, (runCatching { online.refreshMetadata(id, "bj01002150") }.exceptionOrNull() as OnlineException).code)
+        assertEquals("VJ01002150", library.work(id)!!.code)
     }
     @Test fun resume206KeepsIdentityAndProgressWhileSwitchingOffline() = runBlocking {
         val first = online.importWork("123456")

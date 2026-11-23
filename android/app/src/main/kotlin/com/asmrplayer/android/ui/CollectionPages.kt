@@ -198,15 +198,22 @@ internal fun CollectionPage(favorites: Boolean, state: PlayerScreenState, model:
                     val work = summary.work
                     val meta=state.metadata[work.id]
                     val versions = state.lookup.byId[work.id]?.versions.orEmpty()
+                    val remote = meta?.takeIf { versions.isEmpty() && work.rootId == null && it.sourceId.isNotBlank() &&
+                        work.id == LibraryIndex.id("asmr_one", it.origin, it.sourceId) }
                     CardActions(work.title, menu = { close ->
+                        val online by model.online.state.collectAsStateWithLifecycle()
                         val first = versions.firstOrNull { it.available }
                         val ids = versions.filter { it.available && it.groupPath == first?.groupPath && it.format == first?.format }.map { it.id }
-                        val playable = state.connected && ids.isNotEmpty()
+                        val canLoad = remote != null && remote.origin == online.account.apiBase && remote.sourceId !in online.savingWorks
+                        val playable = state.connected && (ids.isNotEmpty() || canLoad)
+                        fun withTracks(action: OnlineTools.CardAction, localAction: () -> Unit) {
+                            if (remote == null) localAction() else model.online.cardAction(remote.origin, remote.sourceId, action)
+                        }
                         CardAction("作品详情", close) { open("audio:${work.id}") }
-                        CardAction("播放作品", close, playable) { model.playGroup(ids) }
-                        CardAction("下一首播放", close, playable) { model.enqueue(ids, true) }
-                        CardAction("加入播放队列", close, playable) { model.enqueue(ids) }
-                        CardAction("加入歌单", close, ids.isNotEmpty()) { model.choosePlaylist(com.asmrplayer.android.data.preferredPlaylistVersions(versions)) }
+                        CardAction("播放作品", close, playable) { withTracks(OnlineTools.CardAction.Play) { model.playGroup(ids) } }
+                        CardAction("下一首播放", close, playable) { withTracks(OnlineTools.CardAction.Next) { model.enqueue(ids, true) } }
+                        CardAction("加入播放队列", close, playable) { withTracks(OnlineTools.CardAction.Queue) { model.enqueue(ids) } }
+                        CardAction("加入作品集", close) { model.chooseWork(work.id) }
                         CardAction(if (work.favorite) "取消喜欢" else "喜欢作品", close) { model.toggleFavorite(work.id) }
                         CardAction(if (work.inLibrary) "移出音频库" else "加入音频库", close) {
                             model.setLibraryMembership(work.id, !work.inLibrary)
@@ -215,7 +222,7 @@ internal fun CollectionPage(favorites: Boolean, state: PlayerScreenState, model:
                         WorkCard(work.title,work.coverUri,work.code,
                             listOf(if(state.playRequested && state.currentWork?.id == work.id)"正在播放" else if(summary.completedCount==summary.versionCount&&summary.versionCount>0)"听过" else if(summary.playedCount>0)"未听完" else "未听",
                                 if(summary.importedCount>0)"本地" else if(summary.downloadedCount>0)"已下载" else "在线"),
-                            if(meta?.voices().isNullOrEmpty())"${summary.versionCount} 首音轨" else "",meta?.tags().orEmpty(),
+                            if(remote == null && meta?.voices().isNullOrEmpty())"${summary.versionCount} 首音轨" else "",meta?.tags().orEmpty(),
                             {open("audio:${work.id}")},onTag={tag->applyFilter(condition.copy(tags=(condition.tags+tag).distinct().take(5)))},
                             favorite=work.favorite,like={model.toggleFavorite(work.id)},nsfw=work.rating=="NSFW",hasSubtitle=summary.hasSubtitle,
                             inLibrary=work.inLibrary,save={ model.setLibraryMembership(work.id, !work.inLibrary) },workId=work.id,voices=meta?.voices().orEmpty(),onVoice={voice->applyFilter(condition.copy(voices=(condition.voices+voice).distinct()))})
@@ -298,7 +305,7 @@ internal fun CollectionList(category: String, state: PlayerScreenState, model: P
         }
         if (category == "bookmarks") items(if(reverse)bookmarks.reversed() else bookmarks, key = { it.bookmark.id }) { entry ->
             val actions: CardMenu = { close ->
-                CardAction("加入歌单", close) { model.choosePlaylist(listOf(entry.bookmark.versionId)) }
+                CardAction("加入音轨歌单", close) { model.choosePlaylist(listOf(entry.bookmark.versionId)) }
                 DropdownMenuItem(text={Text("编辑备注")},onClick={close();editing=entry.bookmark})
                 DropdownMenuItem(text={Text("作品详情")},onClick={close();open("audio:${entry.workId}")})
                 DropdownMenuItem(text={Text("删除标记")},enabled=entry.bookmark.id !in data.busyIds,onClick={close();model.collections.removeBookmark(entry.bookmark.id)})
@@ -332,7 +339,7 @@ internal fun CollectionList(category: String, state: PlayerScreenState, model: P
                 CardAction("播放音轨", close, playable) { model.playVersion(entry.versionId); open("player") }
                 CardAction("下一首播放", close, playable) { model.enqueue(listOf(entry.versionId), true) }
                 CardAction("加入播放队列", close, playable) { model.enqueue(listOf(entry.versionId)) }
-                CardAction("加入歌单", close) { model.choosePlaylist(listOf(entry.versionId)) }
+                CardAction("加入音轨歌单", close) { model.choosePlaylist(listOf(entry.versionId)) }
                 CardAction(if (liked) "取消收藏音轨" else "收藏音轨", close, entry.versionId !in data.busyIds) {
                     model.collections.favorite(entry.versionId, !liked)
                 }
@@ -407,7 +414,7 @@ internal fun QueuePage(state: PlayerScreenState, model: PlayerViewModel, bottom:
                 val hidden=work!=null&&!visibleRating(work.rating,state)
                 CardActions(if (hidden) "音轨操作" else entry.title, enabled = !editing, menu = { close ->
                     CardAction("播放此音轨", close, state.connected) { model.select(index) }
-                    CardAction("加入歌单", close, !hidden && work != null) { model.choosePlaylist(listOf(entry.id)) }
+                    CardAction("加入音轨歌单", close, !hidden && work != null) { model.choosePlaylist(listOf(entry.id)) }
                     CardAction("编辑队列", close) { editing = true }
                 }) {
                     Surface(shape=MaterialTheme.shapes.medium,color=if(index==state.index)MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow) {

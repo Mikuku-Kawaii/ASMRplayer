@@ -18,7 +18,7 @@ AN007.R32：在线 `OnlineWork.score: Double?` 接受来源 `rate_average_2dp` �
 
 AN007.R31：本应用控制器通过 `LibraryPlayback.SEEK_POSITION` 提交 `versionId` 与 `positionMs`，服务验证仍为当前版本、非直播且可定位或处于 IDLE；负值截为 0，已知时长时限制上界。先 seek，再仅在 IDLE 时 prepare，保持原有 playWhenReady，不主动 play。结果沿用会话响应与持久化流程；UI 的 `canPrepareSeek` 配合已保存时长允许暂停恢复会话操作。未知时长或不可定位流不开放进度条。
 
-`val backend = AndroidBackend.get(application)`（`com.asmrplayer.android.data`）。进程级单例，内部 Room 数据库 `asmr-library.db`，schema 8；1→2 新增在线引用/下载任务，2→3 新增附件引用，3→4 新增音轨版本喜欢，4→5 新增作品元数据，5→6 新增同步状态，6→7 新增作品 `inLibrary` 标记（默认 1，保留已有作品），7→8 新增保存的队列分组。保留任务 ID、状态、续传信息、库、进度和会话，不做破坏性迁移。
+`val backend = AndroidBackend.get(application)`（`com.asmrplayer.android.data`）。进程级单例，内部 Room 数据库 `asmr-library.db`，schema 9；1→2 新增在线引用/下载任务，2→3 新增附件引用，3→4 新增音轨版本喜欢，4→5 新增作品元数据，5→6 新增同步状态，6→7 新增作品 `inLibrary` 标记（默认 1，保留已有作品），7→8 新增保存的队列分组，8→9 增加作品集和音轨时长。保留任务 ID、状态、续传信息、库、进度和会话，不做破坏性迁移。
 
 `backend.library`：
 
@@ -85,8 +85,11 @@ AN007.R14 将作品 `inLibrary` 与 `favorite` 分开：普通音频库只列主
 | `account.setApiBase(origin)` | HTTPS origin，不带路径/query/用户信息；切换来源后重新加载列表。不同 origin 分开保存 Token，旧库的来源引用仍使用原 origin。 |
 | `account.login(origin, name, password)` | 向当前官方镜像的 `POST /api/auth/me` 提交官网账号名和密码。登录成功后按来源保存账号名与加密令牌。密码只用于当次请求。 |
 | `account.setToken(tokenOrNull)` | 手动设置当前来源的 Bearer Token，由 Android Keystore AES-GCM 加密保存。传 null 或空串会清除该来源的账号名和令牌。 |
+| `accountLibrary.preview()` | 使用当前账号逐页读取「我的收藏」以及自建、已收藏的播放列表。按站内作品 ID 合并，返回待加入的作品和库中已有数量。关闭或拒绝预览时直接丢弃结果。 |
+| `accountLibrary.confirm(preview)` | 核对账号、来源及库中最新状态，在一个 Room 事务中加入缺少的作品并返回新增数量。首次打开或播放在线作品时再加载音轨目录。 |
 | `browse(query="", page=1, order="release", ascending=false)` | 返回 `OnlinePage(items, page, pageSize, total)`。order 支持 popular、recommend、release、dl_count、rate_average_2dp、id、create_date 和 review_count。使用本地库的 NSFW 及未分级偏好，total 是来源总数，过滤后本页可能不足 pageSize。 |
-| `detail(id)` | 接受数字或 RJ 编号，返回作品元数据和目录树展开后的音频/字幕/图片条目；不改本地库。返回的媒体 URL 只供当次请求使用，不能持久化。 |
+| `detail(id)` | 接受站内数字 ID 或 RJ、VJ、BJ 作品编号。VJ 和 BJ 按完整编号精确搜索，以站内 ID 读取详情和音频、字幕、图片目录。返回的媒体 URL 只供当次请求使用。 |
+| `refreshMetadata(workId, sourceId)` | 为现有作品同步标题、封面、社团、声优与标签等资料。来源参数接受与 `detail` 相同的编号。本地作品沿用原来的作品 ID、音轨版本和收听记录。 |
 | `importWork(id, addToLibrary=true)` | 导入或刷新版本及附件引用，返回 `ImportedOnlineWork(workId, versionIds, assetIds, coverAssetId)`。临时播放/加入队列/喜欢操作传 false，只缓存播放资料；主动入库和下载传 true。false 不会移除已有入库状态。保留喜欢、分级、进度、书签和下载附件；来源消失只标记在线引用不可用。 |
 | `assets(workId)` | Flow<List<RemoteAsset>>：id/workId/relativePath/kind/format/byteSize/available；kind 为 subtitle/image/cover，available 只表示上次刷新时远端存在。不是本地下载完成状态，不能据此显示离线可用。 |
 
@@ -151,7 +154,7 @@ AN007.R27：`SubtitleTimeline.display(positionMs, offsetMs)` 仅供播放页摘�
 
 ## 版本化资料导入/导出（AN009 底层）
 
-入口 `backend.backups`。当前格式为 UTF-8 JSON，`format = "asmr-player.android.library"`、`version = 4`，与 Room schema 8 独立版本化。v4 保存作品入库标记和队列分组；兼容 v1/v2/v3，旧作品按原版本规则保留入库状态；v1 不含音轨喜欢，不覆盖已有音轨喜欢。仅接受该格式，不直接打开桌面 SQLite、桌面备份 JSON 或其他应用的数据文件。资料包是明文用户资料，不是整个应用目录的镜像。
+入口 `backend.backups`。当前资料包为 UTF-8 JSON，`format = "asmr-player.android.library"`，版本为 5，与 Room schema 9 独立版本化。支持导入 v1 至 v5 资料包。音频文件和 SAF 授权由本机管理。
 
 包含根目录逻辑 ID/名称/分组方式、作品/音轨/版本、稳定在线引用、本地来源相对路径、收藏/分级、进度、书签、字幕关联/原译文选择/偏移、资料库内容过滤偏好和已保存队列的稳定版本 ID 顺序。排除媒体与字幕正文、下载文件/任务/缓存、设备绝对路径/URI、持久授权、Token/账号配置、签名链接、DSP/主题等设备设置，以及活动 A–B/睡眠截止。使用者应另行保留原媒体目录；下载附件和封面可用已有 AN006 接口重新下载。
 
@@ -262,17 +265,12 @@ Room schema 6 的 `device_sync_state` 保留设备身份、合并日志、基线
 `WidgetConfigurationActivity` 验证本应用组件身份，提供示意背景上的同布局预览，草稿仅在“应用到桌面”保存；取消保留原外观。预览不注册真实播放 PendingIntent。R3 的布局、喜欢/入库操作和媒体隐私保持不变。
 
 
-## 保存的队列分组（AN007.R23）
+## 作品集和音轨歌单
 
-Room v8 通过 `MIGRATION_7_8` 新增 `queue_groups(id,name,versionIds,sortOrder)`，不改运行会话表。`backend.queueGroups.groups` 提供排序后的 Flow；`create/rename/add/remove/move/moveGroup/delete/restore` 均以事务写入。名称 1–80 字符，音轨使用稳定 version ID，最多 500 首，加入时去重并检查版本存在；重排传入预期顺序以拒绝过期拖动。删除仅移除分组记录。
+Room v9 为 `queue_groups` 增加可空的 `workItems`，并为音轨版本增加可选时长。迁移保留旧歌单 ID、名称和版本顺序。空作品集保存为 `[]`，音轨歌单的这个字段为 `null`。作品成员保存稳定作品 ID，可指定相对目录和音频格式。音轨歌单保存最多 500 个精确的版本 ID。
 
-UI 选择播放时仍调用既有 `PlayerViewModel.playGroup` / `LibraryPlayback.play`；浏览分组、添加和移出不会改变当前服务队列、播放位置、喜欢或入库状态。分组不拥有独立播放器或播放游标。
+`QueueGroupRepository` 在事务中执行创建、去重、移动、删除和撤销。移动时核对原顺序。旧音轨歌单可以按所属作品另存为作品集，同一章节的多个格式只计一次。播放器通过 MediaSession 命令中的 `playlistId` 读取已保存列表。播放作品集时按每部作品的目录、格式或文件偏好解析章节。
 
-资料包当前版本为 v4，增加 queue_groups，并校验组内版本引用。v1/v2 按既有规则升级后，v3 补空分组升级到 v4；KEEP_EXISTING 保留本机同 ID 分组，REPLACE_USER_DATA 显式覆盖名称、顺序与音轨列表。此版本没有增加跨设备同步分组协议。
+设备同步继续使用 schema 1。音轨歌单沿用 `playlistRecords`。作品集使用 `records` 中的 `worklist` 记录，值包含有序的作品身份、可选目录和格式。旧客户端会拒绝含新记录的同步包。两端升级后可同步这两类歌单。未匹配的引用以 `sync:<SHA-256>` 保留，重复同步可以匹配新入库的音源。
 
-
-### 歌单跨端同步与操作入口（2026-11-10）
-
-`queue_groups` 与 PC 的独立 `playlists` 通过 schema 1 可选 `playlistRecords` 交换。记录以共享歌单 ID 标识，内容包含 name、最多 500 个便携音轨身份和 sortOrder；删除为 tombstone，沿用现有修订与冲突处理。匹配到本机稳定版本后写入原表，未知引用保留 `sync:<SHA-256>` 占位，不靠标题猜测音源；重新同步后可转成本地版本。在线音源描述、指纹和经验证的在线对应关系复用现有同步 Catalog。
-
-`PlayerViewModel.choosePlaylist` 只打开全局选择歌单抽屉，`QueueGroupTools` 完成加入或新建；不发播放命令。作品长按通过 preferredPlaylistVersions 选择一个优先目录并按音轨优选格式，单曲传入单个版本。运行队列仍由唯一 MediaSession 服务持有。
+资料包 v5 保存两类歌单、源站作品身份和已知音轨时长。v1 至 v4 资料包沿原顺序升级，旧歌单会恢复成音轨歌单。asmr.one 同步预览默认选中全部待入库作品及官网歌单。确认时按站点作品 ID 加入音频库，按选中的歌单 ID 创建或更新作品集。作品集按官网顺序收录已在库和本次选中的作品，并保留本地额外加入的成员。

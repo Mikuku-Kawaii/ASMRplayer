@@ -1504,6 +1504,8 @@ pub struct BackupVersionFavorite {
 #[serde(rename_all = "camelCase")]
 pub struct UserBackupBundleDto {
     #[serde(default)]
+    pub playlists: crate::db::playlists::PlaylistBackup,
+    #[serde(default)]
     pub subtitle_documents: Vec<crate::db::subtitles::SubtitleBackupRecord>,
     #[serde(default)]
     pub favorite_versions: Vec<BackupVersionFavorite>,
@@ -1523,6 +1525,8 @@ pub struct UserBackupBundleDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupRestoreReportDto {
+    #[serde(default)]
+    pub playlists_restored: usize,
     #[serde(default)]
     pub subtitles_restored: usize,
     #[serde(default)]
@@ -2012,6 +2016,7 @@ mod tests {
     #[test]
     fn test_encrypted_sync_bundle_roundtrip_and_tamper_rejection_t1203() {
         let bundle = UserBackupBundleDto {
+            playlists: Default::default(),
             subtitle_documents: vec![],
             favorite_versions: vec![],
             schema_version: 1,

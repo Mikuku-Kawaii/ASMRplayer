@@ -3,6 +3,7 @@ import { PlayerVolumeControl } from "./PlayerVolumeControl";
 import { PlayerLibraryActions } from "./PlayerLibraryActions";
 import { DesktopLyricsToggle } from "./DesktopLyricsToggle";
 import { useTimelineMarks } from "./timelineMarks";
+import { requestPlaylist } from "./playlists";
 import React, { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { useShortcuts } from "../commands/ShortcutProvider";
 import { shortcutTitle } from "../../lib/shortcuts";
@@ -45,8 +46,8 @@ const DEFAULT_WAVEFORM_PEAKS: number[] = Array.from({ length: 64 }, (_, i) => {
 interface PlayerBarProps {
   snapshot: PlaybackSnapshot;
   onSnapshotChange: (snap: PlaybackSnapshot) => void;
-  activeDrawerTab: "none" | "queue" | "playlists" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio";
-  onToggleDrawer: (tab: "queue" | "playlists" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio") => void;
+  activeDrawerTab: "none" | "queue" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio";
+  onToggleDrawer: (tab: "queue" | "immersion" | "bookmarks" | "subtitles" | "dsp" | "audio") => void;
   playerToolsTrigger?: React.RefObject<HTMLButtonElement>;
   onOpenWorkDetail?: (workId: string) => void;
   isImmersiveOpen?: boolean;
@@ -700,7 +701,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
           <div role="group" aria-label="歌单与字幕">
             <div className="player-more-section-label">歌单与字幕</div>
             <div className="popover-drawer-grid">
-              <button type="button" role="menuitem" className={`popover-drawer-btn ${activeDrawerTab === "playlists" ? "active" : ""}`} data-drawer-trigger="playlists" onClick={() => { onToggleDrawer("playlists"); setMoreMenuOpen(false); }} aria-label="歌单"><ListMusic size={14} /><span>歌单</span></button>
+              <button type="button" role="menuitem" className="popover-drawer-btn" disabled={!snapshot.currentVersionId} onClick={() => { setMoreMenuOpen(false); if(snapshot.currentVersionId) requestPlaylist({versionIds:[snapshot.currentVersionId]}); }}><ListMusic size={14}/><span>加入音轨歌单</span></button>
               <button
                 type="button"
                 role="menuitem"

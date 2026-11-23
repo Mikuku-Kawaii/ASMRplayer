@@ -217,13 +217,16 @@ class LibraryRepository(private val context: Context, private val db: LibraryDat
     /** Only a COMPLETE enumeration reaches this transaction. Unchanged source rows retain stable IDs. */
     internal suspend fun commit(root: LibraryRoot, preview: ScanPreview) = db.withTransaction {
         val previous = dao.sourcesForRoot(root.id).associateBy { it.id }
+        val syncedWorks = db.metadata().syncedWorksForRoot(root.id).toHashSet()
         val manualSubtitles = dao.manualSubtitles(root.id).groupBy { it.relativePath }
         dao.invalidateRoot(root.id); dao.invalidateSubtitles(root.id); dao.invalidateAssets(root.id)
         preview.works.forEach { work ->
             currentCoroutineContext().ensureActive()
             val workId = LibraryIndex.id(root.id, "work", work.path)
             val old = dao.work(workId)
-            dao.putWork(LibraryWork(workId, root.id, work.path, work.title, work.code, work.cover?.uri,
+            val synced = old?.takeIf { workId in syncedWorks }
+            val syncedCover = synced?.coverUri?.takeIf { it.startsWith("https://") || it.startsWith("http://") }
+            dao.putWork(LibraryWork(workId, root.id, work.path, synced?.title ?: work.title, synced?.code ?: work.code, syncedCover ?: work.cover?.uri,
                 old?.favorite ?: false, old?.rating ?: "UNRATED", old?.inLibrary ?: true))
             work.assets.forEach { asset ->
                 dao.putAsset(WorkAsset(LibraryIndex.id(root.id, "asset", asset.path), workId,

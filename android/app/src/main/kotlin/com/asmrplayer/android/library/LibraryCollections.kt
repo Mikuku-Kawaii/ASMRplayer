@@ -36,7 +36,7 @@ class LibraryCollections internal constructor(private val db: LibraryDatabase) {
                     LibrarySourceFilter.ALL -> true
                     LibrarySourceFilter.LOCAL -> row.importedCount > 0
                     LibrarySourceFilter.DOWNLOADED -> row.downloadedCount > 0
-                    LibrarySourceFilter.ONLINE -> row.onlineCount > 0
+                    LibrarySourceFilter.ONLINE -> row.onlineCount > 0 || (row.versionCount == 0 && !meta[row.work.id]?.sourceId.isNullOrBlank())
                 } && when (query.listening) {
                     ListeningFilter.ALL -> true
                     ListeningFilter.UNPLAYED -> row.playedCount == 0

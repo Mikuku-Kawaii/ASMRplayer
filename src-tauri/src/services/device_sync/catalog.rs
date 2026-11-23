@@ -79,11 +79,12 @@ impl Catalog {
                     .insert(key.clone(), track);
             }
         }
-        let mut s = c.prepare("SELECT w.id,s.source_work_id,w.title,w.nsfw_detected,(w.id IN (SELECT work_id FROM favorites) OR w.id IN (SELECT work_id FROM collected_works)) FROM works w JOIN work_sources s ON s.work_id=w.id WHERE s.provider LIKE 'asmr_one%'")?;
+        let mut s = c.prepare("SELECT w.id,s.source_work_id,w.title,w.nsfw_detected,(w.id IN (SELECT work_id FROM favorites) OR w.id IN (SELECT work_id FROM collected_works)),w.rj_code FROM works w JOIN work_sources s ON s.work_id=w.id WHERE s.provider LIKE 'asmr_one%'")?;
         let rows = s.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 super::protocol::OnlineWork {
+                    code: r.get::<_,Option<String>>(5)?.filter(|s|s.len()<=14 && s.get(..2).is_some_and(|p|matches!(p,"RJ"|"BJ"|"VJ")) && s.len()>2 && s.as_bytes()[2..].iter().all(|b|b.is_ascii_digit())),
                     source_id: r.get::<_, String>(1)?.trim_start_matches('0').into(),
                     title: r.get(2)?,
                     rating: if r.get::<_, bool>(3)? {
@@ -101,7 +102,7 @@ impl Catalog {
         for row in rows {
             let (id, mut work, listed) = row?;
             work.tracks = by_work.remove(&id).unwrap_or_default();
-            if !listed && work.tracks.is_empty() {
+            if !listed && work.tracks.is_empty() && !self.works.get(&id).is_some_and(|key|tracked.contains(key)) {
                 continue;
             }
             if let Some(key) = self.works.get(&id) {
@@ -142,12 +143,12 @@ impl Catalog {
             let wanted = ["work", "library"]
                 .iter()
                 .any(|kind| values.get(&format!("{kind}|{key}|")) == Some(&Value::Bool(true)));
-            if !wanted && !w.tracks.iter().any(|(key,track)|needed.contains(key)||track.local_key.as_ref().is_some_and(|local|needed.contains(local))) {
+            if !wanted && !needed.contains(key) && !w.local_key.as_ref().is_some_and(|k|needed.contains(k)) && !w.tracks.iter().any(|(key,track)|needed.contains(key)||track.local_key.as_ref().is_some_and(|local|needed.contains(local))) {
                 continue;
             }
             let id = if let Some((id,_))=self.works.iter().find(|(_,known)|*known==key||Some(*known)==w.local_key.as_ref()) {id.clone()}else{
             let id=uuid::Uuid::new_v4().to_string();
-            c.execute("INSERT INTO works(id,title,rj_code,nsfw_detected,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?5)",params![id,w.title,format!("RJ{:0>8}",w.source_id),w.rating=="NSFW",now])?;
+            c.execute("INSERT INTO works(id,title,rj_code,nsfw_detected,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?5)",params![id,w.title,w.code.clone().unwrap_or_else(||format!("RJ{:0>8}",w.source_id)),w.rating=="NSFW",now])?;
             c.execute("INSERT INTO work_sources(id,work_id,provider,source_work_id,refreshed_at) VALUES(?1,?2,'asmr_one',?3,?4)",params![uuid::Uuid::new_v4().to_string(),id,w.source_id,now])?;
             self.works.insert(id.clone(), key.clone());
             self.names.insert(key.clone(), w.title.clone());
@@ -351,11 +352,11 @@ impl Catalog {
                 );
             }
         }
-        values.extend(super::playlist_sync::snapshot(c,&self.versions)?);
+        values.extend(super::playlist_sync::snapshot(c,&self.versions,&self.works)?);
         Ok(values)
     }
     pub fn apply(&self, c: &Connection, values: &Values) -> AppResult<usize> {
-        super::playlist_sync::apply(c,values,&self.versions)?;
+        super::playlist_sync::apply(c,values,&self.versions,&self.works)?;
         let now = chrono::Utc::now().to_rfc3339();
         let mut count = 0;
         for (key, value) in values {

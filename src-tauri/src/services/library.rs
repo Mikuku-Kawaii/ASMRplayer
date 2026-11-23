@@ -92,12 +92,12 @@ pub fn natural_sort_key(input: &str) -> String {
     out
 }
 
-pub fn extract_rj_code(input: &str) -> Option<String> {
+pub fn extract_work_code(input: &str) -> Option<String> {
     let upper = input.to_ascii_uppercase();
     let bytes = upper.as_bytes();
     let mut i = 0;
     while i + 8 <= bytes.len() {
-        if bytes[i] == b'R' && bytes[i + 1] == b'J' {
+        if matches!(bytes[i], b'R' | b'V' | b'B') && bytes[i + 1] == b'J' {
             let mut j = i + 2;
             while j < bytes.len() && bytes[j].is_ascii_digit() {
                 j += 1;
@@ -292,7 +292,7 @@ impl LibraryService {
                 candidates.push(ImportCandidateDto {
                     relative_work_path: "__root_direct__".to_string(),
                     proposed_title: format!("{} (直属音频)", folder_name),
-                    detected_rj_code: extract_rj_code(folder_name),
+                    detected_rj_code: extract_work_code(folder_name),
                     audio_count: root_direct_audio,
                     subtitle_count: 0,
                     cover_detected: false,
@@ -358,7 +358,7 @@ impl LibraryService {
             chain.push(start_dir.clone());
         }
 
-        // Rule 1: Priority match on ancestor folder name containing RJ code (within 4 levels)
+        // Prefer a nearby ancestor whose name contains a DLsite work code.
         let mut auto_idx = 0usize;
         let mut reason = if selected_path.is_file() {
             "从所选单文件定位至所在目录".to_string()
@@ -366,20 +366,20 @@ impl LibraryService {
             "使用当前所选目录作为作品根目录".to_string()
         };
 
-        let mut found_rj_ancestor = false;
+        let mut found_work_ancestor = false;
         for (idx, anc) in chain.iter().take(5).enumerate() {
             if let Some(name) = anc.file_name().and_then(|n| n.to_str()) {
-                if let Some(rj) = extract_rj_code(name) {
+                if let Some(code) = extract_work_code(name) {
                     auto_idx = idx;
-                    reason = format!("自动向上溯源至包含 {} 的作品主目录", rj);
-                    found_rj_ancestor = true;
+                    reason = format!("自动向上溯源至包含 {} 的作品主目录", code);
+                    found_work_ancestor = true;
                     break;
                 }
             }
         }
 
-        // Rule 2: If no ancestor has an RJ code, walk up out of structural leaf directories (WAV/MP3/SEなし/特典/字幕)
-        if !found_rj_ancestor {
+        // Otherwise walk up out of structural leaf directories (WAV/MP3/SEなし/特典/字幕).
+        if !found_work_ancestor {
             while auto_idx + 1 < chain.len() && auto_idx < 3 {
                 let name_lower = chain[auto_idx]
                     .file_name()
@@ -464,7 +464,7 @@ impl LibraryService {
                     continue;
                 }
                 if rj_from_files.is_none() {
-                    rj_from_files = extract_rj_code(fname);
+                    rj_from_files = extract_work_code(fname);
                 }
             }
             let ext = p
@@ -489,8 +489,8 @@ impl LibraryService {
             .and_then(|n| n.to_str())
             .unwrap_or("未命名作品")
             .to_string();
-        let mut detected_rj_code = extract_rj_code(&dir_name)
-            .or_else(|| extract_rj_code(rel_work))
+        let mut detected_rj_code = extract_work_code(&dir_name)
+            .or_else(|| extract_work_code(rel_work))
             .or(rj_from_files);
 
         if !cover_detected || detected_rj_code.is_none() {
@@ -841,7 +841,7 @@ impl LibraryService {
             for (af, mut meta, local_corrupt) in probed_results {
                 corrupted_files.extend(local_corrupt);
                 if rj_from_audio.is_none() {
-                    rj_from_audio = extract_rj_code(&af.file_name);
+                    rj_from_audio = extract_work_code(&af.file_name);
                 }
                 if embedded_cover.is_none() {
                     embedded_cover = meta.embedded_cover.take();
@@ -850,8 +850,8 @@ impl LibraryService {
                     rj_from_audio = meta
                         .album
                         .as_deref()
-                        .and_then(extract_rj_code)
-                        .or_else(|| meta.title.as_deref().and_then(extract_rj_code));
+                        .and_then(extract_work_code)
+                        .or_else(|| meta.title.as_deref().and_then(extract_work_code));
                 }
                 if let Some(ref artist_str) = meta.artist {
                     for part in artist_str.split(['/', ';', ',', '、']) {
@@ -914,8 +914,8 @@ impl LibraryService {
                 }
             }
 
-            let detected_rj = extract_rj_code(&proposed_title)
-                .or_else(|| extract_rj_code(&rel_work_path))
+            let detected_rj = extract_work_code(&proposed_title)
+                .or_else(|| extract_work_code(&rel_work_path))
                 .or(rj_from_audio);
 
             let fallback_vas_json = serde_json::to_string(&fallback_vas).unwrap_or_else(|_| "[]".into());
@@ -2211,8 +2211,8 @@ fn probe_audio_cover_and_rj(path: &Path) -> (bool, Option<String>) {
             let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
             let rj = tag.and_then(|t| {
                 t.album()
-                    .and_then(|a| extract_rj_code(&a))
-                    .or_else(|| t.title().and_then(|ti| extract_rj_code(&ti)))
+                    .and_then(|a| extract_work_code(&a))
+                    .or_else(|| t.title().and_then(|ti| extract_work_code(&ti)))
             });
             (has_pic, rj)
         }

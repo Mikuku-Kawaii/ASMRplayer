@@ -14,8 +14,12 @@ mod media_cache;
 use media_cache::MediaCache;
 mod filters;
 mod account;
+mod account_library;
+pub use account_library::{AccountLibraryPreview, AccountLibrarySelection};
 use account::{SiteAccount, SiteCredential};
 mod recommendations;
+mod work_lookup;
+use work_lookup::WorkLookup;
 pub use filters::{OnlineFilter, ProviderTag};
 use filters::build_filter_query;
 
@@ -115,9 +119,9 @@ fn upsert_download_attachment(
 pub fn normalize_work_id_input(raw: &str) -> AppResult<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(AppError::new(ErrorCode::InvalidInput, "请输入作品 ID 或 RJ 编号"));
+        return Err(AppError::new(ErrorCode::InvalidInput, "请输入作品编号或站内 ID"));
     }
-    let without_prefix = if trimmed.len() > 2 && trimmed[..2].eq_ignore_ascii_case("rj") {
+    let without_prefix = if trimmed.get(..2).is_some_and(|s| s.eq_ignore_ascii_case("rj")) {
         &trimmed[2..]
     } else {
         trimmed
@@ -486,6 +490,7 @@ pub fn parse_works_page_json(body: &str, requested_page: u32) -> AppResult<Page<
 pub struct AsmrOneProvider {
     db: Database,
     account: Arc<RwLock<SiteAccount>>,
+    library_preview: Arc<Mutex<Option<account_library::PendingImport>>>,
     proxy_url: Arc<RwLock<Option<String>>>,
     nsfw_enabled: Arc<RwLock<bool>>,
     media_cache: Arc<RwLock<MediaCache>>,
@@ -522,6 +527,7 @@ impl AsmrOneProvider {
         Self {
             db,
             account: Arc::new(RwLock::new(account)),
+            library_preview: Arc::new(Mutex::new(None)),
             proxy_url: Arc::new(RwLock::new(proxy_url)),
             nsfw_enabled: Arc::new(RwLock::new(nsfw_enabled)),
             media_cache: Arc::new(RwLock::new(MediaCache::default())),
@@ -763,15 +769,22 @@ impl AsmrOneProvider {
         &self,
         raw_work_id: &str,
     ) -> AppResult<(ProviderWork, Vec<ProviderLeafNode>, String)> {
-        let source_work_id = normalize_work_id_input(raw_work_id)?;
-        let base = self.api_base();
-        let tracks_url = format!("{}/api/tracks/{}?v=2", base, source_work_id);
+        let lookup = self.resolve_work_input(raw_work_id).await?;
+        self.fetch_resolved_work_and_tree(&lookup).await
+    }
 
-        let (info_body, tracks_body) = tokio::join!(
-            self.work_info_body(&source_work_id),
+    async fn fetch_resolved_work_and_tree(
+        &self,
+        lookup: &WorkLookup,
+    ) -> AppResult<(ProviderWork, Vec<ProviderLeafNode>, String)> {
+        let base = self.api_base();
+        let tracks_url = format!("{}/api/tracks/{}?v=2", base, lookup.id);
+
+        let (work, tracks_body) = tokio::join!(
+            self.fetch_work_info(lookup),
             self.get_text_with_retry(&tracks_url),
         );
-        let work = parse_work_info_json(&info_body?)?;
+        let work = work?;
 
         let tracks_body = tracks_body?;
         let nodes = parse_tracks_v2_json(&work.source_work_id, &tracks_body)?;
@@ -837,10 +850,25 @@ impl AsmrOneProvider {
         }
     }
 
+    /// Account imports keep just the work card until its tracks are first requested.
+    pub async fn library_work_detail(&self, work_id: &str) -> AppResult<WorkDetailDto> {
+        let db = self.db.clone();
+        let id = work_id.to_owned();
+        let detail = tokio::task::spawn_blocking(move || db.get_work_detail(&id))
+            .await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))??;
+        if detail.tracks.is_empty() {
+            if let Some(source) = detail.online_sources.iter().find(|s| s.provider == PROVIDER_ASMR_ONE) {
+                return self.open_online_work_for_detail(&source.source_work_id).await;
+            }
+        }
+        Ok(detail)
+    }
+
     /// Navigation uses a complete, unexpired persisted tree. Explicit refresh keeps
     /// using open_online_work; signed playback URLs are still resolved separately.
     pub async fn open_online_work_for_detail(&self, raw_work_id: &str) -> AppResult<WorkDetailDto> {
-        let source_id = normalize_work_id_input(raw_work_id)?;
+        let lookup = self.resolve_work_input(raw_work_id).await?;
+        let source_id = lookup.id.clone();
         let db = self.db.clone();
         let cached = tokio::task::spawn_blocking(move || -> AppResult<Option<WorkDetailDto>> {
             let id: Option<String> = db.with_conn(|conn| {
@@ -853,9 +881,9 @@ impl AsmrOneProvider {
             })?;
             id.map(|id| db.get_work_detail(&id)).transpose()
         }).await.map_err(|e| AppError::new(ErrorCode::InternalError, e.to_string()))??;
-        if let Some(detail) = cached { return Ok(detail); }
+        if let Some(detail) = cached.filter(|d| lookup.matches_code(d.rj_code.as_deref())) { return Ok(detail); }
 
-        let (work, nodes, tree) = self.fetch_work_and_tree(raw_work_id).await?;
+        let (work, nodes, tree) = self.fetch_resolved_work_and_tree(&lookup).await?;
         let provider = self.clone();
         let cover_work = work.clone();
         let detail = tokio::task::spawn_blocking(move || -> AppResult<WorkDetailDto> {
@@ -881,7 +909,7 @@ impl AsmrOneProvider {
         Ok(detail)
     }
 
-    /// T302/T303/T403: Fetches an online work by ID/RJ and persists or refreshes it in SQLite.
+    /// T302/T303/T403: Fetches an online work by site ID or store code and persists or refreshes it in SQLite.
     /// Does not overwrite user overrides; detects remote file changes without blindly mapping old progress.
     pub async fn open_online_work(&self, raw_work_id: &str) -> AppResult<WorkDetailDto> {
         let (mut pwork, nodes, tracks_raw_json) = self.fetch_work_and_tree(raw_work_id).await?;
@@ -1147,38 +1175,8 @@ impl AsmrOneProvider {
         work_id: &str,
         rj_or_id: Option<&str>,
     ) -> AppResult<usize> {
-        let source_work_id = if let Some(raw) = rj_or_id.filter(|s| !s.trim().is_empty()) {
-            normalize_work_id_input(raw)?
-        } else {
-            let db_id: Option<String> = self.db.with_conn(|conn| {
-                let ws: Option<String> = conn
-                    .query_row(
-                        "SELECT source_work_id FROM work_sources WHERE work_id = ?1 LIMIT 1",
-                        params![work_id],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                if ws.is_some() {
-                    return Ok(ws);
-                }
-                let rj: Option<String> = conn
-                    .query_row(
-                        "SELECT rj_code FROM works WHERE id = ?1",
-                        params![work_id],
-                        |r| r.get(0),
-                    )
-                    .optional()?
-                    .flatten();
-                Ok(rj)
-            })?;
-            let raw = db_id.ok_or_else(|| {
-                AppError::new(
-                    ErrorCode::InvalidInput,
-                    "该作品尚未关联 RJ 号，无法检索云端字幕",
-                )
-            })?;
-            normalize_work_id_input(&raw)?
-        };
+        let input = self.library_work_input(work_id, rj_or_id)?;
+        let source_work_id = self.resolve_work_input(&input).await?.id;
 
         let base = self.api_base();
         let tracks_url = format!("{}/api/tracks/{}?v=2", base, source_work_id);
@@ -1825,32 +1823,7 @@ impl AsmrOneProvider {
             return Ok(());
         }
 
-        let resolved_raw_id = if let Some(s) = rj_or_id.map(|v| v.trim()).filter(|v| !v.is_empty()) {
-            s.to_string()
-        } else {
-            let (db_rj, db_title, ws_source_id): (Option<String>, String, Option<String>) =
-                self.db.with_conn(|conn| {
-                    conn.query_row(
-                        "SELECT w.rj_code, w.title,
-                                (SELECT ws.source_work_id FROM work_sources ws WHERE ws.work_id = w.id LIMIT 1)
-                         FROM works w WHERE w.id = ?1",
-                        params![work_id],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                    )
-                    .optional()?
-                    .ok_or_else(|| AppError::new(ErrorCode::SourceNotFound, "未找到该作品"))
-                })?;
-
-            ws_source_id
-                .or(db_rj)
-                .or_else(|| crate::services::library::extract_rj_code(&db_title))
-                .ok_or_else(|| {
-                    AppError::new(
-                        ErrorCode::InvalidInput,
-                        "该作品尚未关联 RJ 编号，请先在详情页输入 RJ 号同步在线目录后再下载",
-                    )
-                })?
-        };
+        let resolved_raw_id = self.library_work_input(work_id, rj_or_id)?;
 
         let (mut pwork, nodes, tracks_raw_json) = self.fetch_work_and_tree(&resolved_raw_id).await?;
         if let Some(cached_cover) = self
@@ -1900,39 +1873,9 @@ impl AsmrOneProvider {
         rj_or_id: Option<&str>,
         prefer_online_cover: bool,
     ) -> AppResult<WorkDetailDto> {
-        let resolved_raw_id = if let Some(s) = rj_or_id.map(|v| v.trim()).filter(|v| !v.is_empty()) {
-            s.to_string()
-        } else {
-            let (db_rj, db_title, ws_source_id): (Option<String>, String, Option<String>) =
-                self.db.with_conn(|conn| {
-                    conn.query_row(
-                        "SELECT w.rj_code, w.title,
-                                (SELECT ws.source_work_id FROM work_sources ws WHERE ws.work_id = w.id LIMIT 1)
-                         FROM works w WHERE w.id = ?1",
-                        params![work_id],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                    )
-                    .optional()?
-                    .ok_or_else(|| AppError::new(ErrorCode::SourceNotFound, "未找到该作品"))
-                })?;
-
-            ws_source_id
-                .or(db_rj)
-                .or_else(|| crate::services::library::extract_rj_code(&db_title))
-                .ok_or_else(|| {
-                    AppError::new(
-                        ErrorCode::InvalidInput,
-                        "该作品未检测到 RJ 编号，请手动输入 RJ 号或作品 ID 同步",
-                    )
-                })?
-        };
-
-        let source_work_id = normalize_work_id_input(&resolved_raw_id)?;
-        let info_body = self.work_info_body(&source_work_id).await?;
-        let mut pwork = parse_work_info_json(&info_body)?;
-        if pwork.source_work_id != source_work_id {
-            return Err(AppError::new(ErrorCode::InvalidInput,"来源返回的作品身份不一致"));
-        }
+        let input = self.library_work_input(work_id, rj_or_id)?;
+        let lookup = self.resolve_work_input(&input).await?;
+        let mut pwork = self.fetch_work_info(&lookup).await?;
 
         if let Some(cached_cover) = self
             .download_and_cache_cover(&pwork.source_work_id, pwork.cover_url.as_deref())
@@ -2006,7 +1949,7 @@ impl AsmrOneProvider {
         self.db.get_work_detail(work_id)
     }
 
-    /// Best-effort automatic metadata & cover enrichment for local works that have an RJ code
+    /// Best-effort automatic metadata & cover enrichment for local works that have a store code
     /// but are missing a title, cover, voice actors (CV), or tags.
     pub async fn auto_enrich_local_works(&self) -> usize {
         let candidates: Vec<(String, String)> = match self.db.with_conn(|conn| {

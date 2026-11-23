@@ -19,6 +19,8 @@ class OnlineFixtureServer(durationSeconds: Int = 3, sampleRate: Int = 48000, por
     val treeRequests = AtomicInteger()
     val mediaRequests = AtomicInteger()
     @Volatile var browseResponse: ((Request) -> Pair<Int, String>)? = null
+    @Volatile var accountListsResponse: ((Request) -> Pair<Int, String>)? = null
+    @Volatile var metadataBody: String? = null
     @Volatile var beforeTreeResponse: (() -> Unit)? = null
     @Volatile var originalArtwork: ByteArray? = null
     @Volatile var mode = "normal"
@@ -71,12 +73,15 @@ class OnlineFixtureServer(durationSeconds: Int = 3, sampleRate: Int = 48000, por
                         when {
                             nextRedirect != null -> { code = 302; responseHeaders["Location"] = nextRedirect; body = byteArrayOf() }
                             mode == "unauthorized" -> { code = 401; body = byteArrayOf() }
+                            accountListsResponse != null && (target.startsWith("/api/review?") || target.startsWith("/api/playlist/")) -> {
+                                val response = accountListsResponse!!.invoke(request); code = response.first; body = response.second.toByteArray()
+                            }
                             target.startsWith("/api/workInfo/") -> {
                                 if(mode=="metadata-unavailable" || (requireWebMetadataRequest && (target!="/api/workInfo/123456" ||
                                     headers["origin"]!="https://asmr.one" || headers["referer"]!="https://asmr.one/" ||
                                     headers["accept"]!="application/json, text/plain, */*"))) {
                                     code=504; body=byteArrayOf()
-                                } else body = work().toByteArray()
+                                } else body = (metadataBody ?: work()).toByteArray()
                             }
                             target.startsWith("/api/tracks/") -> {
                                 val number = treeRequests.incrementAndGet()

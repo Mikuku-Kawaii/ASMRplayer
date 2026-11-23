@@ -42,7 +42,8 @@ object LibraryIndex {
     )
     fun isVideoFormat(format: String): Boolean = format.lowercase(Locale.ROOT) in videoExtensions
 
-    private val code = Regex("(?i)(RJ|BJ|VJ)[0-9]{6,8}")
+    private val code = Regex("(?i)(RJ|BJ|VJ)[0-9]{6,8}(?![0-9])")
+    fun workCode(text: String): String? = code.find(text)?.value?.uppercase(Locale.ROOT)
     private val structural = Regex("(?i)(wav|mp3|flac|aac|ogg|opus|hi-res|[0-9]+khz|无损|高音质|seあり|seなし|有音效|无音效|本編|本篇|特典|おまけ|bonus|extra|freetalk|disc.*|cd.*|track.*|音声|audio|字幕|subtitles|subs|images|cover)")
     fun id(vararg parts: String): String = UUID.nameUUIDFromBytes(parts.joinToString("") { "${it.length}:$it" }.toByteArray(Charsets.UTF_8)).toString()
 
@@ -70,7 +71,7 @@ object LibraryIndex {
             val cover = assets.filter { it.extension in imageExtensions }.sortedWith(
                 compareBy<ScannedDocument> { if (it.stem.lowercase(Locale.ROOT) in setOf("cover", "folder", "jacket", "main")) 0 else 1 }
                     .thenBy { it.path.count { c -> c == '/' } }.thenComparator { a, b -> NaturalOrder.compare(a.path, b.path) }).firstOrNull()
-            IndexedWork(path, name, code.find(name)?.value?.uppercase(Locale.ROOT),
+            IndexedWork(path, name, workCode(name) ?: tracks.firstNotNullOfOrNull { workCode(it.name) },
                 tracks.sortedWith(compareBy(NaturalOrder) { it.path }), assets, cover, associations)
         }.sortedWith(compareBy(NaturalOrder) { it.title })
         return ScanPreview(resolved, works, documents.size)

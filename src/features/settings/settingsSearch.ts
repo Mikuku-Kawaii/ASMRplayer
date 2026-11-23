@@ -15,6 +15,7 @@ const aliases: Record<string, string> = {
   "deepseek-prompt": "全局 prompt 提示词 风格",
   "setting-api": "镜像 网络 API",
   "setting-site-account": "asmrone asmr.one 账号登录 个人推荐",
+  "setting-site-library-import": "asmrone asmr.one 同步收藏与播放列表 歌单 加入音频库",
 };
 const text = (node: Element | null) => node?.textContent?.replace(/\s+/g, " ").trim() ?? "";
 

@@ -1,98 +1,148 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowDown, ArrowLeft, ArrowUp, ListMusic, ListPlus, Pencil, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
-import { ContentDialog } from "../../components/ContentDialog";
-import { ContextMenu } from "../../components/ContextMenu";
+import { ArrowDown, ArrowLeft, ArrowUp, ListMusic, ListPlus, Pencil, Play, Plus, Trash2, X } from "lucide-react";
+import { ContentDialog, dialogAutofocus } from "../../components/ContentDialog";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { Toast } from "../../components/Toast";
-import { normalizeAppError, type PlaybackSnapshot } from "../../lib/api";
-import { PlaylistMenuItem } from "./PlaylistPicker";
-import { playlistCommand, watchPlaylists, type Playlist, type PlaylistTrack } from "./playlists";
+import { formatDurationMs, normalizeAppError, type PlaybackSnapshot } from "../../lib/api";
+import { markPlaylistUsed, playlistCommand, requestPlaylist, watchPlaylists, type CollectionCard, type Playlist, type PlaylistTrack } from "./playlists";
 
-function Artwork({ tracks }: { tracks: PlaylistTrack[] }) {
-  const covers = [...new Set(tracks.map(track => track.coverRef).filter((ref): ref is string => !!ref))].slice(0, 4);
-  return <div className={`playlist-artwork ${covers.length > 1 ? "mosaic" : ""}`} aria-hidden="true">{covers.length ? covers.map(ref => <img key={ref} src={ref} alt="" referrerPolicy="no-referrer" onError={event => { event.currentTarget.style.visibility = "hidden"; }} />) : <ListMusic size={32} />}</div>;
-}
-
-export function Playlists({ onSnapshotChange }: { onSnapshotChange: (value: PlaybackSnapshot) => void }) {
-  const [groups, setGroups] = useState<Playlist[]>([]), [ready, setReady] = useState(false), [selected, setSelected] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState("");
-  const [nameDialog, setNameDialog] = useState<{ id?: string; name: string } | null>(null), [removing, setRemoving] = useState<Playlist | null>(null);
-  const [picker, setPicker] = useState(false), [editing, setEditing] = useState(false), [menu, setMenu] = useState<{ x: number; y: number; version: string } | null>(null);
-  const alive = useRef(true), epoch = useRef(0), pending = useRef(false);
-  const reload = useCallback(async () => {
-    const request = ++epoch.current;
-    try { const value = await playlistCommand<Playlist[]>("list"); if (alive.current && request === epoch.current) { setGroups(value); setReady(true); setError(""); } }
-    catch (e) { if (alive.current && request === epoch.current) setError(normalizeAppError(e).message); }
-  }, []);
-  useEffect(() => { alive.current = true; void reload(); const stop = watchPlaylists(() => void reload()); return () => { alive.current = false; stop(); }; }, [reload]);
-  const group = groups.find(group => group.id === selected);
-  useEffect(() => { if (ready && selected && !groups.some(group => group.id === selected)) { setSelected(null); setPicker(false); setEditing(false); setMenu(null); } }, [ready, selected, groups]);
-  async function run(action: string, input: Record<string, unknown>, done?: () => void) {
-    if (pending.current) return;
-    pending.current = true; setBusy(true); setError("");
-    try {
-      const result = await playlistCommand<PlaybackSnapshot>(action, input);
-      if (action === "play" || action === "append") onSnapshotChange(result);
-      if (alive.current) { await reload(); done?.(); if (action === "append") setNotice("已加入播放队列"); }
-    } catch (e) { if (alive.current) setError(normalizeAppError(e).message); }
-    finally { pending.current = false; if (alive.current) setBusy(false); }
-  }
-  const available = group?.tracks.filter(track => track.available).length ?? 0;
-  return <div className="drawer-body playlists-panel" aria-busy={busy}>
-    <div className="playlist-toolbar">
-      {group ? <button className="btn btn-ghost btn-sm" onClick={() => { setSelected(null); setEditing(false); setMenu(null); }}><ArrowLeft size={16} /><span>我的歌单</span></button> : <h4>我的歌单</h4>}
-      <span className="playlist-toolbar-spacer" />
-      {!group && <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => setNameDialog({ name: "" })}><Plus size={15} /><span>新建歌单</span></button>}
-      <button className="btn-icon" title="刷新歌单" aria-label="刷新歌单" disabled={busy} onClick={() => void reload()}><RefreshCw size={16} /></button>
-    </div>
-    {error && <ErrorNotice message={error} />}
-    {!ready && !error && <p role="status" className="text-muted">正在读取歌单…</p>}
-    {ready && !group && <>
-      {!groups.length && <div className="empty-box">还没有歌单。新建后可从音频库挑选音轨，或右键作品加入优先音轨。</div>}
-      <div className="playlist-grid">{groups.map(item => <div className="playlist-tile" key={item.id}>
-        <button className="playlist-tile-open" onClick={() => setSelected(item.id)} aria-label={`打开歌单 ${item.name}`}><Artwork tracks={item.tracks} /><strong title={item.name}>{item.name}</strong><small>{item.versionIds.length} 首音轨</small></button>
-        <button className="btn-icon" title={`播放歌单 ${item.name}`} aria-label={`播放歌单 ${item.name}`} disabled={busy || !item.tracks.some(track => track.available)} onClick={() => void run("play", { id: item.id })}><Play size={18} /></button>
-      </div>)}</div>
-    </>}
-    {group && <>
-      <div className="playlist-summary"><Artwork tracks={group.tracks} /><div><h4 title={group.name}>{group.name}</h4><p>{group.versionIds.length} 首音轨{available < group.versionIds.length ? ` · ${group.versionIds.length - available} 首暂不可用` : ""}</p></div></div>
-      <div className="playlist-actions">
-        <button className="btn btn-primary btn-sm" disabled={busy || !available} onClick={() => void run("play", { id: group.id })}><Play size={15} /><span>播放全部</span></button>
-        <span className="playlist-toolbar-spacer" />
-        <button className="btn-icon" title="加入队列" aria-label="加入队列" disabled={busy || !available} onClick={() => void run("append", { id: group.id })}><ListPlus size={17} /></button>
-        <button className="btn-icon" title="添加音轨" aria-label="添加音轨" disabled={busy} onClick={() => setPicker(true)}><Plus size={17} /></button>
-        <button className="btn btn-ghost btn-sm" disabled={busy} aria-pressed={editing} onClick={() => setEditing(value => !value)}><Pencil size={15} /><span>{editing ? "完成" : "编辑"}</span></button>
-      </div>
-      {editing && <div className="playlist-actions playlist-edit-actions">
-        <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setNameDialog({ id: group.id, name: group.name })}>重命名</button>
-        <button className="btn-icon" title="上移歌单" aria-label="上移歌单" disabled={busy || groups.indexOf(group) === 0} onClick={() => void run("update", { id: group.id, groupDelta: -1 })}><ArrowUp size={16} /></button>
-        <button className="btn-icon" title="下移歌单" aria-label="下移歌单" disabled={busy || groups.indexOf(group) === groups.length - 1} onClick={() => void run("update", { id: group.id, groupDelta: 1 })}><ArrowDown size={16} /></button>
-        <button className="btn btn-ghost btn-sm danger-text" disabled={busy} onClick={() => setRemoving(group)}><Trash2 size={15} /><span>删除歌单</span></button>
-      </div>}
-      {!group.tracks.length && <div className="empty-box">还没有音轨，从音频库选几首加入吧。</div>}
-      <ol className="playlist-tracks">{group.tracks.map((track, index) => <li key={track.versionId} onContextMenu={event => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY, version: track.versionId }); }}>
-        <span className="playlist-track-number">{index + 1}</span><button className="playlist-track-open" disabled={busy || !track.available} onClick={() => void run("play", { id: group.id, startVersionId: track.versionId })}><strong title={track.title}>{track.title}</strong><small title={track.workTitle}>{track.workTitle}{!track.available && track.workTitle ? " · 暂不可用" : ""}</small></button>
-        {editing && <div className="playlist-track-tools"><button className="btn-icon" disabled={busy || index === 0} title="上移音轨" aria-label={`上移音轨 ${track.title}`} onClick={() => void run("update", { id: group.id, versionId: track.versionId, target: index - 1, expected: group.versionIds })}><ArrowUp size={15} /></button><button className="btn-icon" disabled={busy || index === group.tracks.length - 1} title="下移音轨" aria-label={`下移音轨 ${track.title}`} onClick={() => void run("update", { id: group.id, versionId: track.versionId, target: index + 1, expected: group.versionIds })}><ArrowDown size={15} /></button><button className="btn-icon" disabled={busy} title="移出歌单" aria-label={`移出歌单 ${track.title}`} onClick={() => void run("update", { id: group.id, versionId: track.versionId })}><X size={15} /></button></div>}
-      </li>)}</ol>
-    </>}
-    {menu && <ContextMenu x={menu.x} y={menu.y} label="歌单音轨操作" onClose={() => setMenu(null)}><PlaylistMenuItem target={{ versionIds: [menu.version] }} onClose={() => setMenu(null)} /></ContextMenu>}
-    {nameDialog && <ContentDialog size="compact" label={nameDialog.id ? "重命名歌单" : "新建歌单"} busy={busy} onClose={() => setNameDialog(null)}><form onSubmit={event => { event.preventDefault(); void run(nameDialog.id ? "update" : "create", { id: nameDialog.id, name: nameDialog.name.trim() }, () => setNameDialog(null)); }} className="dialog-form"><header className="modal-header"><h3>{nameDialog.id ? "重命名歌单" : "新建歌单"}</h3><button type="button" className="btn-icon" title="关闭" aria-label="关闭歌单名称" disabled={busy} onClick={() => setNameDialog(null)}><X size={18} /></button></header>
-<div className="dialog-body"><label className="playlist-name-form">歌单名称<input autoFocus className="input-text" maxLength={80} value={nameDialog.name} disabled={busy} onChange={event => setNameDialog({ ...nameDialog, name: event.target.value })} /></label>{error && <ErrorNotice message={error} />}</div>
-<footer className="modal-actions"><button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setNameDialog(null)}>取消</button><button className="btn btn-primary" disabled={busy || !nameDialog.name.trim()}>{nameDialog.id ? "保存名称" : "新建歌单"}</button></footer></form></ContentDialog>}
-    {removing && <ContentDialog size="compact" label="删除歌单" busy={busy} onClose={() => setRemoving(null)}><header className="modal-header"><h3>删除歌单</h3><button className="btn-icon" disabled={busy} title="关闭" aria-label="关闭删除歌单" onClick={() => setRemoving(null)}><X size={18} /></button></header>
-<div className="dialog-body"><p>删除「{removing.name}」？保留音频文件与当前播放队列。</p>{error && <ErrorNotice message={error} />}</div>
-<footer className="modal-actions"><button className="btn btn-ghost" disabled={busy} onClick={() => setRemoving(null)}>取消</button><button className="btn btn-danger btn-danger-solid" disabled={busy} onClick={() => void run("delete", { id: removing.id }, () => setRemoving(null))}>删除歌单</button></footer></ContentDialog>}
-    {picker && group && <TrackPicker existing={group.versionIds} busy={busy} error={error} onClose={() => setPicker(false)} onAdd={versionIds => void run("update", { id: group.id, versionIds }, () => setPicker(false))} />}
-    {notice && <Toast message={notice} onClose={() => setNotice("")} />}
+interface Choice { id: string; title: string; detail?: string; coverRef?: string | null }
+function Artwork({ items }: { items: {coverRef?: string | null}[] }) {
+  const covers = [...new Set(items.flatMap(item => item.coverRef ? [item.coverRef] : []))].slice(0, 4);
+  return <div className={`playlist-artwork ${covers.length > 1 ? "mosaic" : ""}`} aria-hidden="true">
+    {covers.length ? covers.map(ref => <img key={ref} src={ref} alt="" referrerPolicy="no-referrer" />) : <ListMusic size={32} />}
   </div>;
 }
-
-function TrackPicker({ existing, busy, error, onClose, onAdd }: { existing: string[]; busy: boolean; error: string; onClose: () => void; onAdd: (ids: string[]) => void }) {
-  const [tracks, setTracks] = useState<PlaylistTrack[]>([]), [loading, setLoading] = useState(true), [failure, setFailure] = useState(""), [query, setQuery] = useState(""), [selected, setSelected] = useState<string[]>([]);
-  const load = useCallback(async () => { setLoading(true); setFailure(""); try { setTracks(await playlistCommand<PlaylistTrack[]>("tracks")); } catch (e) { setFailure(normalizeAppError(e).message); } finally { setLoading(false); } }, []);
-  useEffect(() => { void load(); }, [load]);
-  const filtered = tracks.filter(track => `${track.title} ${track.workTitle}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
-  return <ContentDialog label="添加音轨" busy={busy} onClose={onClose}><header className="modal-header"><h3>添加音轨</h3><button className="btn-icon" disabled={busy} title="关闭" aria-label="关闭添加音轨" onClick={onClose}><X size={18} /></button></header>
-<div className="dialog-body"><input autoFocus className="input-text" aria-label="搜索音轨或作品" placeholder="搜索音轨或作品" value={query} onChange={event => setQuery(event.target.value)} />{loading && <p role="status">正在读取音轨…</p>}{failure && <><ErrorNotice message={failure} /><button className="btn btn-ghost" onClick={() => void load()}>重试读取</button></>}{error && <ErrorNotice message={error} />}<div className="playlist-track-picker">{filtered.map(track => { const included = existing.includes(track.versionId); return <label key={track.versionId}><input type="checkbox" checked={included || selected.includes(track.versionId)} disabled={busy || included || (!selected.includes(track.versionId) && existing.length + selected.length >= 500)} onChange={event => setSelected(value => event.target.checked ? [...value, track.versionId] : value.filter(id => id !== track.versionId))} /><span><strong>{track.title}</strong><small>{included ? "已在歌单中" : track.workTitle}</small></span></label>; })}{!loading && !failure && !filtered.length && <p className="text-muted">没有符合条件的可用音轨</p>}</div></div>
-<footer className="modal-actions"><button className="btn btn-primary" disabled={busy || !selected.length} onClick={() => onAdd(selected)}>添加 {selected.length} 首</button></footer></ContentDialog>;
+export function MemberPicker({ title, choices, existing = [], initial = [], name, loading, error, busy, onClose, onSubmit, verb = "添加", max = 500 }: {
+  title: string; choices: Choice[]; existing?: string[]; initial?: string[]; name?: string; loading?: boolean; error?: string; busy?: boolean; max?:number;
+  onClose: () => void; onSubmit: (ids: string[], name: string) => void; verb?: string;
+}) {
+  const [query,setQuery] = useState(""), [selected,setSelected] = useState<string[]>(initial), [newName,setName] = useState(name ?? "");
+  const visible = choices.filter(c => (c.title+" "+(c.detail ?? "")).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  return <ContentDialog label={title} busy={busy} onClose={onClose}>
+    <header className="modal-header"><h3>{title}</h3><button className="btn-icon" aria-label="关闭" disabled={busy} onClick={onClose}><X size={18}/></button></header>
+    <div className="dialog-body">
+      {name !== undefined && <label className="playlist-name-form">新作品集名称<input className="input-text" maxLength={80} value={newName} onChange={e=>setName(e.target.value)}/></label>}
+      <input ref={dialogAutofocus} className="input-text" type="search" aria-label="搜索条目" placeholder="搜索名称" value={query} onChange={e=>setQuery(e.target.value)} />
+      {loading && <p role="status">正在读取…</p>}{error && <ErrorNotice message={error}/>}
+      <div className="playlist-track-picker">{visible.map(c => {
+        const included=existing.includes(c.id), checked=selected.includes(c.id);
+        return <label key={c.id}><input type="checkbox" checked={included || checked} disabled={busy || included || (!checked && selected.length + existing.length >= max)} onChange={()=>setSelected(ids=>checked ? ids.filter(id=>id!==c.id) : [...ids,c.id])}/>
+          <span><strong>{c.title}</strong><small>{included ? "已加入" : c.detail}</small></span></label>;
+      })}{!loading && !visible.length && <p className="text-muted">没有符合条件的条目</p>}</div>
+    </div>
+    <footer className="modal-actions"><button className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button>
+      <button className="btn btn-primary" disabled={busy || !selected.length || (name !== undefined && !newName.trim())}
+        onClick={()=>onSubmit(choices.filter(c=>selected.includes(c.id)).map(c=>c.id),newName.trim())}>{verb}（{selected.length}）</button></footer>
+  </ContentDialog>;
+}
+export function originWorks(tracks: PlaylistTrack[]): Choice[] {
+  const groups = new Map<string, {track: PlaylistTrack; chapters: Set<string>}>();
+  for (const t of tracks) {
+    if (!t.workId || !t.trackId) continue;
+    const g = groups.get(t.workId) ?? {track:t,chapters:new Set<string>()};
+    g.chapters.add(t.trackId); groups.set(t.workId,g);
+  }
+  return [...groups].map(([id,{track,chapters}])=>({id,title:track.workTitle,detail:`已收 ${chapters.size} / ${track.workTrackCount ?? chapters.size} 轨`}));
+}
+function trackChoice(track: PlaylistTrack): Choice {
+  return {id:track.versionId,title:track.title,coverRef:track.coverRef,detail:[track.workTitle,track.versionLabel,track.durationMs ? formatDurationMs(track.durationMs) : "",!track.available ? "暂不可用" : ""].filter(Boolean).join(" · ")};
+}
+function workChoice(work:CollectionCard): Choice {
+  const progress=work.completed ? "已听完" : work.lastPositionMs ? `听到 ${formatDurationMs(work.lastPositionMs)}` : "未收听";
+  return {...work,detail:work.available ? progress : "暂不可用"};
+}
+function LibraryMemberPicker({group,busy,error,onClose,onAdd}:{group:Playlist;busy:boolean;error:string;onClose:()=>void;onAdd:(ids:string[])=>void}) {
+  const [choices,setChoices]=useState<Choice[]>([]),[loading,setLoading]=useState(true),[failure,setFailure]=useState("");
+  const works=group.workItems!=null;
+  useEffect(()=>{
+    let live=true;
+    const list=works ? playlistCommand<Choice[]>("works") : playlistCommand<PlaylistTrack[]>("tracks").then(rows=>rows.map(trackChoice));
+    void list.then(rows=>{if(live)setChoices(rows);}).catch(e=>{if(live)setFailure(normalizeAppError(e).message);}).finally(()=>{if(live)setLoading(false);});
+    return ()=>{live=false;};
+  },[works]);
+  return <MemberPicker title={works?"添加作品":"添加音轨"} choices={choices} existing={group.workItems?.map(w=>w.id) ?? group.versionIds} max={works ? Infinity : 500} busy={busy} loading={loading} error={error || failure} onClose={onClose} onSubmit={onAdd}/>;
+}
+export function Playlists({onSnapshotChange,onOpenWork}:{onSnapshotChange:(value:PlaybackSnapshot)=>void;onOpenWork?:(id:string)=>void}) {
+  const [groups,setGroups]=useState<Playlist[]>([]),[ready,setReady]=useState(false),[works,setWorks]=useState(true),[selected,setSelected]=useState<string | null>(null);
+  const [busy,setBusy]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState("");
+  const [dialog,setDialog]=useState<"name"|"remove"|"add"|"convert"|null>(null),[name,setName]=useState(""),[editing,setEditing]=useState(false);
+  const [undo,setUndo]=useState<null | {id:string; works:boolean; added:string[]}>(null);
+  const epoch=useRef(0),pending=useRef(false),drag=useRef<string | null>(null);
+  const reload=useCallback(async()=>{
+    const token=++epoch.current;
+    try {const rows=await playlistCommand<Playlist[]>("list");if(token===epoch.current){setGroups(rows);setReady(true);}}
+    catch(e){if(token===epoch.current)setError(normalizeAppError(e).message);}
+  },[]);
+  useEffect(()=>{void reload();const stop=watchPlaylists(()=>void reload());return stop;},[reload]);
+  const group=groups.find(g=>g.id===selected), label=works?"作品集":"音轨歌单", unit=works?"部作品":"首音轨";
+  const lists=groups.filter(g=>(g.workItems!=null)===works);
+  const cards=group?.works ?? [], tracks=group?.tracks ?? [];
+  const rows=works ? cards.map(workChoice) : tracks.map(trackChoice);
+  const ids=group?.workItems?.map(w=>w.id) ?? group?.versionIds ?? [];
+  function open(id:string|null) {setSelected(id);setEditing(false);setDialog(null);setError("");if(id)markPlaylistUsed(id);}
+  async function run<T = Playlist>(action:string,input:Record<string,unknown>,done?:(value:T)=>void) {
+    if(pending.current)return;
+    pending.current=true;setBusy(true);setError("");setUndo(null);setNotice("");
+    try {
+      if(action==="play" || action==="append") {
+        onSnapshotChange(await playlistCommand<PlaybackSnapshot>(action,input));
+        if(action==="append")setNotice("已加入播放队列");
+      } else {
+        const value=await playlistCommand<T>(action,input);await reload();done?.(value);
+      }
+    } catch(e){setError(normalizeAppError(e).message);}
+    finally{setBusy(false);pending.current=false;}
+  }
+  function move(id:string,target:number) {
+    if(group && ids.indexOf(id)!==target)void run("changeMembers",{id:group.id,...(works?{workItems:[]}:{}),itemId:id,target,expected:ids});
+  }
+  const playable=(p:Playlist)=>(p.workItems!=null?p.works:p.tracks)?.some(row=>row.available);
+  const origins=dialog==="convert"?originWorks(tracks):[];
+  return <section className="playlists-panel playlists-page" aria-label="歌单" aria-busy={busy}>
+    <div className="playlist-toolbar">{group?<button className="btn btn-ghost" onClick={()=>open(null)}><ArrowLeft size={16}/>{label}</button>:<h2>歌单</h2>}
+      <span className="playlist-toolbar-spacer"/>
+      {!group && <button className="btn btn-primary" disabled={busy} onClick={()=>{setName("");setDialog("name");}}><Plus size={16}/>新建{label}</button>}</div>
+    {!dialog && error && <ErrorNotice message={error}/>}
+    {!group && <><div className="playlist-tabs" role="group" aria-label="歌单类型">{[true,false].map(value=><button key={String(value)} aria-pressed={value===works} onClick={()=>{setWorks(value);open(null);}}>{value?"作品集":"音轨歌单"}</button>)}</div>
+      {!ready && !error && <p role="status">正在读取歌单…</p>}{ready && !lists.length && <div className="empty-box">{works?"还没有作品集，可从音频库或在线浏览加入整部作品。":"还没有音轨歌单，可从作品详情挑选音轨。"}</div>}
+      <div className="playlist-grid">{lists.map(p=><div className="playlist-tile" key={p.id}>
+        <button className="playlist-tile-open" onClick={()=>open(p.id)} aria-label={`打开${label} ${p.name}`}><Artwork items={works?p.works ?? []:p.tracks}/><strong title={p.name}>{p.name}</strong><small>{p.workItems?.length ?? p.versionIds.length} {unit}</small></button>
+        <button className="btn-icon" disabled={busy || !playable(p)} aria-label={`播放${label} ${p.name}`} onClick={()=>void run("play",{id:p.id})}><Play size={18}/></button>
+      </div>)}</div></>}
+    {group && <><div className="playlist-summary"><Artwork items={works?cards:tracks}/><div><h2>{group.name}</h2><p>{ids.length} {unit}{!works && tracks.some(t=>!t.available) ? ` · ${tracks.filter(t=>!t.available).length} 首暂不可用` : ""}</p></div></div>
+      <div className="playlist-actions">
+        <button className="btn btn-primary" disabled={busy || !playable(group)} onClick={()=>void run("play",{id:group.id})}><Play size={16}/>播放全部</button>
+        <button className="btn btn-secondary" disabled={busy || !playable(group)} onClick={()=>void run("append",{id:group.id})}><ListPlus size={16}/>加入队列</button>
+        <button className="btn btn-secondary" disabled={busy} onClick={()=>setDialog("add")}><Plus size={16}/>{works?"添加作品":"添加音轨"}</button>
+        {!works && <button className="btn btn-ghost" disabled={busy || !tracks.some(t=>t.workId)} onClick={()=>setDialog("convert")}>整理为作品集</button>}
+        <button className="btn btn-ghost" disabled={busy} aria-pressed={editing} onClick={()=>setEditing(!editing)}><Pencil size={15}/>{editing?"完成":"编辑"}</button>
+      </div>
+      {editing && <div className="playlist-actions"><button className="btn btn-ghost btn-sm" onClick={()=>{setName(group.name);setDialog("name");}}>重命名</button>
+        {[-1,1].map(delta=><button className="btn btn-ghost btn-sm" key={delta} disabled={busy || !lists[lists.indexOf(group)+delta]} onClick={()=>void run("update",{id:group.id,groupDelta:delta})}>{delta<0?"上移":"下移"}{label}</button>)}
+        <button className="btn btn-ghost btn-sm danger-text" onClick={()=>setDialog("remove")}><Trash2 size={15}/>删除{label}</button></div>}
+      {!rows.length && <p className="empty-box">还没有{works?"作品":"音轨"}</p>}
+      <ol className="playlist-tracks">{rows.map((row,i)=><li key={row.id} draggable={editing && !busy}
+        onDragStart={()=>{drag.current=row.id;}} onDragOver={e=>{if(editing)e.preventDefault();}} onDrop={e=>{e.preventDefault();if(editing && drag.current)move(drag.current,i);drag.current=null;}} onDragEnd={()=>{drag.current=null;}}>
+        <span className="playlist-track-number">{i+1}</span>
+        {works && row.coverRef && <img className="playlist-work-thumb" alt="" src={row.coverRef} referrerPolicy="no-referrer"/>}
+        <button className="playlist-track-open" disabled={busy || (works ? !(cards[i]?.openable ?? cards[i]?.available) || !onOpenWork : !tracks[i]?.available)}
+          onClick={()=>works ? onOpenWork?.(row.id) : void run("play",{id:group.id,startVersionId:row.id})}><strong title={row.title}>{row.title}</strong><small>{row.detail}</small></button>
+        {editing ? <div className="playlist-track-tools">{[-1,1].map(delta=><button className="btn-icon" aria-label={`${delta<0?"上移":"下移"} ${row.title}`} disabled={busy || !rows[i+delta]} key={delta} onClick={()=>move(row.id,i+delta)}>{delta<0?<ArrowUp size={15}/>:<ArrowDown size={15}/>}</button>)}
+          <button className="btn-icon" aria-label={`移出 ${row.title}`} disabled={busy} onClick={()=>void run("changeMembers",{id:group.id,remove:[row.id],...(works?{workItems:[]}:{})})}><X size={15}/></button></div>
+          : !works && tracks[i]?.available && <button className="btn-icon" aria-label={`加入音轨歌单 ${row.title}`} onClick={()=>requestPlaylist({versionIds:[row.id]})}><ListPlus size={16}/></button>}
+      </li>)}</ol></>}
+    {dialog==="name" && <ContentDialog size="compact" label={group?"重命名":`新建${label}`} busy={busy} onClose={()=>setDialog(null)}><form className="dialog-form" onSubmit={e=>{e.preventDefault();void run(group?"update":"create",{id:group?.id,name:name.trim(),...(!group && works?{workItems:[]}:{})},p=>open(group?.id ?? p.id));}}>
+      <header className="modal-header"><h3>{group?"重命名":`新建${label}`}</h3></header><div className="dialog-body"><label className="playlist-name-form">{label}名称<input ref={dialogAutofocus} className="input-text" maxLength={80} value={name} onChange={e=>setName(e.target.value)}/></label>{error && <ErrorNotice message={error}/>}</div>
+      <footer className="modal-actions"><button type="button" className="btn btn-ghost" disabled={busy} onClick={()=>setDialog(null)}>取消</button><button className="btn btn-primary" disabled={busy || !name.trim()}>保存</button></footer></form></ContentDialog>}
+    {dialog==="remove" && group && <ContentDialog size="compact" label={`删除${label}`} busy={busy} onClose={()=>setDialog(null)}><header className="modal-header"><h3>删除「{group.name}」？</h3></header><div className="dialog-body">音频库中的内容会保留。{error && <ErrorNotice message={error}/>}</div><footer className="modal-actions"><button className="btn btn-ghost" disabled={busy} onClick={()=>setDialog(null)}>取消</button><button className="btn btn-danger" disabled={busy} onClick={()=>void run("delete",{id:group.id},()=>open(null))}>删除</button></footer></ContentDialog>}
+    {dialog==="add" && group && <LibraryMemberPicker group={group} busy={busy} error={error} onClose={()=>setDialog(null)} onAdd={items=>void run<string[]>("changeMembers",{id:group.id,...(works?{workItems:items.map(id=>({id}))}:{versionIds:items})},added=>{
+      setDialog(null);markPlaylistUsed(group.id);setNotice(`已加入「${group.name}」`);setUndo(added.length?{id:group.id,works,added}:null);
+    })}/>}
+    {dialog==="convert" && group && <MemberPicker title="整理为作品集" max={Infinity} name={group.name.slice(0,74)+" · 作品集"} choices={origins} initial={origins.map(w=>w.id)} verb="另存为作品集" busy={busy} error={error} onClose={()=>setDialog(null)}
+      onSubmit={(items,newName)=>void run("create",{name:newName,workItems:items.map(id=>({id}))},p=>{setWorks(true);open(p.id);setNotice("已另存为作品集，原音轨歌单已保留");})}/>}
+    {notice && <Toast message={notice} onClose={()=>{setNotice("");setUndo(null);}}>
+      {undo && <button className="btn btn-ghost btn-sm" onClick={()=>void run("changeMembers",{id:undo.id,remove:undo.added,...(undo.works?{workItems:[]}:{})},()=>{setNotice("");setUndo(null);})}>撤销</button>}
+    </Toast>}
+  </section>;
 }

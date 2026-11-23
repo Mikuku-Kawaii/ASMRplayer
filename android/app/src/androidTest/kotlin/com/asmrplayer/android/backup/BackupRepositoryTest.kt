@@ -64,7 +64,7 @@ class BackupRepositoryTest {
         val bytes = backup.exportBytes(); val text = bytes.toString(Charsets.UTF_8)
         assertFalse(text.contains(provider.authority!!)); assertFalse(text.contains("treeUri")); assertFalse(text.contains("sleepDeadline"))
         val plan = restored.prepare(bytes)
-        assertEquals(4, plan.preview.version); assertEquals(1, plan.preview.queueSize)
+        assertEquals(PortableFormat.VERSION, plan.preview.version); assertEquals(1, plan.preview.queueSize)
         assertTrue(target.library().observeWorks().first().isEmpty()) // preview never mutates
         val result = restored.apply(plan)
         assertEquals(listOf(versionId), result.queueVersionIds)

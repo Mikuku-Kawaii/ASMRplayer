@@ -6,6 +6,11 @@ import com.asmrplayer.android.online.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
+data class SiteLibraryDialog(val account: ProviderAccountState, val preview: AccountLibraryPreview? = null,
+    val saving: Boolean = false, val error: String? = null, val selection: AccountLibrarySelection = AccountLibrarySelection())
+
+enum class SiteSelectionGroup { All, Works, Playlists }
+
 data class OnlineScreenState(
     val account: ProviderAccountState = ProviderAccountState(ProviderAccount.DEFAULT_BASE, false),
     val filters:BrowseFilters=BrowseFilters(), val query: String = "", val order: String = "popular", val ascending: Boolean = false,
@@ -15,6 +20,7 @@ data class OnlineScreenState(
     val detailLoading: Boolean = false, val detailError: String? = null,
     val savingWorks:Set<String> = emptySet(), val working: Boolean = false, val accountSaving: Boolean = false, val accountError: String? = null,
     val accountNotice: String? = null, val notice: String? = null, val actionError: String? = null,
+    val siteLibrary: SiteLibraryDialog? = null, val siteLibraryNotice: String? = null,
     val tagOptions:List<String> = emptyList(), val tagCounts:Map<String, Int> = emptyMap(), val tagsError:String?=null,
     val tasks: List<DownloadTask> = emptyList(), val tasksReady: Boolean = false, val tasksError: String? = null,
     val taskBusy: Set<String> = emptySet(), val assets: Map<String, RemoteAsset> = emptyMap(),
@@ -26,7 +32,7 @@ internal val OnlineScreenState.hasMore: Boolean get() = page?.let {
 
 /** UI orchestration only. Repository owns credentials, stable media identities and download execution. */
 @OptIn(ExperimentalCoroutinesApi::class)
-class OnlineTools(context: Context, private val scope: CoroutineScope, private val enqueue:(List<String>,Boolean)->Unit = {_,_->}, private val feedback: ((String,String?,(() -> Unit)?) -> Unit)? = null, private val playlist:(List<String>)->Unit = {}, private val play: (List<String>, Boolean, String?) -> Unit) {
+class OnlineTools(context: Context, private val scope: CoroutineScope, private val enqueue:(List<String>,Boolean)->Unit = {_,_->}, private val feedback: ((String,String?,(() -> Unit)?) -> Unit)? = null, private val playlist:(List<String>)->Unit = {}, private val collection:(String,String?,String?)->Unit = {_,_,_->}, private val play: (List<String>, Boolean, String?) -> Unit) {
     private val backend = AndroidBackend.get(context)
     private val mutable = MutableStateFlow(OnlineScreenState(account = backend.online.account.state.value))
     val state = mutable.asStateFlow()
@@ -35,6 +41,7 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
     private var prefetchJob: Job? = null
     private var prefetchTarget: Pair<String, String>? = null
     private var actionJob: Job? = null
+    private var siteLibraryJob: Job? = null
     private var tasksJob: Job? = null
     private var browseGeneration = 0L
     private var detailGeneration = 0L
@@ -46,6 +53,13 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
             combine(backend.online.account.state, backend.library.preferences) { account, prefs -> account to prefs }
                 .collect { (account, prefs) ->
                     val changed = account != mutable.value.account || prefs != filters
+                    if (account != mutable.value.account) {
+                        if (mutable.value.siteLibrary?.account != account) {
+                            siteLibraryJob?.cancel()
+                            mutable.update { it.copy(siteLibrary = null) }
+                        }
+                        mutable.update { it.copy(siteLibraryNotice = null) }
+                    }
                     mutable.update { it.copy(account = account, tagOptions=if(it.account.apiBase==account.apiBase)it.tagOptions else emptyList(),tagCounts=if(it.account.apiBase==account.apiBase)it.tagCounts else emptyMap(),tagsError=null) }; filters = prefs
                     if (changed) {
                         ++browseGeneration; browseJob?.cancel(); prefetchJob?.cancel()
@@ -64,7 +78,17 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
         }
     }
 
-    enum class CardAction { Save, Remove, Like, Unlike, Next, Queue, Download, Playlist }
+    fun chooseWork(work: OnlineWork, origin: String, directory: String? = null, format: String? = null) {
+        val account = backend.online.account.state.value
+        if(account.apiBase != origin) return
+        scope.launch {
+            try { val id = backend.online.accountLibrary.cacheCard(work,account); if(account == backend.online.account.state.value) collection(id,directory,format) }
+            catch(e: CancellationException) { throw e }
+            catch(_: Exception) { feedback?.invoke("无法读取作品，请重试",null,null) }
+        }
+    }
+
+    enum class CardAction { Save, Remove, Like, Unlike, Play, Next, Queue, Download }
 
     fun cardAction(origin: String, id: String, action: CardAction) {
         val account = mutable.value.account
@@ -82,7 +106,7 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
                         val imported = backend.online.importWork(id, false, reuseDetail = true)
                         backend.library.setFavorite(imported.workId, true)
                     }
-                    CardAction.Next, CardAction.Queue, CardAction.Download, CardAction.Playlist -> {
+                    CardAction.Play, CardAction.Next, CardAction.Queue, CardAction.Download -> {
                         val imported = backend.online.importWork(id, action == CardAction.Download, reuseDetail = true)
                         val importedIds = imported.versionIds.toHashSet()
                         val versions = backend.library.versions(imported.workId).first().filter { it.available && it.id in importedIds }
@@ -90,7 +114,13 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
                         val ids = versions.filter { it.groupPath == first.groupPath && it.format == first.format }.map { it.id }
                         require(ids.size <= 500)
                         if (account != backend.online.account.state.value) return@launch
-                        if (action == CardAction.Download) backend.downloads.enqueue(ids) else if (action == CardAction.Playlist) playlist(com.asmrplayer.android.data.preferredPlaylistVersions(versions)) else enqueue(ids, action == CardAction.Next)
+                        when (action) {
+                            CardAction.Play -> play(ids, false, null)
+                            CardAction.Next -> enqueue(ids, true)
+                            CardAction.Queue -> enqueue(ids, false)
+                            CardAction.Download -> backend.downloads.enqueue(ids)
+                            else -> error("Unsupported track action")
+                        }
                     }
                 }
                 val notice = when (action) {
@@ -303,6 +333,67 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
     fun dismissAccountFeedback() {
         mutable.update { it.copy(accountError = null, accountNotice = null) }
     }
+    fun previewSiteLibrary() {
+        val account = backend.online.account.state.value
+        if (!account.hasToken || mutable.value.siteLibrary?.saving == true) return
+        siteLibraryJob?.cancel()
+        mutable.update { it.copy(siteLibrary = SiteLibraryDialog(account), siteLibraryNotice = null) }
+        siteLibraryJob = scope.launch {
+            try {
+                val preview = backend.online.accountLibrary.preview()
+                if (backend.online.account.state.value == account) mutable.update { it.copy(siteLibrary = SiteLibraryDialog(account, preview, selection = AccountLibrarySelection.all(preview))) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                if (backend.online.account.state.value == account) {
+                    val reason = if (e is OnlineException && e.code == OnlineError.SCHEMA_CHANGED) e.message else null
+                    mutable.update { it.copy(siteLibrary = SiteLibraryDialog(account, error = reason ?: onlineMessage(e))) }
+                }
+            }
+        }
+    }
+    fun rejectSiteLibrary() {
+        if (mutable.value.siteLibrary?.saving == true) return
+        siteLibraryJob?.cancel()
+        mutable.update { it.copy(siteLibrary = null) }
+    }
+    fun selectSiteItems(group: SiteSelectionGroup, checked: Boolean, id: String? = null) {
+        mutable.update { state ->
+            val dialog = state.siteLibrary ?: return@update state
+            val preview = dialog.preview ?: return@update state
+            if (dialog.saving) return@update state
+            fun selected(current: Set<String>, all: () -> Set<String>): Set<String> = when {
+                id == null -> if (checked) all() else emptySet()
+                checked -> current + id
+                else -> current - id
+            }
+            val current = dialog.selection
+            val works = if (group == SiteSelectionGroup.Playlists) current.workIds
+                else selected(current.workIds) { preview.works.mapTo(mutableSetOf()) { it.sourceId } }
+            val lists = if (group == SiteSelectionGroup.Works) current.playlistIds
+                else selected(current.playlistIds) { preview.lists.mapTo(mutableSetOf()) { it.id } }
+            state.copy(siteLibrary = dialog.copy(selection = AccountLibrarySelection(works, lists)))
+        }
+    }
+
+    fun acceptSiteLibrary() {
+        val dialog = mutable.value.siteLibrary ?: return
+        val preview = dialog.preview ?: return
+        val selection = dialog.selection
+        if (selection.workIds.isEmpty() && selection.playlistIds.isEmpty()) return
+        if (dialog.saving || dialog.account != backend.online.account.state.value) return
+        mutable.update { it.copy(siteLibrary = dialog.copy(saving = true, error = null)) }
+        siteLibraryJob = scope.launch {
+            try {
+                val added = backend.online.accountLibrary.confirm(preview, selection)
+                if (backend.online.account.state.value == dialog.account) mutable.update {
+                    it.copy(siteLibrary = null, siteLibraryNotice = "已加入 ${added} 部作品。" + if (selection.playlistIds.isNotEmpty()) "已保存 ${selection.playlistIds.size} 个作品集。" else "")
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                if (backend.online.account.state.value == dialog.account) mutable.update { it.copy(siteLibrary = dialog.copy(error = onlineMessage(e))) }
+            }
+        }
+    }
     fun saveOrigin(value: String, saved: () -> Unit = {}) = accountChange {
         backend.online.account.setApiBase(value)
         saved()
@@ -322,6 +413,7 @@ class OnlineTools(context: Context, private val scope: CoroutineScope, private v
         scope.launch {
             try {
                 change(); mutable.update { it.copy(accountNotice = if (login) "已登录 asmr.one。" else "来源设置已保存。") }
+                if (login) previewSiteLibrary()
                 // Replacing a token can leave hasToken unchanged; still invalidate authenticated results.
                 ++browseGeneration; browseJob?.cancel()
                 mutable.update { it.copy(page = null, requestedPage = 1, loading = false, loadingMore = false, moreError = null, feedRevision = it.feedRevision + 1) }

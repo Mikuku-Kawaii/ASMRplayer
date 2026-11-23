@@ -424,7 +424,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         "prepare_work_download",
         {
           workId: work.id,
-          rjOrId: work.rjCode ?? work.sourceWorkId ?? null,
+          rjOrId: work.sourceWorkId ?? work.rjCode ?? null,
         }
       );
       setDlPreview(prev);
@@ -467,7 +467,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     try {
       await callCommand<WorkDetailDto>("sync_work_from_asmr_one", {
         workId: work.id,
-        rjOrId: work.rjCode ?? work.sourceWorkId ?? null,
+        rjOrId: work.sourceWorkId ?? work.rjCode ?? null,
         preferOnlineCover: true,
       });
       await loadWorks();
@@ -623,7 +623,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             <input
               type="text"
               className="input-text"
-              placeholder="搜索标题、RJ号、社团、声优或标签..."
+              placeholder="搜索标题、作品编号、社团、声优或标签..."
               aria-label="搜索音频库"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -639,7 +639,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               <input
                 type="text"
                 className="input-text input-sm"
-                placeholder="输入 RJ 号或 ID 打开在线作品"
+                aria-label="在线作品编号或站内 ID"
+                placeholder="输入作品编号或站内 ID"
                 value={quickOnlineId}
                 onChange={(e) => setQuickOnlineId(e.target.value)}
               />
@@ -756,7 +757,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                       <th>选择</th>
                       <th>相对目录</th>
                       <th>作品标题（可修改）</th>
-                      <th>识别 RJ</th>
+                      <th>作品编号</th>
                       <th>音轨 / 字幕 / 封面</th>
                       <th>状态</th>
                     </tr>
@@ -1023,6 +1024,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         onSelectVisible={() => setSelectedIds(previous => new Set([...previous, ...visibleWorks.map(w => w.id)].slice(0, 500)))}
         visibleCount={visibleWorks.length} onChanged={() => { setSelectedIds(new Set()); void loadWorks(); }}>
         {contextWork && <>
+            {filterMode === "recent" && contextWork.lastVersionId && <PlaylistMenuItem target={{ versionIds:[contextWork.lastVersionId] }} onClose={()=>setContextMenu(null)}/>}
             <PlaylistMenuItem target={{ workId: contextWork.id }} onClose={() => setContextMenu(null)} />
             <button
               type="button"
@@ -1074,9 +1076,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               </span>
             </button>
 
-            {(!contextWork.hasLocal ||
-              contextWork.rjCode ||
-              contextWork.hasOnline) && <div className="m3-menu-divider" />}
+            <div className="m3-menu-divider" />
 
             {!contextWork.hasLocal &&
               (contextWork.hasOnline || Boolean(contextWork.rjCode)) && (
@@ -1091,7 +1091,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 </button>
               )}
 
-            {(contextWork.rjCode || contextWork.hasOnline) && (
+            {(contextWork.hasLocal || contextWork.rjCode || contextWork.hasOnline) && (
               <button
                 type="button"
                 className="m3-menu-item"
